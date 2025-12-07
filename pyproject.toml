@@ -1,0 +1,66 @@
+[project]
+name = "e-hok"
+version = "0.1.0"
+description = "Entagled-based Hybrid Oblivious Key protocol for Secure Multiparty Computation"
+requires-python = ">=3.10"
+authors = [
+    {name = "Alessandro Da Ros"}
+]
+
+dependencies = [
+    "squidasm>=0.11.0",
+    "netqasm>=0.14.0",
+    "numpy>=1.23.0",
+    "scipy>=1.9.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "mypy>=1.0",
+    "black>=23.0",
+    "flake8>=6.0",
+]
+
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["e-hok*"]
+exclude = ["tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["e-hok/tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --strict-markers"
+
+[tool.black]
+line-length = 100
+target-version = ['py39']
+include = '\.pyi?$'
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["e-hok"]
+omit = ["*/tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
