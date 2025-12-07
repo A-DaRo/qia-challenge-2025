@@ -1,8 +1,4 @@
-"""
-Commitment scheme implementations.
+from .sha256_commitment import SHA256Commitment
+from .merkle_commitment import MerkleCommitment
 
-This subpackage contains concrete implementations of the ICommitmentScheme
-interface, including SHA-256 based commitment and Merkle tree commitment.
-"""
-
-__all__ = []
+__all__ = ["SHA256Commitment", "MerkleCommitment"]

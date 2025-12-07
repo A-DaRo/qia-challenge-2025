@@ -1,5 +1,5 @@
 """
-E-HOK: Enhanced Honest-but-Oblivious Key Distribution
+E-HOK: Entangled Hybrid Oblivious Key Distribution
 
 This package implements the E-HOK protocol for generating oblivious keys
 suitable for secure multiparty computation applications.
