@@ -41,14 +41,29 @@ from a uniform random key or that an adversary can gain information. A value of
 10^-9 provides high security suitable for most applications.
 """
 
-TEST_SET_FRACTION = 0.1
+TEST_SET_FRACTION = 0.2
 """
-Use 10% of sifted bits for error estimation.
+Use 20% of sifted bits for error estimation.
 
 Notes
 -----
 A larger test set provides more accurate QBER estimation but reduces final key
-length. 10% is a standard compromise in QKD implementations.
+length. We use 20% (increased from standard 10%) to ensure reliable QBER
+estimation even with noisy channels and smaller key sizes. Statistical variance
+in QBER estimation decreases with sqrt(test_set_size), so larger test sets are
+critical for protocol reliability.
+"""
+
+MIN_TEST_SET_SIZE = 100
+"""
+Minimum test set size regardless of fraction.
+
+Notes
+-----
+With small key sizes, even 20% might give unreliable QBER estimates due to
+statistical variance. We enforce a minimum of 100 bits to ensure statistical
+significance: expected error count = 100 * 0.02 = 2 errors (for 2% QBER),
+which has manageable variance.
 """
 
 # ============================================================================

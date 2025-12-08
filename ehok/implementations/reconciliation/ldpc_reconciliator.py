@@ -72,6 +72,10 @@ class LDPCReconciliator(IReconciliator):
                 logger.info(f"BP converged in {iteration+1} iterations")
                 return decoded
             
+            # Log progress
+            syndrome_errors = np.sum(current_syndrome != syndrome)
+            logger.debug(f"Iteration {iteration+1}: {syndrome_errors} syndrome mismatches")
+            
             # Message passing step (simplified bit-flipping)
             unsatisfied = np.where(current_syndrome != syndrome)[0]
             if len(unsatisfied) == 0:

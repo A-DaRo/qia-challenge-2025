@@ -7,7 +7,7 @@ E-HOK protocol: basis sifting, test set sampling, and QBER estimation.
 
 import numpy as np
 from typing import Tuple
-from .constants import TEST_SET_FRACTION, QBER_THRESHOLD
+from .constants import TEST_SET_FRACTION, MIN_TEST_SET_SIZE, QBER_THRESHOLD
 from .exceptions import QBERTooHighError
 from ..utils.logging import get_logger
 
@@ -70,6 +70,9 @@ class SiftingManager:
         Randomly chooses a subset of the sifted key indices to be revealed
         for error estimation. The remaining indices form the raw key.
 
+        IMPORTANT: Both parties must use the same seed to select the same test set.
+        If seed is None, a deterministic seed is derived from I_0 itself.
+
         Parameters
         ----------
         I_0 : np.ndarray
@@ -77,7 +80,7 @@ class SiftingManager:
         fraction : float, optional
             Fraction of I_0 to use for testing, by default TEST_SET_FRACTION.
         seed : int, optional
-            Random seed for reproducibility, by default None.
+            Random seed for reproducibility. If None, derives seed from I_0.
 
         Returns
         -------
@@ -86,8 +89,17 @@ class SiftingManager:
         key_set : np.ndarray
             Remaining indices for key (I_0 \\ T).
         """
+        # If no seed provided, derive deterministic seed from I_0
+        # This ensures both parties select the same test set
+        if seed is None:
+            seed = int(np.sum(I_0) % (2**31))
+        
         rng = np.random.default_rng(seed)
-        test_size = max(1, int(len(I_0) * fraction))
+        
+        # Calculate test size: max of (fraction * |I_0|, MIN_TEST_SET_SIZE, 1)
+        # but capped at |I_0| to avoid selecting more than available
+        test_size_fraction = int(len(I_0) * fraction)
+        test_size = max(1, min(len(I_0), max(test_size_fraction, MIN_TEST_SET_SIZE)))
 
         test_set = rng.choice(I_0, size=test_size, replace=False)
         test_set.sort()
