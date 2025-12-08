@@ -5,4 +5,6 @@ This subpackage contains concrete implementations of the IReconciliator
 interface, including LDPC-based error correction.
 """
 
-__all__ = []
+from .ldpc_reconciliator import LDPCReconciliator
+
+__all__ = ["LDPCReconciliator"]

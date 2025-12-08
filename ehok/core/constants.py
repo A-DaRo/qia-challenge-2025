@@ -120,7 +120,7 @@ Code rate of 0.5 provides good error correction capability while maintaining
 reasonable efficiency. Lower rates correct more errors but leak more information.
 """
 
-LDPC_MAX_ITERATIONS = 50
+LDPC_MAX_ITERATIONS = 500
 """
 Maximum iterations for belief propagation decoder.
 

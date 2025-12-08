@@ -322,7 +322,7 @@ class TestConstants:
     def test_ldpc_parameters(self):
         """Verify LDPC code parameters."""
         assert constants.LDPC_CODE_RATE == 0.5
-        assert constants.LDPC_MAX_ITERATIONS == 50
+        assert constants.LDPC_MAX_ITERATIONS == 500
         assert constants.LDPC_BP_THRESHOLD == 1e-6
 
     def test_privacy_amplification_parameters(self):
