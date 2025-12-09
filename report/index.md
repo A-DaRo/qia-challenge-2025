@@ -23,8 +23,10 @@
     *   *Deep dive into EPR correlations and Oblivious Transfer security definitions.*
 
 ### 3. Baseline Protocol Implementation
-*   3.1 [Architecture & Design Patterns](./baseline_protocol/architecture.md) *(Planned)*
-    *   *The Manager/Worker pattern and modular interfaces.*
+*   3.1 [Architecture & Design Patterns](./baseline_protocol/architecture.md)
+    *   *Layered architecture, Strategy Pattern, Template Method Pattern*
+    *   *Component interactions and state machine formalization*
+    *   *Quantum batching and classical communication protocols*
 *   3.2 [Phase I: Quantum Generation](./baseline_protocol/quantum_generation.md) *(Planned)*
     *   *Implementation of batching and EPR measurement.*
 *   3.3 [Phase II: Commitment & Verification](./baseline_protocol/commitment.md) *(Planned)*

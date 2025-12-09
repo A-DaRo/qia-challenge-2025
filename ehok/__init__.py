@@ -30,7 +30,13 @@ __version__ = "0.1.0"
 __author__ = "QIA Challenge 2025 Team"
 
 # Expose key classes for convenient imports
-from ehok.core.data_structures import ObliviousKey, MeasurementRecord, ProtocolResult
+from ehok.core.data_structures import (
+    ObliviousKey,
+    MeasurementRecord,
+    ProtocolResult,
+    ExecutionMetrics,
+)
+from ehok.core.config import ProtocolConfig
 from ehok.core.exceptions import (
     EHOKException,
     SecurityException,
@@ -52,6 +58,8 @@ __all__ = [
     "ObliviousKey",
     "MeasurementRecord",
     "ProtocolResult",
+    "ExecutionMetrics",
+    "ProtocolConfig",
     # Exceptions
     "EHOKException",
     "SecurityException",

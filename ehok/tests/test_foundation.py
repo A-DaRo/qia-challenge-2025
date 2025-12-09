@@ -14,6 +14,8 @@ Test IDs:
 import pytest
 import numpy as np
 import logging
+import inspect
+import importlib
 from pathlib import Path
 import tempfile
 
@@ -31,6 +33,9 @@ from ehok import (
 from ehok.interfaces import ICommitmentScheme, IReconciliator, IPrivacyAmplifier
 from ehok.core import constants
 from ehok.utils import setup_ehok_logging, get_logger
+from ehok.core.config import ProtocolConfig
+from ehok.protocols.alice import AliceBaselineEHOK
+from ehok.protocols.bob import BobBaselineEHOK
 
 
 class TestDataStructures:
@@ -78,7 +83,7 @@ class TestDataStructures:
         key_value = np.array([0.0, 1.0, 1.0, 0.0, 1.0], dtype=np.float64)  # Wrong dtype
         knowledge_mask = np.array([0, 0, 1, 1, 0], dtype=np.uint8)
 
-        with pytest.raises(AssertionError, match="Key must be uint8"):
+        with pytest.raises(ValueError, match="Key must be uint8"):
             ObliviousKey(
                 key_value=key_value,
                 knowledge_mask=knowledge_mask,
@@ -92,7 +97,7 @@ class TestDataStructures:
         key_value = np.array([0, 1, 2, 0, 1], dtype=np.uint8)  # Contains 2
         knowledge_mask = np.array([0, 0, 1, 1, 0], dtype=np.uint8)
 
-        with pytest.raises(AssertionError, match="Key values must be 0 or 1"):
+        with pytest.raises(ValueError, match="Key values must be 0 or 1"):
             ObliviousKey(
                 key_value=key_value,
                 knowledge_mask=knowledge_mask,
@@ -106,7 +111,7 @@ class TestDataStructures:
         key_value = np.array([0, 1, 1, 0, 1], dtype=np.uint8)
         knowledge_mask = np.array([0, 0, 1], dtype=np.uint8)  # Different length
 
-        with pytest.raises(AssertionError, match="Key and mask must have same shape"):
+        with pytest.raises(ValueError, match="Key and mask must have same shape"):
             ObliviousKey(
                 key_value=key_value,
                 knowledge_mask=knowledge_mask,
@@ -132,12 +137,12 @@ class TestDataStructures:
 
     def test_measurement_record_invalid_outcome(self):
         """Failure Injection: outcome not in {0, 1} should fail."""
-        with pytest.raises(AssertionError, match="Outcome must be 0 or 1"):
+        with pytest.raises(ValueError, match="Outcome must be 0 or 1"):
             MeasurementRecord(outcome=2, basis=0, timestamp=123.45)
 
     def test_measurement_record_invalid_basis(self):
         """Failure Injection: basis not in {0, 1} should fail."""
-        with pytest.raises(AssertionError, match="Basis must be 0 \\(Z\\) or 1 \\(X\\)"):
+        with pytest.raises(ValueError, match="Basis must be 0 \\(Z\\) or 1 \\(X\\)"):
             MeasurementRecord(outcome=0, basis=2, timestamp=123.45)
 
     def test_protocol_result_construction_valid(self):
@@ -159,7 +164,7 @@ class TestDataStructures:
             raw_count=10000,
             sifted_count=5000,
             test_count=500,
-            final_count=4500,
+            final_count=5,
             qber=0.08,
             execution_time_ms=2345.67,
         )
@@ -169,7 +174,7 @@ class TestDataStructures:
         assert result.oblivious_key is not None
         assert result.abort_reason is None
         assert result.raw_count == 10000
-        assert result.final_count == 4500
+        assert result.final_count == 5
 
     def test_protocol_result_with_abort(self):
         """Test ProtocolResult when protocol aborts."""
@@ -189,6 +194,57 @@ class TestDataStructures:
         assert result.oblivious_key is None
         assert result.abort_reason == "QBER too high"
         assert result.final_count == 0
+
+    def test_protocol_result_invariants_fail_on_counts(self):
+        """Ensure count relations are enforced."""
+        with pytest.raises(ValueError, match=r"sifted_count must be >= test_count \+ final_count"):
+            ProtocolResult(
+                oblivious_key=None,
+                success=False,
+                abort_reason=None,
+                raw_count=100,
+                sifted_count=10,
+                test_count=5,
+                final_count=10,
+                qber=0.1,
+                execution_time_ms=1.0,
+            )
+
+    def test_protocol_result_invariants_fail_on_qber_and_key_length(self):
+        """Ensure qber bounds and key length consistency are validated."""
+        key = ObliviousKey(
+            key_value=np.array([1, 0, 1], dtype=np.uint8),
+            knowledge_mask=np.array([0, 0, 0], dtype=np.uint8),
+            security_param=1e-9,
+            qber=0.01,
+            final_length=3,
+        )
+
+        with pytest.raises(ValueError, match=r"qber must be in \[0, 1\]"):
+            ProtocolResult(
+                oblivious_key=key,
+                success=True,
+                abort_reason=None,
+                raw_count=10,
+                sifted_count=9,
+                test_count=1,
+                final_count=3,
+                qber=1.5,
+                execution_time_ms=1.0,
+            )
+
+        with pytest.raises(ValueError, match="final_count must equal oblivious_key.final_length"):
+            ProtocolResult(
+                oblivious_key=key,
+                success=True,
+                abort_reason=None,
+                raw_count=10,
+                sifted_count=9,
+                test_count=1,
+                final_count=2,
+                qber=0.1,
+                execution_time_ms=1.0,
+            )
 
 
 class TestAbstractInterfaces:
@@ -311,8 +367,6 @@ class TestConstants:
         """Verify quantum generation parameters."""
         assert constants.TOTAL_EPR_PAIRS == 10_000
         assert constants.BATCH_SIZE == 5
-        assert constants.BASIS_Z == 0
-        assert constants.BASIS_X == 1
 
     def test_network_configuration(self):
         """Verify network configuration constants."""
@@ -333,6 +387,59 @@ class TestConstants:
         """Verify logging configuration."""
         assert constants.LOG_LEVEL == "INFO"
         assert constants.LOG_TO_FILE is True
+
+
+class TestProtocolConfigBinding:
+    """Ensure protocol orchestration follows config injection rules."""
+
+    def test_protocols_accept_protocol_config(self):
+        for cls in (AliceBaselineEHOK, BobBaselineEHOK):
+            sig = inspect.signature(cls.__init__)
+            assert "config" in sig.parameters
+            param = sig.parameters["config"]
+            assert param.default is None or param.default == inspect._empty
+
+    def test_protocols_do_not_instantiate_concretes(self):
+        protocol_dir = Path(__file__).parent.parent / "protocols"
+        forbidden_tokens = (
+            "SHA256Commitment(",
+            "LDPCReconciliator(",
+            "ToeplitzAmplifier(",
+        )
+        for path in protocol_dir.glob("*.py"):
+            text = path.read_text()
+            for token in forbidden_tokens:
+                assert (
+                    token not in text
+                ), f"Direct instantiation {token} found in {path.name}"
+
+
+class TestDocstrings:
+    """Validate presence of docstrings on public classes."""
+
+    MODULES = [
+        "ehok.core.config",
+        "ehok.core.data_structures",
+        "ehok.core.sifting",
+        "ehok.interfaces.commitment",
+        "ehok.interfaces.reconciliation",
+        "ehok.interfaces.privacy_amplification",
+        "ehok.interfaces.sampling_strategy",
+        "ehok.interfaces.noise_estimator",
+        "ehok.implementations.factories",
+    ]
+
+    def test_public_classes_have_docstrings(self):
+        for module_name in self.MODULES:
+            module = importlib.import_module(module_name)
+            for name, obj in inspect.getmembers(module, inspect.isclass):
+                if obj.__module__ != module.__name__:
+                    continue
+                if name.startswith("_"):
+                    continue
+                assert obj.__doc__ and obj.__doc__.strip(), (
+                    f"Missing docstring on class {module_name}.{name}"
+                )
 
 
 class TestLogging:

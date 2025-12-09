@@ -7,7 +7,6 @@ for each EPR pair measurement.
 
 import numpy as np
 from typing import Optional
-from ..core.constants import BASIS_Z, BASIS_X
 from ..utils.logging import get_logger
 
 logger = get_logger("quantum.basis_selection")

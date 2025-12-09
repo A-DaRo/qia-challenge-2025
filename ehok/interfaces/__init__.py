@@ -9,9 +9,13 @@ reconciliation algorithms, and privacy amplification methods.
 from ehok.interfaces.commitment import ICommitmentScheme
 from ehok.interfaces.reconciliation import IReconciliator
 from ehok.interfaces.privacy_amplification import IPrivacyAmplifier
+from ehok.interfaces.sampling_strategy import ISamplingStrategy
+from ehok.interfaces.noise_estimator import INoiseEstimator
 
 __all__ = [
     "ICommitmentScheme",
     "IReconciliator",
     "IPrivacyAmplifier",
+    "ISamplingStrategy",
+    "INoiseEstimator",
 ]

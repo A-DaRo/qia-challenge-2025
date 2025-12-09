@@ -41,7 +41,7 @@ from a uniform random key or that an adversary can gain information. A value of
 10^-9 provides high security suitable for most applications.
 """
 
-TEST_SET_FRACTION = 0.2
+TEST_SET_FRACTION = 0.1
 """
 Use 20% of sifted bits for error estimation.
 
@@ -89,13 +89,6 @@ Notes
 SquidASM simulations have limited quantum memory. Batching allows streaming
 generation of large numbers of EPR pairs without exhausting memory.
 """
-
-# Basis encoding: 0 = Z-basis (computational), 1 = X-basis (Hadamard)
-BASIS_Z = 0
-"""Z-basis (computational basis: |0⟩, |1⟩)."""
-
-BASIS_X = 1
-"""X-basis (Hadamard basis: |+⟩ = (|0⟩ + |1⟩)/√2, |-⟩ = (|0⟩ - |1⟩)/√2)."""
 
 # ============================================================================
 # Network Configuration

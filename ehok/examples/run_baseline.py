@@ -14,6 +14,10 @@ from squidasm.run.stack.run import run
 from ehok.protocols.alice import AliceEHOKProgram
 from ehok.protocols.bob import BobEHOKProgram
 from ehok.core.constants import TOTAL_EPR_PAIRS
+from ehok.utils import get_logger
+
+
+logger = get_logger(__name__)
 
 
 def run_ehok_baseline(
@@ -42,7 +46,7 @@ def run_ehok_baseline(
     # Configure logging
     logging.basicConfig(
         level=log_level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
     
     # Load network configuration
@@ -57,12 +61,12 @@ def run_ehok_baseline(
     bob_program = BobEHOKProgram(total_pairs=num_pairs)
     
     # Run protocol
-    print(f"\n{'='*60}")
-    print(f"E-HOK Baseline Protocol Execution")
-    print(f"{'='*60}")
-    print(f"EPR pairs: {num_pairs}")
-    print(f"Network config: {network_config_path}")
-    print(f"{'='*60}\n")
+    logger.info("%s", "=" * 60)
+    logger.info("E-HOK Baseline Protocol Execution")
+    logger.info("%s", "=" * 60)
+    logger.info("EPR pairs: %s", num_pairs)
+    logger.info("Network config: %s", network_config_path)
+    logger.info("%s", "=" * 60)
     
     alice_results, bob_results = run(
         config=network_cfg,
@@ -84,29 +88,35 @@ def print_results(alice_results, bob_results):
     bob_results : list
         Bob's protocol results.
     """
-    print(f"\n{'='*60}")
-    print(f"Protocol Results")
-    print(f"{'='*60}\n")
+    logger.info("%s", "=" * 60)
+    logger.info("Protocol Results")
+    logger.info("%s", "=" * 60)
     
     for run_idx, (alice_result, bob_result) in enumerate(zip(alice_results, bob_results)):
-        print(f"Run {run_idx + 1}:")
-        print(f"  {'─'*56}")
+        logger.info("Run %s:", run_idx + 1)
+        logger.info("  %s", "-" * 56)
         
         # Alice's results
-        print(f"  Alice:")
-        print(f"    Success: {alice_result.get('success', False)}")
-        print(f"    Raw bits generated: {alice_result.get('raw_count', 'N/A')}")
-        print(f"    Sifted bits: {alice_result.get('sifted_count', 'N/A')}")
-        print(f"    Final key length: {alice_result.get('final_count', 'N/A')} bits")
-        print(f"    QBER: {alice_result.get('qber', 0)*100:.2f}%")
+        logger.info("  Alice:")
+        logger.info("    Success: %s", alice_result.get("success", False))
+        logger.info("    Raw bits generated: %s", alice_result.get("raw_count", "N/A"))
+        logger.info("    Sifted bits: %s", alice_result.get("sifted_count", "N/A"))
+        logger.info(
+            "    Final key length: %s bits",
+            alice_result.get("final_count", "N/A"),
+        )
+        logger.info("    QBER: %.2f%%", alice_result.get("qber", 0) * 100)
         
         # Bob's results
-        print(f"\n  Bob:")
-        print(f"    Success: {bob_result.get('success', False)}")
-        print(f"    Raw bits generated: {bob_result.get('raw_count', 'N/A')}")
-        print(f"    Sifted bits: {bob_result.get('sifted_count', 'N/A')}")
-        print(f"    Final key length: {bob_result.get('final_count', 'N/A')} bits")
-        print(f"    QBER: {bob_result.get('qber', 0)*100:.2f}%")
+        logger.info("  Bob:")
+        logger.info("    Success: %s", bob_result.get("success", False))
+        logger.info("    Raw bits generated: %s", bob_result.get("raw_count", "N/A"))
+        logger.info("    Sifted bits: %s", bob_result.get("sifted_count", "N/A"))
+        logger.info(
+            "    Final key length: %s bits",
+            bob_result.get("final_count", "N/A"),
+        )
+        logger.info("    QBER: %.2f%%", bob_result.get("qber", 0) * 100)
         
         # Verify keys match
         alice_key = alice_result.get('oblivious_key')
@@ -115,18 +125,26 @@ def print_results(alice_results, bob_results):
         if alice_key and bob_key:
             import numpy as np
             keys_match = np.array_equal(alice_key.key_value, bob_key.key_value)
-            print(f"\n  Key Verification:")
-            print(f"    Keys match: {keys_match}")
-            print(f"    Alice knows: {np.sum(alice_key.knowledge_mask == 0)} bits")
-            print(f"    Bob knows: {np.sum(bob_key.knowledge_mask == 0)} bits")
-            print(f"    Bob unknown (oblivious): {np.sum(bob_key.knowledge_mask == 1)} bits")
+            logger.info("  Key Verification:")
+            logger.info("    Keys match: %s", keys_match)
+            logger.info(
+                "    Alice knows: %s bits",
+                np.sum(alice_key.knowledge_mask == 0),
+            )
+            logger.info(
+                "    Bob knows: %s bits",
+                np.sum(bob_key.knowledge_mask == 0),
+            )
+            logger.info(
+                "    Bob unknown (oblivious): %s bits",
+                np.sum(bob_key.knowledge_mask == 1),
+            )
             
             if keys_match:
-                print(f"    ✓ Protocol successful!")
+                logger.info("    Protocol successful!")
             else:
-                print(f"    ✗ Key mismatch - protocol failed")
-        
-        print(f"  {'─'*56}\n")
+                logger.info("    Key mismatch - protocol failed")
+        logger.info("  %s", "-" * 56)
 
 
 if __name__ == "__main__":
@@ -165,12 +183,10 @@ if __name__ == "__main__":
         )
         
         print_results(alice_results, bob_results)
-        
-    except Exception as e:
-        print(f"\n{'='*60}")
-        print(f"Protocol Execution Failed")
-        print(f"{'='*60}")
-        print(f"Error: {e}")
+
+    except Exception as e:  # pragma: no cover - CLI failure path
+        logger.exception("Protocol execution failed: %s", e)
         import traceback
+
         traceback.print_exc()
         exit(1)

@@ -7,8 +7,11 @@ records, and protocol execution results.
 """
 
 from dataclasses import dataclass
-import numpy as np
 from typing import Optional
+
+import numpy as np
+
+from .exceptions import EHOKException
 
 
 @dataclass
@@ -39,7 +42,10 @@ class ObliviousKey:
     -----
     The knowledge mask enables the oblivious key property: Alice knows all bits,
     while Bob knows only a subset. This asymmetric knowledge is crucial for
-    certain secure computation protocols.
+    certain secure computation protocols. Baseline simulations may set
+    ``ProtocolConfig.approximate_knowledge_mask`` to ``True``, in which case the
+    mask encodes an approximation rather than an exact mapping through the
+    privacy amplification matrix.
     """
     key_value: np.ndarray
     knowledge_mask: np.ndarray
@@ -47,23 +53,26 @@ class ObliviousKey:
     qber: float
     final_length: int
     
-    def __post_init__(self):
-        """
-        Validate data structure consistency.
-        
-        Raises
-        ------
-        AssertionError
-            If validation checks fail.
-        """
-        assert self.key_value.shape == self.knowledge_mask.shape, \
-            "Key and mask must have same shape"
-        assert self.key_value.dtype == np.uint8, "Key must be uint8"
-        assert self.knowledge_mask.dtype == np.uint8, "Mask must be uint8"
-        assert np.all((self.key_value == 0) | (self.key_value == 1)), \
-            "Key values must be 0 or 1"
-        assert np.all((self.knowledge_mask == 0) | (self.knowledge_mask == 1)), \
-            "Mask values must be 0 or 1"
+    def __post_init__(self) -> None:
+        """Validate data structure consistency."""
+        if self.key_value.shape != self.knowledge_mask.shape:
+            raise ValueError("Key and mask must have same shape")
+        if self.key_value.dtype != np.uint8:
+            raise ValueError("Key must be uint8")
+        if self.knowledge_mask.dtype != np.uint8:
+            raise ValueError("Mask must be uint8")
+        if not np.all((self.key_value == 0) | (self.key_value == 1)):
+            raise ValueError("Key values must be 0 or 1")
+        if not np.all((self.knowledge_mask == 0) | (self.knowledge_mask == 1)):
+            raise ValueError("Mask values must be 0 or 1")
+        if len(self.key_value) != self.final_length:
+            raise ValueError("final_length must equal key length")
+        if len(self.knowledge_mask) != self.final_length:
+            raise ValueError("knowledge_mask length must equal final_length")
+        if not 0.0 <= float(self.qber) <= 1.0:
+            raise ValueError("qber must be in [0, 1]")
+        if float(self.security_param) <= 0:
+            raise ValueError("security_param must be positive")
 
 
 @dataclass
@@ -93,17 +102,12 @@ class MeasurementRecord:
     basis: int
     timestamp: float
     
-    def __post_init__(self):
-        """
-        Validate measurement record.
-        
-        Raises
-        ------
-        AssertionError
-            If outcome or basis values are invalid.
-        """
-        assert self.outcome in [0, 1], "Outcome must be 0 or 1"
-        assert self.basis in [0, 1], "Basis must be 0 (Z) or 1 (X)"
+    def __post_init__(self) -> None:
+        """Validate measurement record."""
+        if self.outcome not in (0, 1):
+            raise ValueError("Outcome must be 0 or 1")
+        if self.basis not in (0, 1):
+            raise ValueError("Basis must be 0 (Z) or 1 (X)")
 
 
 @dataclass
@@ -152,3 +156,50 @@ class ProtocolResult:
     final_count: int
     qber: float
     execution_time_ms: float
+
+    def __post_init__(self) -> None:
+        """Validate protocol result invariants."""
+        if self.raw_count < 0:
+            raise ValueError("raw_count must be non-negative")
+        if self.sifted_count < 0 or self.sifted_count > self.raw_count:
+            raise ValueError("sifted_count must satisfy 0 <= sifted_count <= raw_count")
+        if self.test_count < 0:
+            raise ValueError("test_count must be non-negative")
+        if self.final_count < 0:
+            raise ValueError("final_count must be non-negative")
+        if self.sifted_count < self.test_count + self.final_count:
+            raise ValueError("sifted_count must be >= test_count + final_count")
+        if not 0.0 <= float(self.qber) <= 1.0:
+            raise ValueError("qber must be in [0, 1]")
+        if self.success and self.oblivious_key is None:
+            raise ValueError("oblivious_key must be set when success is True")
+        if self.oblivious_key is not None and self.final_count != self.oblivious_key.final_length:
+            raise ValueError("final_count must equal oblivious_key.final_length when key is present")
+
+
+@dataclass
+class ExecutionMetrics(ProtocolResult):
+    """Extended protocol metrics derived from :class:`ProtocolResult`.
+
+    This dataclass enriches the base result with commonly used derived
+    quantities so later analysis layers do not need to recompute them.
+    """
+
+    raw_to_sifted_ratio: Optional[float] = None
+    sifted_to_final_ratio: Optional[float] = None
+    leakage_bits: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        # Validate base fields first
+        super().__post_init__()
+
+        if self.raw_count > 0:
+            self.raw_to_sifted_ratio = self.sifted_count / self.raw_count
+        if self.sifted_count > 0:
+            self.sifted_to_final_ratio = (
+                self.final_count / self.sifted_count
+            )
+
+        # leakage_bits is left to upstream calculators; ensure non-negative if set
+        if self.leakage_bits is not None and self.leakage_bits < 0:
+            raise ValueError("leakage_bits must be non-negative when provided")
