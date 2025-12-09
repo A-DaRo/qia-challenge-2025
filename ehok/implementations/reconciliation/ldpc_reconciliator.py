@@ -1,147 +1,169 @@
 """
-LDPC-based information reconciliation.
-
-Uses scipy.sparse for matrix operations and custom BP decoder.
+LDPC reconciliation orchestrator implementing block-based interface.
 """
+
+from __future__ import annotations
+
+import math
+from typing import Tuple
 
 import numpy as np
 import scipy.sparse as sp
-from typing import Tuple, Optional
+
+from ehok.core import constants
+from ehok.core.data_structures import LDPCBlockResult, LDPCReconciliationResult
+from ehok.core.exceptions import ReconciliationFailedError
 from ehok.interfaces.reconciliation import IReconciliator
-from ehok.core.constants import LDPC_MAX_ITERATIONS, LDPC_BP_THRESHOLD
+from ehok.implementations.reconciliation.ldpc_bp_decoder import LDPCBeliefPropagation
+from ehok.implementations.reconciliation.ldpc_matrix_manager import LDPCMatrixManager
+from ehok.implementations.reconciliation.polynomial_hash import PolynomialHashVerifier
+from ehok.implementations.reconciliation.qber_estimator import IntegratedQBEREstimator
 from ehok.utils.logging import get_logger
 
-logger = get_logger("ldpc_reconciliation")
+logger = get_logger("reconciliation.ldpc_reconciliator")
+
+
+def _binary_entropy(p: float) -> float:
+    if p <= 0.0 or p >= 1.0:
+        return 0.0
+    return -p * math.log2(p) - (1 - p) * math.log2(1 - p)
+
 
 class LDPCReconciliator(IReconciliator):
-    """LDPC-based error correction."""
-    
-    def __init__(self, parity_check_matrix: sp.spmatrix):
-        """
-        Initialize with parity check matrix.
-        
-        Parameters
-        ----------
-        parity_check_matrix : scipy.sparse matrix
-            H matrix, shape (m, n), GF(2).
-        """
-        self.H = parity_check_matrix.astype(np.uint8)
-        self.m, self.n = self.H.shape
-        # Estimate column weight (assuming regular or near-regular)
-        # We take the max column weight to be safe
-        self.w_c = self.H.getnnz(axis=0).max()
-        logger.info(f"LDPC: H shape=({self.m}, {self.n}), rate≈{1-self.m/self.n:.2f}, w_c={self.w_c}")
-    
-    def compute_syndrome(self, key: np.ndarray) -> np.ndarray:
-        """Compute syndrome S = H @ key mod 2."""
-        # Ensure key is a column vector or 1D array
-        if key.ndim == 1:
-            key_vec = key
-        else:
-            key_vec = key.flatten()
-            
-        if len(key_vec) != self.n:
-             raise ValueError(f"Key length {len(key_vec)} does not match LDPC code length {self.n}")
+    """
+    Block-based LDPC reconciliator with rate adaptation and integrated QBER estimation.
+    """
 
-        syndrome = (self.H @ key_vec) % 2
-        logger.debug(f"Syndrome computed: {np.sum(syndrome)} non-zero entries")
-        return syndrome
-    
-    def reconcile(self, key: np.ndarray, syndrome: np.ndarray) -> np.ndarray:
-        """
-        Decode using Belief Propagation.
-        
-        Algorithm: Sum-Product on Tanner graph.
-        """
-        # Initialize with Bob's noisy key
-        decoded = key.copy().astype(np.uint8)
-        
-        if len(decoded) != self.n:
-             raise ValueError(f"Key length {len(decoded)} does not match LDPC code length {self.n}")
+    def __init__(
+        self,
+        matrix_manager: LDPCMatrixManager,
+        bp_decoder: LDPCBeliefPropagation | None = None,
+        hash_verifier: PolynomialHashVerifier | None = None,
+        qber_estimator: IntegratedQBEREstimator | None = None,
+        initial_qber_est: float = 0.05,
+    ) -> None:
+        self.matrix_manager = matrix_manager
+        self.bp_decoder = bp_decoder or LDPCBeliefPropagation()
+        self.hash_verifier = hash_verifier or PolynomialHashVerifier()
+        self.qber_estimator = qber_estimator or IntegratedQBEREstimator()
+        self.current_qber_est = initial_qber_est
+        self.rng = np.random.default_rng(constants.PEG_DEFAULT_SEED)
 
-        # BP decoder (simplified bit-flipping for hard decision)
-        # Note: A full BP decoder would use log-likelihood ratios (LLRs).
-        # For the baseline, we implement a hard-decision bit-flipping algorithm 
-        
-        for iteration in range(LDPC_MAX_ITERATIONS):
-            # Compute current syndrome
-            current_syndrome = (self.H @ decoded) % 2
-            
-            # Check convergence
-            if np.array_equal(current_syndrome, syndrome):
-                logger.info(f"BP converged in {iteration+1} iterations")
-                return decoded
-            
-            # Log progress
-            syndrome_errors = np.sum(current_syndrome != syndrome)
-            logger.debug(f"Iteration {iteration+1}: {syndrome_errors} syndrome mismatches")
-            
-            # Message passing step (simplified bit-flipping)
-            unsatisfied = np.where(current_syndrome != syndrome)[0]
-            if len(unsatisfied) == 0:
-                break
-            
-            # Identify bits to flip (greedy)
-            # Calculate how many unsatisfied checks each bit participates in
-            # This is effectively the "vote" for flipping
-            
-            # We need to map unsatisfied checks back to variable nodes (bits)
-            # H is (m, n). Rows are checks, cols are bits.
-            # We want to sum rows where check is unsatisfied.
-            
-            # Create a vector of unsatisfied checks
-            check_vector = np.zeros(self.m)
-            check_vector[unsatisfied] = 1
-            
-            # Multiply by H.T to get bit scores
-            # bit_scores[j] = sum of unsatisfied checks connected to bit j
-            bit_scores = self.H.T @ check_vector
-            
-            # Find the bit(s) with the maximum score
-            max_score = np.max(bit_scores)
-            
-            if max_score == 0:
-                # Should not happen if there are unsatisfied checks and graph is connected
-                logger.warning("Max score is 0 but checks are unsatisfied. Stalled.")
-                break
-                
-            # Gallager A / Bit Flipping with Threshold
-            # Threshold is typically majority of checks. For w_c=3, threshold=2.
-            # threshold = self.w_c // 2 + 1
-            
-            # Serial Bit Flipping with Randomness to break cycles
-            # If we are stuck (max_score < threshold), or just generally to avoid cycles:
-            # Pick a random bit among those with the highest score.
-            
-            candidates = np.where(bit_scores == max_score)[0]
-            if len(candidates) > 0:
-                flip_idx = np.random.choice(candidates)
-                decoded[flip_idx] ^= 1
-        
-        logger.warning(
-            f"BP did not converge after {LDPC_MAX_ITERATIONS} iterations"
+    # ------------------------------------------------------------------
+    # Interface methods
+    # ------------------------------------------------------------------
+    def select_rate(self, qber_est: float) -> float:
+        rates = self.matrix_manager.rates
+        entropy = _binary_entropy(qber_est)
+        if entropy == 0.0:
+            entropy = 1e-9
+        for rate in rates:
+            if (1 - rate) / entropy < constants.LDPC_F_CRIT:
+                return float(rate)
+        return float(rates[-1])
+
+    def compute_shortening(self, rate: float, qber_est: float, target_payload: int) -> int:
+        n = self.matrix_manager.frame_size
+        entropy = _binary_entropy(qber_est)
+        if entropy == 0.0:
+            entropy = 1e-9
+        n_s = int(math.floor(n - target_payload / (constants.LDPC_F_CRIT * entropy)))
+        n_s = max(0, min(n_s, n - 1))
+        # Ensure payload + padding equals frame size
+        if target_payload + n_s < n:
+            n_s = n - target_payload
+        return n_s
+
+    def reconcile_block(
+        self,
+        key_block: np.ndarray,
+        syndrome: np.ndarray,
+        rate: float,
+        n_shortened: int,
+        prng_seed: int,
+    ) -> Tuple[np.ndarray, bool, int]:
+        n = self.matrix_manager.frame_size
+        if key_block.dtype != np.uint8:
+            raise ValueError("key_block must be uint8")
+        if key_block.size + n_shortened != n:
+            padding_needed = n - key_block.size - n_shortened
+            if padding_needed < 0:
+                raise ValueError("block length exceeds frame size")
+            n_shortened += padding_needed
+        padding = self._generate_padding(n_shortened, prng_seed)
+        full_frame = np.concatenate([key_block, padding])
+        H = self.matrix_manager.get_matrix(rate)
+
+        # Compute error syndrome
+        local_syndrome = (H @ full_frame) % 2
+        target_syndrome = (syndrome ^ local_syndrome).astype(np.uint8)
+
+        llr_error = self._build_error_llrs(key_block.size, n_shortened)
+        error_vector, converged, _ = self.bp_decoder.decode(H, llr_error, target_syndrome)
+        corrected_frame = full_frame ^ error_vector.astype(np.uint8)
+        corrected_payload = corrected_frame[: key_block.size]
+        error_count = int(np.sum(error_vector[: key_block.size]))
+        if not converged:
+            logger.warning("Decoder did not converge for block (errors=%s)", error_count)
+        return corrected_payload, converged, error_count
+
+    def compute_syndrome_block(
+        self, key_block: np.ndarray, rate: float, n_shortened: int, prng_seed: int
+    ) -> np.ndarray:
+        n = self.matrix_manager.frame_size
+        if key_block.dtype != np.uint8:
+            raise ValueError("key_block must be uint8")
+        if key_block.size + n_shortened != n:
+            padding_needed = n - key_block.size - n_shortened
+            if padding_needed < 0:
+                raise ValueError("block length exceeds frame size")
+            n_shortened += padding_needed
+        padding = self._generate_padding(n_shortened, prng_seed)
+        full_frame = np.concatenate([key_block, padding])
+        H = self.matrix_manager.get_matrix(rate)
+        return (H @ full_frame) % 2
+
+    def verify_block(self, block_alice: np.ndarray, block_bob: np.ndarray) -> Tuple[bool, bytes]:
+        seed = block_bob.size
+        hash_bob = self.hash_verifier.compute_hash(block_bob, seed)
+        hash_alice = self.hash_verifier.compute_hash(block_alice, seed)
+        return hash_alice == hash_bob, hash_bob
+
+    def estimate_leakage_block(self, syndrome_length: int, hash_bits: int = constants.LDPC_HASH_BITS) -> int:
+        return int(syndrome_length + hash_bits)
+
+    # ------------------------------------------------------------------
+    # Helper utilities
+    # ------------------------------------------------------------------
+    def _build_error_llrs(self, payload_len: int, n_shortened: int) -> np.ndarray:
+        n = payload_len + n_shortened
+        p = max(min(self.current_qber_est, 1 - 1e-6), 1e-6)
+        llr_payload = math.log((1 - p) / p)
+        llrs = np.full(n, llr_payload, dtype=float)
+        if n_shortened > 0:
+            llrs[payload_len:] = 100.0  # Effectively infinite certainty of zero error
+        return llrs
+
+    def _generate_padding(self, length: int, seed: int) -> np.ndarray:
+        rng = np.random.default_rng(seed)
+        return rng.integers(0, 2, size=length, dtype=np.uint8)
+
+    # ------------------------------------------------------------------
+    # Convenience aggregation helpers
+    # ------------------------------------------------------------------
+    def aggregate_results(
+        self, block_results: list[LDPCBlockResult], corrected_payloads: list[np.ndarray]
+    ) -> LDPCReconciliationResult:
+        qber_est = self.qber_estimator.estimate(block_results)
+        total_leakage = sum(r.syndrome_length + r.hash_bits for r in block_results)
+        blocks_verified = sum(1 for r in block_results if r.verified)
+        blocks_discarded = len(block_results) - blocks_verified
+        corrected_key = np.concatenate(corrected_payloads) if corrected_payloads else np.array([], dtype=np.uint8)
+        return LDPCReconciliationResult(
+            corrected_key=corrected_key,
+            qber_estimate=qber_est,
+            total_leakage=total_leakage,
+            blocks_processed=len(block_results),
+            blocks_verified=blocks_verified,
+            blocks_discarded=blocks_discarded,
         )
-        # Return best effort
-        return decoded
-    
-    def estimate_leakage(self, syndrome_length: int, qber: float) -> float:
-        """
-        Estimate information leakage.
-        
-        Conservative: leakage ≈ syndrome_length + margin.
-        """
-        # Binary entropy function
-        h = lambda p: -p*np.log2(p) - (1-p)*np.log2(1-p) if 0 < p < 1 else 0
-        
-        # Shannon bound leakage
-        shannon_leakage = self.n * h(qber)
-        
-        # Actual leakage (syndrome + inefficiency)
-        # We use the actual syndrome length sent
-        actual_leakage = syndrome_length + 100  # Safety margin
-        
-        logger.debug(
-            f"Leakage estimate: {actual_leakage} bits "
-            f"(Shannon bound: {shannon_leakage:.1f})"
-        )
-        return float(actual_leakage)

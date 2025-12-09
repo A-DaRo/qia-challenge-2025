@@ -1,131 +1,158 @@
 """
-Abstract interface for information reconciliation (error correction).
+Abstract interface for LDPC-based information reconciliation.
 
-This module defines the abstract base class for reconciliation algorithms used
-to correct errors in the sifted key caused by quantum noise.
+This module defines the block-oriented reconciliation interface that supports
+rate adaptation, shortening, integrated QBER estimation, and hash verification
+as specified in the LDPC reconciliation plan.
 """
 
 from abc import ABC, abstractmethod
+from typing import Tuple
+
 import numpy as np
 
 
 class IReconciliator(ABC):
     """
-    Abstract interface for information reconciliation (error correction).
-    
-    Information reconciliation is the process of correcting errors between Alice's
-    and Bob's sifted keys caused by quantum channel noise. The reconciliation
-    must be efficient and minimize information leakage to potential eavesdroppers.
-    
-    Goal
-    ----
-    Correct errors in sifted key using syndrome-based methods (e.g., LDPC codes).
-    
-    Security
-    --------
-    Leakage must be accounted for in privacy amplification. The syndrome
-    transmitted from Alice to Bob reveals information about the key that must be
-    compressed out in the final privacy amplification step.
-    
-    Notes
-    -----
-    Modern QKD systems typically use LDPC codes or Cascade for reconciliation.
-    LDPC codes provide predictable performance and are preferred for baseline
-    implementations.
+    Abstract interface for LDPC-based information reconciliation.
+
+    Implementations operate on fixed-size LDPC frames with optional shortening
+    and provide integrated QBER estimation inputs.
     """
-    
+
     @abstractmethod
-    def compute_syndrome(self, key: np.ndarray) -> np.ndarray:
+    def select_rate(self, qber_est: float) -> float:
         """
-        Compute syndrome from key (Alice's side).
-        
-        The syndrome is computed by multiplying the key by a parity check matrix.
-        It captures information about potential errors without revealing the key
-        itself (though it does leak some information to eavesdroppers).
-        
+        Select an LDPC code rate based on the current QBER estimate.
+
         Parameters
         ----------
-        key : np.ndarray
-            Sifted key bits (after removing test set).
-        
+        qber_est : float
+            Current estimated QBER.
+
         Returns
         -------
-        syndrome : np.ndarray
-            Syndrome vector S = H @ key (mod 2).
-        
-        Mathematical Definition
-        -----------------------
-        Given parity check matrix H ∈ GF(2)^{m×n}:
-            S = H · key (mod 2)
-        
-        Where m is the number of parity checks and n is the key length.
+        float
+            Selected code rate from the available pool.
         """
         pass
-    
+
     @abstractmethod
-    def reconcile(self, key: np.ndarray, syndrome: np.ndarray) -> np.ndarray:
+    def compute_shortening(
+        self, rate: float, qber_est: float, target_payload: int
+    ) -> int:
         """
-        Correct errors using received syndrome (Bob's side).
-        
-        Using the syndrome received from Alice and his own noisy key, Bob attempts
-        to correct errors and recover Alice's key. This typically involves iterative
-        decoding algorithms (e.g., belief propagation for LDPC codes).
-        
+        Compute the number of shortened bits needed for a target payload size.
+
         Parameters
         ----------
-        key : np.ndarray
-            Bob's noisy sifted key.
-        syndrome : np.ndarray
-            Syndrome received from Alice.
-        
+        rate : float
+            Selected LDPC code rate.
+        qber_est : float
+            Current estimated QBER.
+        target_payload : int
+            Desired payload length in bits.
+
         Returns
         -------
-        corrected_key : np.ndarray
-            Error-corrected key matching Alice's.
-        
-        Mathematical Definition
-        -----------------------
-        Find error vector e such that:
-            H · (key ⊕ e) = syndrome (mod 2)
-        Return: key ⊕ e
-        
-        Notes
-        -----
-        If decoding fails (e.g., too many errors), this method should raise
-        ReconciliationFailedError. The protocol must then abort.
+        int
+            Number of shortened bits to append as padding.
         """
         pass
-    
+
     @abstractmethod
-    def estimate_leakage(self, syndrome_length: int, qber: float) -> float:
+    def reconcile_block(
+        self,
+        key_block: np.ndarray,
+        syndrome: np.ndarray,
+        rate: float,
+        n_shortened: int,
+        prng_seed: int,
+    ) -> Tuple[np.ndarray, bool, int]:
         """
-        Estimate information leakage from reconciliation.
-        
-        The syndrome transmitted during reconciliation reveals information to
-        potential eavesdroppers. This information must be accounted for when
-        computing the secure final key length in privacy amplification.
-        
+        Decode a single LDPC block and report convergence.
+
+        Parameters
+        ----------
+        key_block : np.ndarray
+            Alice's noisy payload bits for the block.
+        syndrome : np.ndarray
+            Difference syndrome received from Bob.
+        rate : float
+            LDPC rate used for the block.
+        n_shortened : int
+            Number of shortened bits appended via the shared PRNG.
+        prng_seed : int
+            Seed for generating the deterministic padding bits.
+
+        Returns
+        -------
+        Tuple[np.ndarray, bool, int]
+            Corrected payload bits, convergence flag, and corrected error count.
+        """
+        pass
+
+    @abstractmethod
+    def compute_syndrome_block(
+        self, key_block: np.ndarray, rate: float, n_shortened: int, prng_seed: int
+    ) -> np.ndarray:
+        """
+        Compute the syndrome for Bob's reference block (payload only input).
+
+        Parameters
+        ----------
+        key_block : np.ndarray
+            Bob's payload bits for the block.
+        rate : float
+            Selected LDPC rate.
+        n_shortened : int
+            Number of shortened bits appended.
+        prng_seed : int
+            Seed for generating padding bits.
+
+        Returns
+        -------
+        np.ndarray
+            Syndrome vector for the block.
+        """
+        pass
+
+    @abstractmethod
+    def verify_block(
+        self, block_alice: np.ndarray, block_bob: np.ndarray
+    ) -> Tuple[bool, bytes]:
+        """
+        Verify that Alice's corrected block matches Bob's reference.
+
+        Parameters
+        ----------
+        block_alice : np.ndarray
+            Alice's corrected payload bits.
+        block_bob : np.ndarray
+            Bob's reference payload bits.
+
+        Returns
+        -------
+        Tuple[bool, bytes]
+            Verification flag and the transmitted hash value.
+        """
+        pass
+
+    @abstractmethod
+    def estimate_leakage_block(self, syndrome_length: int, hash_bits: int = 50) -> int:
+        """
+        Estimate information leakage for a single reconciled block.
+
         Parameters
         ----------
         syndrome_length : int
-            Length of syndrome (number of parity checks).
-        qber : float
-            Measured quantum bit error rate.
-        
+            Length of transmitted syndrome in bits.
+        hash_bits : int, optional
+            Number of hash bits used for verification, by default 50.
+
         Returns
         -------
-        leakage : float
-            Information leaked to Eve (in bits).
-        
-        Notes
-        -----
-        Conservative estimate: leakage ≈ syndrome_length + safety_margin.
-        
-        More precise estimates can use Shannon entropy:
-            leakage = n · h(qber)
-        where h(x) = -x·log₂(x) - (1-x)·log₂(1-x) is binary entropy.
-        
-        For baseline implementation, a conservative estimate is preferred to
-        ensure security at the cost of some efficiency.
+        int
+            Total leakage in bits for the block.
         """
         pass

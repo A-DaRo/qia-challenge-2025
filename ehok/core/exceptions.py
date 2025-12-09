@@ -39,6 +39,31 @@ class ProtocolError(EHOKException):
     pass
 
 
+class MatrixSynchronizationError(ProtocolError):
+    """
+    Raised when LDPC matrix pools differ between parties.
+
+    This signals a fatal protocol mismatch detected during initialization when
+    matrix checksums do not align. Execution must halt to avoid desynchronised
+    reconciliation and potential security issues.
+
+    Attributes
+    ----------
+    local_checksum : str
+        SHA-256 checksum computed locally.
+    remote_checksum : str
+        SHA-256 checksum received from the peer.
+    """
+
+    def __init__(self, local_checksum: str, remote_checksum: str) -> None:
+        self.local_checksum = local_checksum
+        self.remote_checksum = remote_checksum
+        super().__init__(
+            "LDPC matrix pool mismatch: local checksum "
+            f"{local_checksum} != remote checksum {remote_checksum}"
+        )
+
+
 class QBERTooHighError(SecurityException):
     """
     Raised when QBER exceeds abort threshold.

@@ -7,9 +7,10 @@ records, and protocol execution results.
 """
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Dict, Optional
 
 import numpy as np
+import scipy.sparse as sp
 
 from .exceptions import EHOKException
 
@@ -203,3 +204,126 @@ class ExecutionMetrics(ProtocolResult):
         # leakage_bits is left to upstream calculators; ensure non-negative if set
         if self.leakage_bits is not None and self.leakage_bits < 0:
             raise ValueError("leakage_bits must be non-negative when provided")
+
+
+@dataclass
+class LDPCBlockResult:
+    """
+    Result of processing a single LDPC block during reconciliation.
+
+    Attributes
+    ----------
+    verified : bool
+        True if hash verification succeeded for the block.
+    error_count : int
+        Number of errors corrected (Hamming weight of error vector).
+    block_length : int
+        Length of the payload portion (excludes padding) in bits.
+    syndrome_length : int
+        Number of syndrome bits transmitted for this block.
+    hash_bits : int
+        Number of verification hash bits transmitted (default 50).
+    """
+
+    verified: bool
+    error_count: int
+    block_length: int
+    syndrome_length: int
+    hash_bits: int = 50
+
+    def __post_init__(self) -> None:
+        if self.block_length < 0:
+            raise ValueError("block_length must be non-negative")
+        if self.error_count < 0:
+            raise ValueError("error_count must be non-negative")
+        if self.error_count > self.block_length:
+            raise ValueError("error_count cannot exceed block_length")
+        if self.syndrome_length < 0:
+            raise ValueError("syndrome_length must be non-negative")
+        if self.hash_bits <= 0:
+            raise ValueError("hash_bits must be positive")
+        if not isinstance(self.verified, bool):
+            raise ValueError("verified must be a boolean")
+
+
+@dataclass
+class LDPCMatrixPool:
+    """
+    Pool of pre-generated LDPC matrices at different code rates.
+
+    Attributes
+    ----------
+    frame_size : int
+        Fixed frame size ``n`` for all matrices.
+    matrices : Dict[float, sp.spmatrix]
+        Mapping from code rate to parity-check matrix in CSR format.
+    rates : np.ndarray
+        Sorted array of available code rates for selection.
+    checksum : str
+        SHA-256 checksum over the matrix pool used for synchronization.
+    """
+
+    frame_size: int
+    matrices: Dict[float, sp.spmatrix]
+    rates: np.ndarray
+    checksum: str
+
+    def __post_init__(self) -> None:
+        if self.frame_size <= 0:
+            raise ValueError("frame_size must be positive")
+        if self.rates.size == 0:
+            raise ValueError("rates must not be empty")
+        if not np.all(np.diff(self.rates) > 0):
+            raise ValueError("rates must be strictly increasing")
+        for rate, matrix in self.matrices.items():
+            if matrix.shape[1] != self.frame_size:
+                raise ValueError(
+                    f"Matrix for rate {rate} has incompatible frame size {matrix.shape[1]}"
+                )
+        if not isinstance(self.checksum, str) or not self.checksum:
+            raise ValueError("checksum must be a non-empty string")
+
+
+@dataclass
+class LDPCReconciliationResult:
+    """
+    Aggregate result of LDPC reconciliation across all processed blocks.
+
+    Attributes
+    ----------
+    corrected_key : np.ndarray
+        Concatenated verified payload bits after reconciliation.
+    qber_estimate : float
+        Integrated QBER estimate computed from block outcomes.
+    total_leakage : int
+        Total information leakage (syndrome plus hash bits).
+    blocks_processed : int
+        Number of LDPC blocks processed.
+    blocks_verified : int
+        Number of blocks that passed verification.
+    blocks_discarded : int
+        Number of blocks discarded due to decoder failure or hash mismatch.
+    """
+
+    corrected_key: np.ndarray
+    qber_estimate: float
+    total_leakage: int
+    blocks_processed: int
+    blocks_verified: int
+    blocks_discarded: int
+
+    def __post_init__(self) -> None:
+        if self.total_leakage < 0:
+            raise ValueError("total_leakage must be non-negative")
+        if self.blocks_processed < 0:
+            raise ValueError("blocks_processed must be non-negative")
+        if self.blocks_verified < 0:
+            raise ValueError("blocks_verified must be non-negative")
+        if self.blocks_discarded < 0:
+            raise ValueError("blocks_discarded must be non-negative")
+        if self.blocks_verified + self.blocks_discarded > self.blocks_processed:
+            raise ValueError("verified + discarded cannot exceed processed blocks")
+        if not 0.0 <= float(self.qber_estimate) <= 1.0:
+            raise ValueError("qber_estimate must be in [0, 1]")
+        if self.corrected_key.dtype != np.uint8:
+            raise ValueError("corrected_key must be uint8")

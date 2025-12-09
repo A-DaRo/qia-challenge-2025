@@ -279,9 +279,12 @@ class TestAbstractInterfaces:
 
     def test_ireconciliator_abstract_methods(self):
         """Verify IReconciliator has required abstract methods."""
-        assert hasattr(IReconciliator, "compute_syndrome")
-        assert hasattr(IReconciliator, "reconcile")
-        assert hasattr(IReconciliator, "estimate_leakage")
+        assert hasattr(IReconciliator, "select_rate")
+        assert hasattr(IReconciliator, "compute_shortening")
+        assert hasattr(IReconciliator, "reconcile_block")
+        assert hasattr(IReconciliator, "compute_syndrome_block")
+        assert hasattr(IReconciliator, "verify_block")
+        assert hasattr(IReconciliator, "estimate_leakage_block")
 
     def test_iprivacy_amplifier_abstract_methods(self):
         """Verify IPrivacyAmplifier has required abstract methods."""
@@ -315,6 +318,12 @@ class TestExceptionHierarchy:
     def test_reconciliation_failed_error_inherits_from_protocol_error(self):
         """ReconciliationFailedError must inherit from ProtocolError."""
         assert issubclass(ReconciliationFailedError, ProtocolError)
+
+    def test_matrix_synchronization_error_inherits_from_protocol_error(self):
+        """MatrixSynchronizationError must inherit from ProtocolError."""
+        from ehok.core.exceptions import MatrixSynchronizationError
+
+        assert issubclass(MatrixSynchronizationError, ProtocolError)
 
     def test_commitment_verification_error_inherits_from_security_exception(self):
         """CommitmentVerificationError must inherit from SecurityException."""
@@ -375,9 +384,23 @@ class TestConstants:
 
     def test_ldpc_parameters(self):
         """Verify LDPC code parameters."""
-        assert constants.LDPC_CODE_RATE == 0.5
-        assert constants.LDPC_MAX_ITERATIONS == 500
+        assert constants.LDPC_FRAME_SIZE == 4096
+        assert constants.LDPC_CODE_RATES == (
+            0.50,
+            0.55,
+            0.60,
+            0.65,
+            0.70,
+            0.75,
+            0.80,
+            0.85,
+            0.90,
+        )
+        assert constants.LDPC_DEFAULT_RATE == 0.50
+        assert constants.LDPC_CRITICAL_EFFICIENCY == 1.22
+        assert constants.LDPC_MAX_ITERATIONS == 60
         assert constants.LDPC_BP_THRESHOLD == 1e-6
+        assert 0.50 in constants.LDPC_DEGREE_DISTRIBUTIONS
 
     def test_privacy_amplification_parameters(self):
         """Verify privacy amplification parameters."""

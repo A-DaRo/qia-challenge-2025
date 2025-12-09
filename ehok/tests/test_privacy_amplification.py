@@ -133,6 +133,30 @@ class TestPrivacyAmplification:
         
         assert np.array_equal(output, expected_output)
 
+    def test_hankel_matrix_equivalence(self):
+        """
+        Ensure that compress() is equivalent to multiplying by a Hankel matrix
+        constructed from the seed (row i uses seed[i:i+n]). Confirm result
+        equals T @ key (mod 2).
+        """
+        n = 5
+        m = 3
+        key = np.random.randint(0, 2, size=n, dtype=np.uint8)
+        seed = self.amplifier.generate_hash_seed(n, m)
+
+        compressed = self.amplifier.compress(key, seed)
+
+        # Build full Hankel matrix T (m x n) where T[i,j] = seed[i+j]
+        T = np.zeros((m, n), dtype=np.uint8)
+        for i in range(m):
+            for j in range(n):
+                T[i, j] = seed[i + j]
+
+        # Matrix multiply mod 2
+        prod = (T.dot(key.astype(np.int32)) % 2).astype(np.uint8)
+
+        assert np.array_equal(prod, compressed)
+
     def test_output_uniformity(self):
         """
         Test Case 7.3.1: Chi-Square Uniformity Test.
@@ -189,6 +213,41 @@ class TestPrivacyAmplification:
         # Fail if p-value is extremely low (e.g. < 0.001), indicating strong non-uniformity
         assert p_value > 0.001, f"Output distribution is not uniform (p={p_value})"
 
+    def test_output_uniformity_chi_square_10bits(self):
+        """
+        Test Case 7.3.1 (Spec): Chi-Square Uniformity Test with 10-bit output.
+
+        This test uses the specification in the docs: output length = 10
+        (1024 bins), num_trials = 10000 and asserts that the chi-square
+        statistic is below the threshold (95% confidence for df=1023)
+        which the spec takes as 1101.
+        """
+        num_trials = 10000
+        input_length = 100
+        output_length = 10
+
+        outputs = []
+        for _ in range(num_trials):
+            key = np.random.randint(0, 2, size=input_length, dtype=np.uint8)
+            seed = self.amplifier.generate_hash_seed(input_length, output_length)
+            compressed = self.amplifier.compress(key, seed)
+            val = 0
+            for bit in compressed:
+                val = (val << 1) | int(bit)
+            outputs.append(val)
+
+        num_bins = 2**output_length
+        expected_freq = num_trials / num_bins
+        counts = Counter(outputs)
+        observed = [counts.get(i, 0) for i in range(num_bins)]
+
+        chi2_stat, p_value = chisquare(observed, f_exp=expected_freq)
+
+        # Accept if chi2 < 1101 (95% confidence approx for df=1023)
+        assert chi2_stat < 1101, (
+            f"Chi-square stat {chi2_stat:.2f} >= 1101 (not uniform at 95% for df=1023). "
+            f"p-value={p_value:.5f}" )
+
     def test_invalid_seed_length(self):
         """Test that invalid seed lengths raise an error."""
         n = 10
@@ -212,3 +271,26 @@ class TestPrivacyAmplification:
             epsilon=1e-9
         )
         assert length == 0
+
+    def test_compute_final_length_security_bound(self):
+        """
+        Verify that the compute_final_length respects the leftover hash lemma bound
+        and produces values <= theoretical upper bound computed from parameters.
+        """
+        sifted_length = 1000
+        qber = 0.05
+        leakage = 500
+        epsilon = 1e-9
+
+        final_length = self.amplifier.compute_final_length(sifted_length, qber, leakage, epsilon)
+
+        # Recompute bound using formula in implementation
+        h_qber = -qber * np.log2(qber) - (1 - qber) * np.log2(1 - qber)
+        min_entropy = sifted_length * (1 - h_qber)
+        epsilon_cost = 2 * np.log2(1.0 / epsilon)
+        bound_float = min_entropy - leakage - epsilon_cost - PA_SECURITY_MARGIN
+        bound = int(np.floor(bound_float))
+
+        # final_length must be <= bound and non-negative
+        assert final_length <= bound
+        assert final_length >= 0

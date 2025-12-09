@@ -19,8 +19,20 @@
     *   *Quantum state representation and noise models*
     *   *EPRSocket API and Future abstraction*
     *   *E-HOK integration patterns*
-*   2.2 [Theoretical Underpinnings](./foundations/theory.md) *(Planned)*
-    *   *Deep dive into EPR correlations and Oblivious Transfer security definitions.*
+*   2.2 [Theoretical Underpinnings](./foundations/theory_base.md)
+    *   2.2.1 Baseline Protocol: Theoretical Foundations
+        *   *Quantum state generation and measurement (Bell states, basis selection)*
+        *   *Cryptographic commitment and computational security*
+        *   *Sifting and error estimation*
+        *   *LDPC-based information reconciliation*
+        *   *Privacy amplification via universal hashing*
+        *   *Oblivious key structure and formal definitions*
+    *   2.2.2 Advanced Protocols *(Planned)*
+        *   *Blind reconciliation, MDI-QKD extensions, Noisy Storage Model*
+*   2.3 [Quantum Advantage](./foundations/quantum_advantage.md)
+    *   *Industrial SMC use-cases and OT precomputation*
+    *   *Throughput vs. classical OT; computational vs. physical security*
+    *   *Practical limits: QBER sensitivity, hardware cost, side-channel scope*
 
 ### 3. Baseline Protocol Implementation
 *   3.1 [Architecture & Design Patterns](./baseline_protocol/architecture.md)

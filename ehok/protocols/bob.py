@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-import hashlib
-from pathlib import Path
+import json
 from typing import Generator, Dict, Any, Tuple
 
 import numpy as np
-import scipy.sparse as sp
 from pydynaa import EventExpression
 
 from ehok.core.config import ProtocolConfig
 from ehok.core.constants import TARGET_EPSILON_SEC
-from ehok.core.data_structures import ObliviousKey
+from ehok.core.data_structures import LDPCBlockResult, ObliviousKey
+from ehok.core.exceptions import MatrixSynchronizationError
 from ehok.protocols.base import EHOKRole
+from ehok.implementations import factories
 from ehok.quantum.runner import QuantumPhaseResult
 from ehok.utils.logging import get_logger
 
@@ -26,8 +26,8 @@ class BobBaselineEHOK(EHOKRole):
     PEER_NAME = "alice"
     ROLE = "bob"
 
-    def __init__(self, config: ProtocolConfig | None = None):
-        super().__init__(config)
+    def __init__(self, config: ProtocolConfig | None = None, **kwargs):
+        super().__init__(config, **kwargs)
 
     # ------------------------------------------------------------------
     def _execute_remaining_phases(
@@ -44,11 +44,17 @@ class BobBaselineEHOK(EHOKRole):
         )
 
         bob_key = outcomes_bob[key_set]
-        qber = yield from self._phase4_reconciliation(bob_key)
+        self._build_reconciliator()
+        block_result = yield from self._phase4_reconciliation(bob_key)
+        qber = (
+            block_result.error_count / block_result.block_length
+            if block_result.block_length
+            else 0.0
+        )
 
         self._build_privacy_amplifier()
         oblivious_key = yield from self._phase5_privacy_amplification(
-            bob_key, qber, I_1, len(outcomes_bob)
+            bob_key, block_result, I_1, len(outcomes_bob)
         )
 
         return self._result_success(
@@ -104,36 +110,49 @@ class BobBaselineEHOK(EHOKRole):
 
     def _phase4_reconciliation(
         self, bob_key: np.ndarray
-    ) -> Generator[EventExpression, None, float]:
+    ) -> Generator[EventExpression, None, LDPCBlockResult]:
         logger.info("=== PHASE 4: Information Reconciliation ===")
 
-        syndrome_msg = yield from self.context.csockets[self.PEER_NAME].recv()
-        syndrome = np.frombuffer(bytes.fromhex(syndrome_msg), dtype=np.uint8)
+        checksum = self.reconciliator.matrix_manager.checksum  # type: ignore[attr-defined]
+        self.context.csockets[self.PEER_NAME].send(checksum)
+        remote_checksum = yield from self.context.csockets[self.PEER_NAME].recv()
+        if remote_checksum != checksum:
+            raise MatrixSynchronizationError(checksum, remote_checksum)
 
-        parity_check = self._load_ldpc_matrix(len(bob_key))
-        self._build_reconciliator(parity_check)
+        rate = self.reconciliator.select_rate(0.05)
+        n_short = self.reconciliator.compute_shortening(rate, 0.05, len(bob_key))
+        seed = int(self.config.sampling_seed or 0)
+        syndrome = self.reconciliator.compute_syndrome_block(bob_key, rate, n_short, seed)
+        bob_hash = self.reconciliator.hash_verifier.compute_hash(bob_key, seed)  # type: ignore[attr-defined]
 
-        if len(bob_key) > self.reconciliator.n:
-            logger.warning(
-                "Truncating key from %d to %d to match LDPC matrix",
-                len(bob_key),
-                self.reconciliator.n,
-            )
-            bob_key = bob_key[: self.reconciliator.n]
+        payload = {
+            "rate": rate,
+            "n_short": n_short,
+            "seed": seed,
+            "payload_len": len(bob_key),
+            "syndrome": syndrome.tobytes().hex(),
+            "hash": bob_hash.hex(),
+        }
+        self.context.csockets[self.PEER_NAME].send(json.dumps(payload))
 
-        bob_corrected = self.reconciliator.reconcile(bob_key, syndrome)
-        errors = np.sum(bob_key != bob_corrected)
-        qber = errors / len(bob_key) if len(bob_key) > 0 else 0.0
-
-        bob_hash = hashlib.sha256(bob_corrected.tobytes()).hexdigest()
-        self.context.csockets[self.PEER_NAME].send(bob_hash)
-
-        bob_key[:] = bob_corrected
-        logger.info("Reconciliation complete (errors corrected=%d)", errors)
-        return qber
+        ack_msg = yield from self.context.csockets[self.PEER_NAME].recv()
+        ack = json.loads(ack_msg)
+        verified = bool(ack.get("verified", False))
+        error_count = int(ack.get("error_count", len(bob_key)))
+        if not verified:
+            raise RuntimeError("Reconciliation failed: hash mismatch")
+        result = LDPCBlockResult(
+            verified=True,
+            error_count=error_count,
+            block_length=len(bob_key),
+            syndrome_length=len(syndrome),
+            hash_bits=self.reconciliator.hash_verifier.hash_length_bits,  # type: ignore[attr-defined]
+        )
+        logger.info("Reconciliation complete (errors corrected=%d)", error_count)
+        return result
 
     def _phase5_privacy_amplification(
-        self, bob_key: np.ndarray, qber: float, I_1: np.ndarray, total_length: int
+        self, bob_key: np.ndarray, block_result: LDPCBlockResult, I_1: np.ndarray, total_length: int
     ) -> Generator[EventExpression, None, ObliviousKey]:
         logger.info("=== PHASE 5: Privacy Amplification ===")
         seed_msg = yield from self.context.csockets[self.PEER_NAME].recv()
@@ -148,6 +167,10 @@ class BobBaselineEHOK(EHOKRole):
         if num_unknown > 0:
             knowledge_mask[:num_unknown] = 1
 
+        if block_result.block_length == 0:
+            qber = 0.0 if block_result.verified else 0.5
+        else:
+            qber = block_result.error_count / block_result.block_length if block_result.verified else 0.5
         oblivious_key = ObliviousKey(
             key_value=final_key,
             knowledge_mask=knowledge_mask,
@@ -158,23 +181,10 @@ class BobBaselineEHOK(EHOKRole):
         return oblivious_key
 
     # ------------------------------------------------------------------
-    def _load_ldpc_matrix(self, n: int) -> sp.spmatrix:
-        ldpc_dir = Path(__file__).parent.parent / "configs" / "ldpc_matrices"
-        available_sizes = [1000, 2000, 4500, 5000]
-        closest = min(available_sizes, key=lambda x: abs(x - n))
-        matrix_file = ldpc_dir / f"ldpc_{closest}_rate05.npz"
-        if not matrix_file.exists():
-            raise FileNotFoundError(
-                f"LDPC matrix not found: {matrix_file}. "
-                "Run ehok/configs/generate_ldpc.py to generate matrices."
-            )
-
-        H = sp.load_npz(matrix_file)
-        if n < H.shape[1]:
-            H = H[:, :n]
-            m_new = int(n * self.config.reconciliation.code_rate)
-            H = H[:m_new, :]
-        return H
+    def _build_reconciliator(self) -> None:
+        if self.reconciliator is not None:
+            return
+        self.reconciliator = factories.build_reconciliator(self.config)
 
 
 # Backwards compatibility aliases

@@ -24,8 +24,10 @@ class EHOKRole(Program, ABC):
     PEER_NAME: str
     ROLE: str
 
-    def __init__(self, config: ProtocolConfig | None = None):
+    def __init__(self, config: ProtocolConfig | None = None, total_pairs: int | None = None, **_: Any):
         self.config = config or ProtocolConfig.baseline()
+        if total_pairs is not None:
+            self.config.quantum.total_pairs = total_pairs
         self.sifting_manager = SiftingManager()
 
         # Strategy placeholders; built lazily in run()
@@ -52,10 +54,8 @@ class EHOKRole(Program, ABC):
     def _build_privacy_amplifier(self) -> None:
         self.privacy_amplifier = factories.build_privacy_amplifier(self.config)
 
-    def _build_reconciliator(self, parity_check_matrix) -> None:
-        self.reconciliator = factories.build_reconciliator(
-            self.config, parity_check_matrix
-        )
+    def _build_reconciliator(self, parity_check_matrix=None) -> None:
+        self.reconciliator = factories.build_reconciliator(self.config, parity_check_matrix)
 
     def _build_quantum_runner(self, context) -> QuantumPhaseRunner:
         return QuantumPhaseRunner(context, self.PEER_NAME, self.ROLE, self.config)

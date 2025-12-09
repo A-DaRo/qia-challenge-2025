@@ -17,9 +17,7 @@ from ehok.interfaces import (
     INoiseEstimator,
 )
 from ehok.implementations.commitment.sha256_commitment import SHA256Commitment
-from ehok.implementations.reconciliation.ldpc_reconciliator import (
-    LDPCReconciliator,
-)
+from ehok.implementations.reconciliation import LDPCReconciliator, LDPCMatrixManager
 from ehok.implementations.privacy_amplification.toeplitz_amplifier import (
     ToeplitzAmplifier,
 )
@@ -36,18 +34,17 @@ def build_reconciliator(
     config: ProtocolConfig,
     parity_check_matrix: Optional[sp.spmatrix] = None,
 ) -> IReconciliator:
-    """Return reconciliator, loading matrix if necessary."""
+    """Return reconciliator, loading matrix pool as needed."""
     if parity_check_matrix is not None:
-        return LDPCReconciliator(parity_check_matrix)
+        raise NotImplementedError(
+            "Direct matrix injection is not supported; use matrix_path directory with pool files."
+        )
 
-    if config.reconciliation.matrix_path:
-        matrix_file = Path(config.reconciliation.matrix_path)
-        if not matrix_file.exists():
-            raise FileNotFoundError(f"LDPC matrix not found at {matrix_file}")
-        parity_check_matrix = sp.load_npz(matrix_file)
-        return LDPCReconciliator(parity_check_matrix)
-
-    raise ValueError("parity_check_matrix must be provided when matrix_path is unset")
+    matrix_dir = config.reconciliation.matrix_path
+    if matrix_dir is None:
+        matrix_dir = Path(__file__).resolve().parents[1] / "configs" / "ldpc_matrices"
+    manager = LDPCMatrixManager.from_directory(Path(matrix_dir))
+    return LDPCReconciliator(manager)
 
 
 def build_privacy_amplifier(config: ProtocolConfig) -> IPrivacyAmplifier:

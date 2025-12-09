@@ -118,35 +118,124 @@ expected network latency and message sizes.
 # LDPC Parameters
 # ============================================================================
 
-LDPC_CODE_RATE = 0.5
+LDPC_FRAME_SIZE = 4096
 """
-Target code rate (k/n) for LDPC codes.
+Fixed LDPC frame size ``n`` in bits.
 
 Notes
 -----
-Code rate of 0.5 provides good error correction capability while maintaining
-reasonable efficiency. Lower rates correct more errors but leak more information.
+Matrices are constructed for a fixed frame and adapt to channel conditions via
+rate selection and shortening, following the LDPC specification.
 """
 
-LDPC_MAX_ITERATIONS = 500
+LDPC_CODE_RATES = (
+	0.50,
+	0.55,
+	0.60,
+	0.65,
+	0.70,
+	0.75,
+	0.80,
+	0.85,
+	0.90,
+)
 """
-Maximum iterations for belief propagation decoder.
+Discrete LDPC code rates supported by the matrix pool.
 
 Notes
 -----
-BP decoders are iterative. 50 iterations is typically sufficient for convergence
-at moderate error rates. Higher values increase latency.
+These rates are generated offline using PEG with optimized degree distributions
+per the baseline LDPC specification.
+"""
+
+LDPC_DEFAULT_RATE = 0.50
+"""
+Default LDPC code rate used when a specific rate is not yet selected.
+"""
+
+LDPC_CODE_RATE = LDPC_DEFAULT_RATE
+"""
+Backward-compatible alias for default LDPC code rate.
+"""
+
+LDPC_AVAILABLE_RATES = LDPC_CODE_RATES
+"""
+Alias for supported LDPC rates used in test specifications.
+"""
+
+LDPC_CRITICAL_EFFICIENCY = 1.22
+"""
+Critical efficiency parameter ``f_crit`` used in rate selection criterion.
+"""
+
+LDPC_F_CRIT = LDPC_CRITICAL_EFFICIENCY
+"""
+Alias for critical efficiency to match specification naming.
+"""
+
+LDPC_MAX_ITERATIONS = 60
+"""
+Maximum iterations for belief propagation decoder per block.
 """
 
 LDPC_BP_THRESHOLD = 1e-6
 """
 Convergence threshold for belief propagation.
+"""
+
+LDPC_HASH_BITS = 50
+"""
+Number of bits used for polynomial hash verification of each block.
+"""
+
+LDPC_QBER_WINDOW_SIZE = 256
+"""
+Window size (in blocks) for integrated QBER estimation.
+"""
+
+LDPC_MATRIX_FILE_PATTERN = "ldpc_{frame_size}_rate{rate:.2f}.npz"
+"""
+Filename pattern for stored LDPC parity-check matrices.
+"""
+
+PEG_MAX_TREE_DEPTH = 10
+"""
+Maximum BFS depth used during PEG construction to maximize local girth.
+"""
+
+PEG_DEFAULT_SEED = 42
+"""
+Default seed for deterministic PEG matrix generation.
+"""
+
+LDPC_DEGREE_DISTRIBUTIONS = {
+	0.50: {
+		"lambda": {
+			"degrees": [2, 3, 6, 7, 13, 14, 18],
+			"probabilities": [
+				0.234029,
+				0.212425,
+				0.146898,
+				0.102840,
+				0.000780,
+				0.000320,
+				0.302708,
+			],
+		},
+		"rho": {
+			"degrees": [8, 9],
+			"probabilities": [0.7187, 0.2813],
+		},
+	},
+}
+"""
+Edge-perspective degree distributions for PEG matrix construction.
 
 Notes
 -----
-Decoder stops when message updates change by less than this threshold or when
-max iterations is reached. Smaller values increase accuracy but may require
-more iterations.
+Only the rate-0.50 distribution is explicitly defined in the baseline
+specification. Higher-rate matrices are derived using the same methodology with
+their respective optimized distributions.
 """
 
 # ============================================================================

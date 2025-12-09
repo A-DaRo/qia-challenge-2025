@@ -156,14 +156,12 @@ class ToeplitzAmplifier(IPrivacyAmplifier):
         
         m = int(np.floor(m_float))
 
-        # Ensure positive length (minimum 1 bit if any key material exists)
-        # If m <= 0, the security requirements cannot be met
+        # If m <= 0, no secure key can be extracted
         if m <= 0:
             logger.warning(
-                f"Cannot extract secure key: calculated m={m_float:.2f}. "
-                f"Returning minimum length of 1 for demonstration purposes."
+                f"Cannot extract secure key: calculated m={m_float:.2f}. Returning zero length."
             )
-            m = 1  # For baseline demonstration, extract at least 1 bit
+            m = 0
         
         logger.info(
             f"Final length calculation: "
