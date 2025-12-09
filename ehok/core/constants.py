@@ -15,6 +15,12 @@ implementation. They may be tuned based on empirical results and specific
 deployment requirements.
 """
 
+from pathlib import Path
+import math
+from typing import Dict, Any
+
+import yaml
+
 # ============================================================================
 # Protocol Parameters
 # ============================================================================
@@ -208,34 +214,79 @@ PEG_DEFAULT_SEED = 42
 Default seed for deterministic PEG matrix generation.
 """
 
-LDPC_DEGREE_DISTRIBUTIONS = {
-	0.50: {
-		"lambda": {
-			"degrees": [2, 3, 6, 7, 13, 14, 18],
-			"probabilities": [
-				0.234029,
-				0.212425,
-				0.146898,
-				0.102840,
-				0.000780,
-				0.000320,
-				0.302708,
-			],
-		},
-		"rho": {
-			"degrees": [8, 9],
-			"probabilities": [0.7187, 0.2813],
-		},
-	},
-}
+LDPC_DEGREE_DISTRIBUTIONS_PATH = (
+	Path(__file__).resolve().parent / ".." / "configs" / "ldpc_degree_distributions.yaml"
+).resolve()
 """
-Edge-perspective degree distributions for PEG matrix construction.
+Absolute path to edge-perspective degree distributions for PEG matrix
+construction. See ldpc_specification.md section 2.1.1 for the optimized
+polynomials.
+"""
 
-Notes
------
-Only the rate-0.50 distribution is explicitly defined in the baseline
-specification. Higher-rate matrices are derived using the same methodology with
-their respective optimized distributions.
+
+def _load_ldpc_degree_distributions(path: Path) -> Dict[float, Dict[str, Any]]:
+	"""
+	Load and validate LDPC degree distributions from YAML.
+
+	Parameters
+	----------
+	path : Path
+		Filesystem path to ``ldpc_degree_distributions.yaml``.
+
+	Returns
+	-------
+	Dict[float, Dict[str, Any]]
+		Mapping of code rate to degree distribution dictionaries.
+
+	Raises
+	------
+	FileNotFoundError
+		If the YAML file is missing.
+	ValueError
+		If any distribution is malformed or probabilities do not sum to 1.
+	"""
+	if not path.exists():
+		raise FileNotFoundError(f"LDPC degree distribution file not found: {path}")
+
+	with path.open("r", encoding="utf-8") as handle:
+		raw_data = yaml.safe_load(handle) or {}
+
+	distributions: Dict[float, Dict[str, Any]] = {}
+	for rate_key, payload in raw_data.items():
+		try:
+			rate = float(rate_key)
+		except (TypeError, ValueError) as exc:
+			raise ValueError(f"Invalid rate key in LDPC distribution: {rate_key}") from exc
+
+		for node_type in ("lambda", "rho"):
+			if node_type not in payload:
+				raise ValueError(f"Missing '{node_type}' section for rate {rate}")
+			section = payload[node_type]
+			degrees = section.get("degrees")
+			probabilities = section.get("probabilities")
+			if not isinstance(degrees, list) or not isinstance(probabilities, list):
+				raise ValueError(f"Degrees/probabilities must be lists for rate {rate}")
+			if len(degrees) != len(probabilities):
+				raise ValueError(f"Mismatched lengths in {node_type} distribution for rate {rate}")
+			if any(d < 1 for d in degrees):
+				raise ValueError(f"Degrees must be >=1 in {node_type} distribution for rate {rate}")
+			sum_probs = float(sum(probabilities))
+			if sum_probs <= 0.0:
+				raise ValueError(f"{node_type} probabilities must sum to positive value for rate {rate}")
+			# Normalize if the sum deviates from 1.0 (robustness to typos in external sources)
+			if not math.isclose(sum_probs, 1.0, rel_tol=1e-6, abs_tol=1e-6):
+				normalized_probs = [float(p) / sum_probs for p in probabilities]
+				payload[node_type]["probabilities"] = normalized_probs
+
+		distributions[rate] = payload
+
+	return distributions
+
+
+LDPC_DEGREE_DISTRIBUTIONS = _load_ldpc_degree_distributions(LDPC_DEGREE_DISTRIBUTIONS_PATH)
+"""
+Edge-perspective degree distributions keyed by code rate, loaded from
+``ldpc_degree_distributions.yaml``.
 """
 
 # ============================================================================

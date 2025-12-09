@@ -79,12 +79,17 @@ class ToeplitzAmplifier(IPrivacyAmplifier):
         # seed length = m + n - 1 => m = seed_length - n + 1
         m = len(seed) - n + 1
 
-        if m <= 0:
+        # Negative m indicates seed too short (invalid)
+        if m < 0:
             raise ValueError(
                 f"Invalid seed length {len(seed)} for key length {n}. "
-                f"Seed must have length m + n - 1 where m >= 1. "
-                f"For n={n}, seed length must be >= {n}."
+                f"Seed must have length m + n - 1 where m >= 0. "
+                f"For n={n}, seed length must be >= {n - 1}."
             )
+
+        # If output length m == 0 (no secure key extractable), return empty array
+        if m == 0:
+            return np.zeros(0, dtype=np.uint8)
 
         # Pre-allocate output array
         final_key = np.zeros(m, dtype=np.uint8)

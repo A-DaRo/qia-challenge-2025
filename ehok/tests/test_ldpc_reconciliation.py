@@ -59,6 +59,25 @@ def test_peg_generator_respects_regular_degrees():
     assert np.all(col_degrees == 2)
 
 
+def test_degree_distribution_normalization():
+    # Provide invalid sum > 1.0 and expect normalization to 1.0
+    dist = DegreeDistribution(degrees=[1, 2], probabilities=[0.6, 0.6])
+    assert abs(sum(dist.probabilities) - 1.0) < 1e-6
+    # Ensure sampled degrees for generator do not error
+    gen = PEGMatrixGenerator(n=10, rate=0.5, lambda_dist=dist, rho_dist=DegreeDistribution(degrees=[3], probabilities=[1.0]), max_tree_depth=3, seed=1)
+    H = gen.generate()
+    assert H.shape[1] == 10
+
+
+def test_constants_load_normalized_distributions():
+    # Ensure distributions loaded from constants were normalized
+    for rate, d in constants.LDPC_DEGREE_DISTRIBUTIONS.items():
+        lam = d["lambda"]["probabilities"]
+        rho = d["rho"]["probabilities"]
+        assert abs(sum(lam) - 1.0) < 1e-6
+        assert abs(sum(rho) - 1.0) < 1e-6
+
+
 def test_matrix_manager_checksum_and_access(tmp_path):
     manager = _write_test_matrix(tmp_path)
     assert manager.frame_size == FRAME_SIZE

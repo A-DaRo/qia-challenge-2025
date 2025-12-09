@@ -43,7 +43,8 @@ def build_reconciliator(
     matrix_dir = config.reconciliation.matrix_path
     if matrix_dir is None:
         matrix_dir = Path(__file__).resolve().parents[1] / "configs" / "ldpc_matrices"
-    manager = LDPCMatrixManager.from_directory(Path(matrix_dir))
+    # Do not autogenerate matrices at runtime: enforce explicit pre-generated files
+    manager = LDPCMatrixManager.from_directory(Path(matrix_dir), autogenerate_if_missing=False)
     return LDPCReconciliator(manager)
 
 

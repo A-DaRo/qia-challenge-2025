@@ -132,27 +132,69 @@ class LDPCMatrixManager:
         """Generate a parity-check matrix using PEG for fallback scenarios.
 
         This safeguards tests and simulations from hard failures when matrices
-        are missing on disk. Uses the specified rate and frame size; falls back
-        to simple degree distributions when optimized ones are unavailable.
+        are missing on disk. Prefers the optimized degree distributions; when a
+        rate-specific distribution is missing, reuses the base distribution and
+        punctures parity rows deterministically to hit the requested rate.
         """
 
         dist = constants.LDPC_DEGREE_DISTRIBUTIONS.get(rate)
-        if dist:
-            lambda_dist = DegreeDistribution(**dist["lambda"])
-            rho_dist = DegreeDistribution(**dist["rho"])
-        else:
-            lambda_dist = DegreeDistribution(degrees=[2, 3], probabilities=[0.5, 0.5])
-            rho_dist = DegreeDistribution(degrees=[5, 6], probabilities=[0.6, 0.4])
+        use_rate = rate
+        if dist is None:
+            fallback_rate = constants.LDPC_DEFAULT_RATE
+            dist = constants.LDPC_DEGREE_DISTRIBUTIONS[fallback_rate]
+            use_rate = fallback_rate
+            logger.warning(
+                "Using fallback degree distribution from rate %.2f for requested rate %.2f",
+                fallback_rate,
+                rate,
+            )
+
+        lambda_dist = DegreeDistribution(
+            degrees=dist["lambda"]["degrees"], probabilities=dist["lambda"]["probabilities"]
+        )
+        rho_dist = DegreeDistribution(
+            degrees=dist["rho"]["degrees"], probabilities=dist["rho"]["probabilities"]
+        )
 
         generator = PEGMatrixGenerator(
             n=frame_size,
-            rate=rate,
+            rate=use_rate,
             lambda_dist=lambda_dist,
             rho_dist=rho_dist,
             max_tree_depth=constants.PEG_MAX_TREE_DEPTH,
             seed=constants.PEG_DEFAULT_SEED,
         )
-        return generator.generate()
+        matrix = generator.generate()
+
+        if use_rate != rate:
+            matrix = LDPCMatrixManager._apply_puncturing(
+                matrix, target_rate=rate, seed=constants.PEG_DEFAULT_SEED
+            )
+            logger.info(
+                "Applied puncturing to adjust matrix from rate %.2f to target rate %.2f",
+                use_rate,
+                rate,
+            )
+
+        return matrix
+
+    @staticmethod
+    def _apply_puncturing(matrix: sp.spmatrix, target_rate: float, seed: int) -> sp.spmatrix:
+        """Reduce parity constraints to reach a higher effective rate via puncturing."""
+        if target_rate <= 0 or target_rate >= 1:
+            raise ValueError("target_rate must be in (0, 1)")
+
+        matrix_csr = matrix.tocsr(copy=False)
+        n = matrix_csr.shape[1]
+        target_rows = int(round(n * (1.0 - target_rate)))
+        if target_rows <= 0:
+            raise ValueError("target_rows must be positive after puncturing")
+        if target_rows >= matrix_csr.shape[0]:
+            return matrix_csr
+
+        rng = np.random.default_rng(seed)
+        keep_rows = np.sort(rng.choice(matrix_csr.shape[0], size=target_rows, replace=False))
+        return matrix_csr[keep_rows]
 
     @staticmethod
     def _compute_checksum(matrices: Dict[float, sp.spmatrix]) -> str:

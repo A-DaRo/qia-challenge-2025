@@ -57,6 +57,19 @@ class BobBaselineEHOK(EHOKRole):
             bob_key, block_result, I_1, len(outcomes_bob)
         )
 
+        # If privacy amplification yields zero-length key, abort gracefully
+        if oblivious_key.final_length == 0:
+            abort_reason = "PRIVACY_AMPLIFICATION_NO_SECURE_KEY"
+            return self._result_abort(
+                abort_reason=abort_reason,
+                qber=qber,
+                raw_count=len(outcomes_bob),
+                sifted_count=len(I_0),
+                test_count=len(I_0) - len(key_set),
+                role=self.ROLE,
+                measurement_records=quantum_result.measurement_records,
+            )
+
         return self._result_success(
             oblivious_key=oblivious_key,
             qber=qber,
@@ -156,9 +169,13 @@ class BobBaselineEHOK(EHOKRole):
     ) -> Generator[EventExpression, None, ObliviousKey]:
         logger.info("=== PHASE 5: Privacy Amplification ===")
         seed_msg = yield from self.context.csockets[self.PEER_NAME].recv()
-        seed = np.frombuffer(bytes.fromhex(seed_msg), dtype=np.uint8)
-
-        final_key = self.privacy_amplifier.compress(bob_key, seed)
+        seed_bytes = bytes.fromhex(seed_msg)
+        if len(seed_bytes) == 0:
+            seed = np.zeros(0, dtype=np.uint8)
+            final_key = np.zeros(0, dtype=np.uint8)
+        else:
+            seed = np.frombuffer(seed_bytes, dtype=np.uint8)
+            final_key = self.privacy_amplifier.compress(bob_key, seed)
         final_length = len(final_key)
 
         fraction_unknown = len(I_1) / total_length if total_length else 0

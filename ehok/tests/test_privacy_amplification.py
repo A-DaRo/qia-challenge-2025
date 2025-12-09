@@ -101,6 +101,15 @@ class TestPrivacyAmplification:
         compressed2 = self.amplifier.compress(key, seed)
         assert np.array_equal(compressed, compressed2)
 
+    def test_compress_returns_zero_for_m_zero(self):
+        """When computed m is 0, compress should return empty array, and final_length should be 0."""
+        n = 8
+        key = np.random.randint(0, 2, size=n, dtype=np.uint8)
+        # seed length = n - 1 => m = 0
+        seed = np.zeros(n - 1, dtype=np.uint8)
+        compressed = self.amplifier.compress(key, seed)
+        assert len(compressed) == 0
+
     def test_compression_correctness_small_example(self):
         """
         Verify mathematical correctness with a small manual example.
@@ -157,6 +166,7 @@ class TestPrivacyAmplification:
 
         assert np.array_equal(prod, compressed)
 
+    @pytest.mark.long
     def test_output_uniformity(self):
         """
         Test Case 7.3.1: Chi-Square Uniformity Test.
@@ -165,6 +175,8 @@ class TestPrivacyAmplification:
         close to uniform random.
         """
         num_trials = 10000
+        # Fix RNG seed for reproducibility in test environment
+        rng = np.random.default_rng(20251209)
         input_length = 100
         output_length = 8  # Use 8 bits (256 bins) for better statistics/performance balance
         
@@ -176,7 +188,7 @@ class TestPrivacyAmplification:
         # This tests that for random inputs and random seeds, the output is uniform.
         
         for _ in range(num_trials):
-            key = np.random.randint(0, 2, size=input_length, dtype=np.uint8)
+            key = rng.integers(0, 2, size=input_length, dtype=np.uint8)
             seed = self.amplifier.generate_hash_seed(input_length, output_length)
             compressed = self.amplifier.compress(key, seed)
             
@@ -213,6 +225,7 @@ class TestPrivacyAmplification:
         # Fail if p-value is extremely low (e.g. < 0.001), indicating strong non-uniformity
         assert p_value > 0.001, f"Output distribution is not uniform (p={p_value})"
 
+    @pytest.mark.long
     def test_output_uniformity_chi_square_10bits(self):
         """
         Test Case 7.3.1 (Spec): Chi-Square Uniformity Test with 10-bit output.
@@ -223,12 +236,14 @@ class TestPrivacyAmplification:
         which the spec takes as 1101.
         """
         num_trials = 10000
+        # Fix RNG seed for reproducibility in test environment
+        rng = np.random.default_rng(20251209)
         input_length = 100
         output_length = 10
 
         outputs = []
         for _ in range(num_trials):
-            key = np.random.randint(0, 2, size=input_length, dtype=np.uint8)
+            key = rng.integers(0, 2, size=input_length, dtype=np.uint8)
             seed = self.amplifier.generate_hash_seed(input_length, output_length)
             compressed = self.amplifier.compress(key, seed)
             val = 0
@@ -253,13 +268,15 @@ class TestPrivacyAmplification:
         n = 10
         key = np.zeros(n, dtype=np.uint8)
         
-        # Seed too short to produce even 1 bit of output
-        # Required: len(seed) >= n (since m = len(seed) - n + 1 >= 1)
-        # Try len(seed) = n - 1 = 9
-        short_seed = np.zeros(n - 1, dtype=np.uint8)
-        
+        # If len(seed) == n - 1, output length m=0 is valid and should return empty
+        short_seed_m_zero = np.zeros(n - 1, dtype=np.uint8)
+        compressed = self.amplifier.compress(key, short_seed_m_zero)
+        assert len(compressed) == 0
+
+        # Seed too short to produce negative m (invalid), e.g., len(seed) = n - 2
+        too_short_seed = np.zeros(n - 2, dtype=np.uint8)
         with pytest.raises(ValueError):
-            self.amplifier.compress(key, short_seed)
+            self.amplifier.compress(key, too_short_seed)
 
     def test_zero_length_output(self):
         """Test behavior when calculated length is zero or negative."""

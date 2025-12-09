@@ -61,6 +61,19 @@ class AliceBaselineEHOK(EHOKRole):
 			corrected_key, block_result
 		)
 
+		# If no secure key could be extracted, abort gracefully
+		if oblivious_key.final_length == 0:
+			abort_reason = "PRIVACY_AMPLIFICATION_NO_SECURE_KEY"
+			return self._result_abort(
+				abort_reason=abort_reason,
+				qber=qber,
+				raw_count=len(outcomes_alice),
+				sifted_count=len(I_0),
+				test_count=len(test_set),
+				role=self.ROLE,
+				measurement_records=quantum_result.measurement_records,
+			)
+
 		return self._result_success(
 			oblivious_key=oblivious_key,
 			qber=qber,
@@ -180,10 +193,19 @@ class AliceBaselineEHOK(EHOKRole):
 			len(corrected_key), qber, leakage, self.config.privacy_amplification.target_epsilon
 		)
 
-		seed = self.privacy_amplifier.generate_hash_seed(len(corrected_key), final_length)
-		self.context.csockets[self.PEER_NAME].send(seed.tobytes().hex())
+		# Allow test override: fixed_output_length ensures deterministic output sizes
+		if self.config.privacy_amplification.fixed_output_length is not None:
+			final_length = int(self.config.privacy_amplification.fixed_output_length)
 
-		final_key = self.privacy_amplifier.compress(corrected_key, seed)
+		if final_length <= 0:
+			# No secure key to extract: send empty seed and create empty final key
+			seed = np.array([], dtype=np.uint8)
+			self.context.csockets[self.PEER_NAME].send(seed.tobytes().hex())
+			final_key = np.zeros(0, dtype=np.uint8)
+		else:
+			seed = self.privacy_amplifier.generate_hash_seed(len(corrected_key), final_length)
+			self.context.csockets[self.PEER_NAME].send(seed.tobytes().hex())
+			final_key = self.privacy_amplifier.compress(corrected_key, seed)
 		knowledge_mask = np.zeros_like(final_key)
 		oblivious_key = ObliviousKey(
 			key_value=final_key,

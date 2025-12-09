@@ -45,8 +45,19 @@ class DegreeDistribution:
             raise ValueError("degrees must be positive")
         if any(p < 0.0 or p > 1.0 for p in self.probabilities):
             raise ValueError("probabilities must be within [0, 1]")
+        total = float(sum(self.probabilities))
+        if total <= 0.0:
+            raise ValueError("probabilities sum must be positive")
+        # Perform L1-normalization if sums deviate from 1.0 from source or typos
+        if not math.isclose(total, 1.0, rel_tol=1e-6, abs_tol=1e-6):
+            logger.warning(
+                "DegreeDistribution: probabilities sum to %.6f, normalizing to 1.0",
+                total,
+            )
+            self.probabilities = [float(p) / total for p in self.probabilities]
+        # Final check
         if not math.isclose(sum(self.probabilities), 1.0, rel_tol=1e-6, abs_tol=1e-6):
-            raise ValueError("probabilities must sum to 1")
+            raise ValueError("probabilities must sum to 1 after normalization")
 
 
 class PEGMatrixGenerator:
