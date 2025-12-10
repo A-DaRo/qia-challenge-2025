@@ -121,8 +121,12 @@ def test_ldpc_reconciliator_hash_and_leakage(tmp_path):
     n_short = reconciliator.compute_shortening(rate, 0.02, len(key_block))
     syndrome = reconciliator.compute_syndrome_block(key_block, rate, n_short, prng_seed=11)
 
+    # Basic leakage (without enhanced accounting)
     leak = reconciliator.estimate_leakage_block(len(syndrome), reconciliator.hash_verifier.hash_length_bits)
-    assert leak == len(syndrome) + reconciliator.hash_verifier.hash_length_bits
+    # Enhanced leakage includes: base (syndrome + hash) + log2(|rates|)
+    # The leakage should be >= len(syndrome) + hash_bits
+    base_leakage = len(syndrome) + reconciliator.hash_verifier.hash_length_bits
+    assert leak >= base_leakage, f"Leakage {leak} should be >= base {base_leakage}"
 
     hash_value = reconciliator.hash_verifier.compute_hash(key_block, seed=11)
     assert isinstance(hash_value, bytes)

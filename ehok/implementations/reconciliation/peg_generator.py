@@ -4,6 +4,12 @@ PEG-based LDPC matrix generation.
 Implements the Progressive Edge-Growth (PEG) algorithm with edge-perspective
 DegreeDistribution inputs to maximise local girth and produce sparse parity-
 check matrices suitable for belief-propagation decoding.
+
+References
+----------
+Hu, X. Y., Eleftheriou, E., & Arnold, D. M. (2005). "Regular and irregular
+progressive edge-growth tanner graphs." IEEE Transactions on Information Theory,
+51(1), 386-398.
 """
 
 from __future__ import annotations
@@ -64,8 +70,52 @@ class PEGMatrixGenerator:
     """
     Progressive Edge-Growth (PEG) LDPC matrix generator.
 
+    Parameters
+    ----------
+    n : int
+        Codeword length (number of variable nodes).
+    rate : float
+        Code rate in (0, 1).
+    lambda_dist : DegreeDistribution
+        Variable node degree distribution.
+    rho_dist : DegreeDistribution
+        Check node degree distribution.
+    max_tree_depth : int, optional
+        Maximum depth for BFS tree expansion during girth maximization,
+        by default constants.PEG_MAX_TREE_DEPTH.
+    seed : int or None, optional
+        Random seed for deterministic generation. If None, uses
+        constants.PEG_DEFAULT_SEED.
+
+    Attributes
+    ----------
+    n : int
+        Codeword length.
+    rate : float
+        Code rate.
+    m : int
+        Number of check nodes (parity checks).
+    lambda_dist : DegreeDistribution
+        Variable node degree distribution.
+    rho_dist : DegreeDistribution
+        Check node degree distribution.
+    max_tree_depth : int
+        Maximum BFS depth.
+    random : random.Random
+        Seeded random generator.
+
+    Raises
+    ------
+    ValueError
+        If n is not positive, rate is not in (0,1), or computed check count is non-positive.
+
     Notes
     -----
+    The PEG algorithm builds the Tanner graph incrementally, placing each edge
+    to maximize the local girth (shortest cycle) around the current variable node.
+    This is achieved via breadth-first search to identify check nodes at maximum
+    distance from the variable node's existing neighborhood.
+
     - Uses edge-perspective degree distributions for variable and check nodes.
     - Builds Tanner graph incrementally to maximise local girth.
     - Returns parity-check matrix in CSR format.
@@ -193,8 +243,15 @@ class PEGMatrixGenerator:
 
         Returns
         -------
-        Tuple[List[int], List[int]]
-            Variable-node degrees (length n) and check-node degrees (length m).
+        vn_degrees : list of int
+            Variable-node degrees (length n).
+        cn_degrees : list of int
+            Check-node target degrees (length m).
+
+        Notes
+        -----
+        Samples degrees from the provided distributions and ensures the total
+        edge count matches between variable and check nodes for a valid graph.
         """
 
         vn_degrees = self._sample_degrees(self.n, self.lambda_dist)
@@ -204,6 +261,29 @@ class PEGMatrixGenerator:
     def _sample_degrees(
         self, node_count: int, dist: DegreeDistribution, target_edges: Optional[int] = None
     ) -> List[int]:
+        """
+        Sample node degrees from edge-perspective distribution.
+
+        Parameters
+        ----------
+        node_count : int
+            Number of nodes to assign degrees to.
+        dist : DegreeDistribution
+            Edge-perspective degree distribution.
+        target_edges : int or None, optional
+            Target total edge count. If None, computed from distribution.
+
+        Returns
+        -------
+        list of int
+            List of degrees (length = node_count), shuffled randomly.
+
+        Notes
+        -----
+        Converts edge-perspective probabilities to node counts by distributing
+        edges across degree classes. Handles fractional node counts through
+        rounding and remainder distribution to match exact node_count.
+        """
         probs = np.array(dist.probabilities, dtype=float)
         degrees = np.array(dist.degrees, dtype=int)
         edge_factor = float(np.sum(probs / degrees))
@@ -250,6 +330,26 @@ class PEGMatrixGenerator:
     ) -> set:
         """
         Compute reachable check nodes from variable v up to max_tree_depth using cached adjacency.
+
+        Parameters
+        ----------
+        v : int
+            Starting variable node index.
+        var_adj : list of set
+            Variable node adjacency lists.
+        check_adj : list of set
+            Check node adjacency lists.
+
+        Returns
+        -------
+        set of int
+            Set of check node indices reachable within max_tree_depth.
+
+        Notes
+        -----
+        Performs alternating BFS expansion: variable nodes on even depths,
+        check nodes on odd depths. This identifies check nodes in the
+        neighborhood of variable v to avoid creating short cycles.
         """
 
         visited_vars = {v}
@@ -290,7 +390,29 @@ class PEGMatrixGenerator:
         target_degrees: Sequence[int],
         candidates: Optional[Sequence[int]] = None,
     ) -> int:
-        """Select check node preferring those furthest below their target degree."""
+        """
+        Select check node preferring those furthest below their target degree.
+
+        Parameters
+        ----------
+        current_degrees : sequence of int
+            Current degree of each check node.
+        target_degrees : sequence of int
+            Target degree for each check node.
+        candidates : sequence of int or None, optional
+            Restricted set of check nodes to consider. If None, considers all.
+
+        Returns
+        -------
+        int
+            Selected check node index.
+
+        Notes
+        -----
+        Selection criterion: minimize (current_degree / target_degree, current_degree).
+        This prioritizes filling underfull check nodes while maintaining degree balance.
+        Ties are broken randomly.
+        """
 
         if candidates is None or len(candidates) == 0:
             candidates = range(len(current_degrees))

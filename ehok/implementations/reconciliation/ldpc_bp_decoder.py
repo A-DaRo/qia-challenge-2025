@@ -1,5 +1,8 @@
 """
 Belief-propagation decoder for LDPC codes.
+
+This module implements the sum-product belief-propagation algorithm operating
+in the log-likelihood ratio (LLR) domain for efficient numerical computation.
 """
 
 from __future__ import annotations
@@ -18,6 +21,33 @@ logger = get_logger("reconciliation.ldpc_bp_decoder")
 class LDPCBeliefPropagation:
     """
     Sum-product belief-propagation decoder operating in the log domain.
+
+    Implements iterative message-passing on the Tanner graph representation of
+    an LDPC code to decode syndrome-based error correction.
+
+    Parameters
+    ----------
+    max_iterations : int, optional
+        Maximum number of BP iterations, by default constants.LDPC_MAX_ITERATIONS.
+    threshold : float, optional
+        Message stability threshold for early stopping, by default constants.LDPC_BP_THRESHOLD.
+
+    Attributes
+    ----------
+    max_iterations : int
+        Maximum iteration limit.
+    threshold : float
+        Convergence threshold.
+
+    Notes
+    -----
+    The decoder uses the tanh-domain update rule for check node messages:
+
+    .. math::
+        \mu_{c \to v} = 2 \cdot \text{arctanh}\left(\prod_{v' \in N(c) \setminus v} 
+                       \tanh(\mu_{v' \to c} / 2)\right)
+
+    Variable node messages accumulate incoming check node messages plus channel LLR.
     """
 
     def __init__(self, max_iterations: int = constants.LDPC_MAX_ITERATIONS, threshold: float = constants.LDPC_BP_THRESHOLD) -> None:
@@ -33,20 +63,53 @@ class LDPCBeliefPropagation:
         Parameters
         ----------
         H : sp.csr_matrix
-            Parity-check matrix (m x n).
+            Parity-check matrix of shape (m, n) in CSR format.
         llr : np.ndarray
-            Log-likelihood ratios for each variable node.
+            Log-likelihood ratios for each variable node (length n).
+            Positive LLR indicates high confidence in bit=0.
+            Negative LLR indicates high confidence in bit=1.
         syndrome : np.ndarray
             Target syndrome vector in {0,1}^m.
+            syndrome[i]=1 indicates parity check i is unsatisfied.
 
         Returns
         -------
         decoded : np.ndarray
-            Hard-decision bit estimate after decoding.
+            Hard-decision bit estimate after decoding (uint8 array).
         converged : bool
-            True if all parity checks satisfied.
+            True if all parity checks satisfied (H · decoded = syndrome mod 2).
         iterations : int
-            Number of iterations executed.
+            Number of iterations executed before convergence or timeout.
+
+        Raises
+        ------
+        ValueError
+            If LLR length doesn't match H columns or syndrome length doesn't match H rows.
+            If parity-check matrix has no edges.
+
+        Notes
+        -----
+        The decoder alternates between check node updates and variable node updates:
+
+        **Check Node Update** (horizontal step):
+            For each check c and connected variable v, compute message
+            based on product of incoming tanh values from other variables.
+            If syndrome[c]=1, flip the message sign to encode unsatisfied constraint.
+
+        **Variable Node Update** (vertical step):
+            For each variable v, sum channel LLR and all incoming check messages.
+            Update outgoing messages by subtracting the corresponding check contribution.
+
+        **Hard Decision**: Bit v is decided as 1 if total LLR < 0, else 0.
+
+        **Early Stopping**: Decoding halts if messages stabilize (max |r| < threshold)
+        or all parity checks are satisfied.
+
+        References
+        ----------
+        - Kschischang, Frey, Loeliger, "Factor graphs and the sum-product algorithm",
+          IEEE Trans. Inform. Theory (2001).
+        - MacKay, "Information Theory, Inference, and Learning Algorithms" (2003).
         """
 
         H = H.tocsr()
@@ -94,11 +157,17 @@ class LDPCBeliefPropagation:
                 if not edges:
                     continue
                 tanh_vals = np.tanh(q[edges] / 2.0)
-                prod_all = np.prod(tanh_vals)
+                # Avoid division by zero and numerical instability by computing
+                # the product of tanh values excluding the current index directly.
                 for idx, e in enumerate(edges):
-                    prod_excl = prod_all / tanh_vals[idx] if len(edges) > 1 else prod_all
+                    if len(edges) > 1:
+                        # product excluding current index
+                        prod_excl = np.prod(np.delete(tanh_vals, idx))
+                    else:
+                        prod_excl = 1.0
                     prod_excl = np.clip(prod_excl, -0.999999, 0.999999)
                     sign = -1.0 if syndrome[c] == 1 else 1.0
+                    # Use safe arctanh domain
                     r[e] = 2.0 * np.arctanh(sign * prod_excl)
 
             # Variable node update and decisions

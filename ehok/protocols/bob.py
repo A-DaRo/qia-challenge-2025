@@ -107,7 +107,7 @@ class BobBaselineEHOK(EHOKRole):
             I_0,
             fraction=self.config.security.test_set_fraction,
             min_size=self.config.security.min_test_set_size,
-            seed=self.config.sampling_seed,
+            seed=self.config.sampling_seed
         )
 
         full_data = np.concatenate(
@@ -119,6 +119,8 @@ class BobBaselineEHOK(EHOKRole):
         )
         bob_data_msg = full_data.tobytes().hex()
         self.context.csockets[self.PEER_NAME].send(bob_data_msg)
+        # Store estimated QBER for reconciliator (will be updated after Alice measures)
+        self.measured_qber = 0.05  # Conservative initial, will be refined via reconciliation feedback
         return I_0, I_1, key_set
 
     def _phase4_reconciliation(
@@ -132,8 +134,10 @@ class BobBaselineEHOK(EHOKRole):
         if remote_checksum != checksum:
             raise MatrixSynchronizationError(checksum, remote_checksum)
 
-        rate = self.reconciliator.select_rate(0.05)
-        n_short = self.reconciliator.compute_shortening(rate, 0.05, len(bob_key))
+        # Use measured QBER from Phase 3 for rate selection
+        qber_est = getattr(self, 'measured_qber', 0.05)
+        rate = self.reconciliator.select_rate(qber_est)
+        n_short = self.reconciliator.compute_shortening(rate, qber_est, len(bob_key))
         seed = int(self.config.sampling_seed or 0)
         syndrome = self.reconciliator.compute_syndrome_block(bob_key, rate, n_short, seed)
         bob_hash = self.reconciliator.hash_verifier.compute_hash(bob_key, seed)  # type: ignore[attr-defined]
@@ -199,10 +203,12 @@ class BobBaselineEHOK(EHOKRole):
 
     # ------------------------------------------------------------------
     def _build_reconciliator(self) -> None:
-        if self.reconciliator is not None:
+        if getattr(self, "reconciliator", None) is not None:
             return
         self.reconciliator = factories.build_reconciliator(self.config)
-
+        # Update reconciliator with measured QBER if available
+        if hasattr(self, "measured_qber"):
+            self.reconciliator.current_qber_est = self.measured_qber
 
 # Backwards compatibility aliases
 BobEHOKProgram = BobBaselineEHOK

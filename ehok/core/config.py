@@ -59,6 +59,15 @@ class ReconciliationConfig:
     max_iterations: int = constants.LDPC_MAX_ITERATIONS
     bp_threshold: float = constants.LDPC_BP_THRESHOLD
     matrix_path: Optional[str] = None
+    
+    testing_mode: bool = False
+    """Enable test-specific LDPC matrices (USE ONLY IN TESTS)."""
+    
+    ldpc_test_frame_size: int | None = None
+    """Test frame size override. Must be in constants.LDPC_TEST_FRAME_SIZES.
+    
+    Only effective when testing_mode=True. Production code ignores this field.
+    """
 
     def __post_init__(self) -> None:
         if not 0 < self.code_rate < 1:
@@ -67,18 +76,76 @@ class ReconciliationConfig:
             raise ValueError("max_iterations must be positive")
         if self.bp_threshold <= 0:
             raise ValueError("bp_threshold must be positive")
+        
+        if self.testing_mode:
+            if self.ldpc_test_frame_size is not None:
+                if self.ldpc_test_frame_size not in constants.LDPC_TEST_FRAME_SIZES:
+                    raise ValueError(
+                        f"Invalid test frame size: {self.ldpc_test_frame_size}. "
+                        f"Must be one of {constants.LDPC_TEST_FRAME_SIZES}"
+                    )
+
 
 
 @dataclass
 class PrivacyAmplificationConfig:
-    """Privacy amplification parameters."""
+    """
+    Privacy amplification parameters with finite-key security.
 
+    The finite-key formula automatically computes secure output lengths
+    without requiring arbitrary security margins.
+
+    Attributes
+    ----------
+    target_epsilon_sec : float
+        Target security parameter (trace distance from ideal key).
+    target_epsilon_cor : float
+        Correctness parameter (probability of key mismatch).
+    test_bits_override : int, optional
+        Override the number of test bits for finite-key calculation.
+        If None, estimated from TEST_SET_FRACTION.
+    use_finite_key : bool
+        Whether to use the rigorous finite-key formula (recommended).
+    use_fft_compression : bool
+        Whether to use FFT-based O(n log n) compression for large keys.
+    fft_threshold : int
+        Key length above which FFT compression is used.
+
+    Deprecated Attributes
+    ---------------------
+    security_margin : int
+        **DEPRECATED**. Ignored by finite-key formula.
+    fixed_output_length : int, optional
+        **DEPRECATED**. No longer needed with finite-key formula.
+    target_epsilon : float
+        **DEPRECATED**. Use target_epsilon_sec instead.
+    """
+
+    # New finite-key parameters
+    target_epsilon_sec: float = constants.TARGET_EPSILON_SEC
+    target_epsilon_cor: float = 1e-15
+    test_bits_override: Optional[int] = None
+    use_finite_key: bool = True  # Enable finite-key formula by default
+    use_fft_compression: bool = False
+    fft_threshold: int = 10000
+
+    # Deprecated parameters (kept for backwards compatibility)
     security_margin: int = constants.PA_SECURITY_MARGIN
     target_epsilon: float = constants.TARGET_EPSILON_SEC
-    # Optional explicit output length override
     fixed_output_length: Optional[int] = None
 
     def __post_init__(self) -> None:
+        # Validate new parameters
+        if not 0 < self.target_epsilon_sec < 1:
+            raise ValueError("target_epsilon_sec must be in (0,1)")
+        if not 0 < self.target_epsilon_cor < 1:
+            raise ValueError("target_epsilon_cor must be in (0,1)")
+        if self.test_bits_override is not None and self.test_bits_override <= 0:
+            raise ValueError("test_bits_override must be positive when set")
+        if self.fft_threshold <= 0:
+            raise ValueError("fft_threshold must be positive")
+
+        # Validate deprecated parameters (for backwards compatibility)
         if self.security_margin < 0:
             raise ValueError("security_margin must be non-negative")
         if not 0 < self.target_epsilon < 1:

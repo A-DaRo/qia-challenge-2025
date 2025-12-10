@@ -134,6 +134,21 @@ Matrices are constructed for a fixed frame and adapt to channel conditions via
 rate selection and shortening, following the LDPC specification.
 """
 
+LDPC_TEST_FRAME_SIZES = (64, 128, 256)
+"""Available test frame sizes for accelerated system testing.
+
+Notes
+-----
+Test matrices are stored separately and loaded only when:
+1. ProtocolConfig.testing_mode = True
+2. ProtocolConfig.ldpc_test_frame_size is set
+
+Production code ALWAYS uses LDPC_FRAME_SIZE = 4096.
+"""
+
+LDPC_TEST_MATRIX_SUBDIR = "test_ldpc_matrices"
+"""Directory name for test-specific LDPC matrices."""
+
 LDPC_CODE_RATES = (
 	0.50,
 	0.55,

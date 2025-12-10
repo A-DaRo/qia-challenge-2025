@@ -9,16 +9,14 @@ being resolved.
 import time
 from typing import Dict, Any
 
-import pytest
 import numpy as np
 
 from squidasm.run.stack.run import run
 from squidasm.run.stack.config import StackNetworkConfig, StackConfig, LinkConfig
-from squidasm.run.stack.config import DepolariseLinkConfig
 
 from ehok.protocols.base import EHOKRole
-from ehok.core.config import ProtocolConfig
-from ehok.core.data_structures import ObliviousKey
+# ProtocolConfig imported in many tests; not required directly here
+import logging
 from ehok.utils.logging import get_logger
 
 logger = get_logger("test.integration")
@@ -91,12 +89,25 @@ import pytest
 
 
 @pytest.mark.long
-def test_phase_sequencing_commitment_before_bases():
+@pytest.mark.require_ldpc_matrix
+def test_phase_sequencing_commitment_before_bases(fast_test_config):
     """Test that Bob's commitment is sent before Alice reveals bases."""
     config = _make_perfect_network_config()
 
-    alice = AlicePhaseSeq()
-    bob = BobPhaseSeq()
+    # Make a copy of the fixture config and tune it for fast execution
+    # Silence noisy simulation logs during the test run
+    logging.getLogger("Stack").setLevel(logging.ERROR)
+    logging.getLogger("ehok").setLevel(logging.ERROR)
+
+    cfg = fast_test_config.copy_with()
+    cfg.quantum.total_pairs = 200
+    cfg.reconciliation.testing_mode = True
+    cfg.reconciliation.ldpc_test_frame_size = 128
+    # Ensure the quantum builder's max_qubits can accommodate batch sizes used
+    cfg.quantum.max_qubits = max(cfg.quantum.max_qubits, cfg.quantum.batch_size)
+
+    alice = AlicePhaseSeq(config=cfg, total_pairs=cfg.quantum.total_pairs)
+    bob = BobPhaseSeq(config=cfg, total_pairs=cfg.quantum.total_pairs)
 
     results = run(config=config, programs={"alice": alice, "bob": bob}, num_times=1)
 
@@ -168,11 +179,24 @@ class BobNoFlush(EHOKRole):
 
 
 @pytest.mark.long
-def test_synchronization_flush_required():
+@pytest.mark.require_ldpc_matrix
+def test_synchronization_flush_required(fast_test_config):
     """Test that flush() is required before accessing measurement outcomes."""
     config = _make_perfect_network_config()
-    alice = AliceNoFlush()
-    bob = BobNoFlush()
+    # Copy fixture config and tune for fast, deterministic test setup
+    # Silence noisy simulation logs during the test run
+    logging.getLogger("Stack").setLevel(logging.ERROR)
+    logging.getLogger("ehok").setLevel(logging.ERROR)
+
+    cfg = fast_test_config.copy_with()
+    cfg.quantum.total_pairs = 200
+    cfg.reconciliation.testing_mode = True
+    cfg.reconciliation.ldpc_test_frame_size = 128
+    # Ensure the quantum builder's max_qubits can accommodate batch sizes used
+    cfg.quantum.max_qubits = max(cfg.quantum.max_qubits, cfg.quantum.batch_size)
+
+    alice = AliceNoFlush(config=cfg, total_pairs=cfg.quantum.total_pairs)
+    bob = BobNoFlush(config=cfg, total_pairs=cfg.quantum.total_pairs)
 
     results = run(config=config, programs={"alice": alice, "bob": bob}, num_times=1)
 

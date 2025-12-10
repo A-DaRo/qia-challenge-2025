@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 import scipy.sparse as sp
 
+from ehok.core import constants
 from ehok.core.config import ProtocolConfig
 from ehok.interfaces import (
     ICommitmentScheme,
@@ -18,6 +19,7 @@ from ehok.interfaces import (
 )
 from ehok.implementations.commitment.sha256_commitment import SHA256Commitment
 from ehok.implementations.reconciliation import LDPCReconciliator, LDPCMatrixManager
+from ehok.implementations.reconciliation.ldpc_bp_decoder import LDPCBeliefPropagation
 from ehok.implementations.privacy_amplification.toeplitz_amplifier import (
     ToeplitzAmplifier,
 )
@@ -41,16 +43,32 @@ def build_reconciliator(
         )
 
     matrix_dir = config.reconciliation.matrix_path
-    if matrix_dir is None:
+    frame_size = constants.LDPC_FRAME_SIZE
+
+    if config.reconciliation.testing_mode:
+        # Override directory and frame size for testing
+        if matrix_dir is None:
+            matrix_dir = Path(__file__).resolve().parents[1] / "configs" / constants.LDPC_TEST_MATRIX_SUBDIR
+        
+        if config.reconciliation.ldpc_test_frame_size is not None:
+            frame_size = config.reconciliation.ldpc_test_frame_size
+    elif matrix_dir is None:
         matrix_dir = Path(__file__).resolve().parents[1] / "configs" / "ldpc_matrices"
+
     # Do not autogenerate matrices at runtime: enforce explicit pre-generated files
-    manager = LDPCMatrixManager.from_directory(Path(matrix_dir), autogenerate_if_missing=False)
-    return LDPCReconciliator(manager)
+    manager = LDPCMatrixManager.from_directory(
+        Path(matrix_dir), 
+        frame_size=frame_size, 
+        autogenerate_if_missing=False
+    )
+    # Configure BP decoder from protocol config thresholds
+    decoder = LDPCBeliefPropagation(max_iterations=config.reconciliation.max_iterations, threshold=config.reconciliation.bp_threshold)
+    return LDPCReconciliator(manager, bp_decoder=decoder)
 
 
 def build_privacy_amplifier(config: ProtocolConfig) -> IPrivacyAmplifier:
     """Return privacy amplifier instance for configuration."""
-    return ToeplitzAmplifier()
+    return ToeplitzAmplifier(security_margin=config.privacy_amplification.security_margin)
 
 
 def build_sampling_strategy(config: ProtocolConfig) -> ISamplingStrategy:

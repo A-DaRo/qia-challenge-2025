@@ -1,5 +1,9 @@
 """
 LDPC matrix pool loading and synchronization helpers.
+
+This module provides matrix management functionality including loading from disk,
+checksum verification for Alice-Bob synchronization, and automatic PEG generation
+for missing matrices.
 """
 
 from __future__ import annotations
@@ -129,12 +133,30 @@ class LDPCMatrixManager:
 
     @staticmethod
     def _autogenerate_matrix(frame_size: int, rate: float) -> sp.spmatrix:
-        """Generate a parity-check matrix using PEG for fallback scenarios.
+        """
+        Generate a parity-check matrix using PEG for fallback scenarios.
 
+        Parameters
+        ----------
+        frame_size : int
+            Matrix column count (codeword length).
+        rate : float
+            Target code rate in (0, 1).
+
+        Returns
+        -------
+        scipy.sparse.spmatrix
+            Generated parity-check matrix in CSR format.
+
+        Notes
+        -----
         This safeguards tests and simulations from hard failures when matrices
         are missing on disk. Prefers the optimized degree distributions; when a
         rate-specific distribution is missing, reuses the base distribution and
         punctures parity rows deterministically to hit the requested rate.
+
+        Autogeneration is slower than loading pre-computed matrices and should
+        be avoided in production by ensuring all matrices are pre-generated.
         """
 
         dist = constants.LDPC_DEGREE_DISTRIBUTIONS.get(rate)
@@ -180,7 +202,33 @@ class LDPCMatrixManager:
 
     @staticmethod
     def _apply_puncturing(matrix: sp.spmatrix, target_rate: float, seed: int) -> sp.spmatrix:
-        """Reduce parity constraints to reach a higher effective rate via puncturing."""
+        """
+        Reduce parity constraints to reach a higher effective rate via puncturing.
+
+        Parameters
+        ----------
+        matrix : sp.spmatrix
+            Input parity-check matrix.
+        target_rate : float
+            Desired code rate after puncturing.
+        seed : int
+            Random seed for deterministic row selection.
+
+        Returns
+        -------
+        scipy.sparse.spmatrix
+            Punctured matrix with fewer rows (higher rate).
+
+        Raises
+        ------
+        ValueError
+            If target_rate is not in (0, 1) or results in non-positive row count.
+
+        Notes
+        -----
+        Puncturing removes parity check rows to increase the code rate.
+        Rows are randomly selected but deterministically (via seed) for reproducibility.
+        """
         if target_rate <= 0 or target_rate >= 1:
             raise ValueError("target_rate must be in (0, 1)")
 
@@ -198,6 +246,25 @@ class LDPCMatrixManager:
 
     @staticmethod
     def _compute_checksum(matrices: Dict[float, sp.spmatrix]) -> str:
+        """
+        Compute SHA-256 checksum of matrix pool for synchronization.
+
+        Parameters
+        ----------
+        matrices : dict of float to sp.spmatrix
+            Dictionary mapping rates to parity-check matrices.
+
+        Returns
+        -------
+        str
+            Hexadecimal SHA-256 digest.
+
+        Notes
+        -----
+        Checksum includes all matrix data (indices, indptr, data arrays) and rates,
+        processed in sorted order for determinism. Both Alice and Bob must use
+        identical matrices to successfully reconcile blocks.
+        """
         digest = hashlib.sha256()
         for rate in sorted(matrices.keys()):
             matrix = matrices[rate].tocsr()
@@ -255,15 +322,36 @@ class LDPCMatrixManager:
 
     @property
     def checksum(self) -> str:
-        """Return local checksum for synchronization exchange."""
+        """
+        Return local checksum for synchronization exchange.
+
+        Returns
+        -------
+        str
+            SHA-256 hexadecimal digest of matrix pool.
+        """
         return self.matrix_pool.checksum
 
     @property
     def rates(self) -> np.ndarray:
-        """Available rates as sorted numpy array."""
+        """
+        Available rates as sorted numpy array.
+
+        Returns
+        -------
+        np.ndarray
+            Sorted array of available code rates.
+        """
         return self.matrix_pool.rates
 
     @property
     def frame_size(self) -> int:
-        """Frame size n for all matrices."""
+        """
+        Frame size n for all matrices.
+
+        Returns
+        -------
+        int
+            Number of columns (codeword length) in all matrices.
+        """
         return self.matrix_pool.frame_size

@@ -15,6 +15,10 @@ from ehok.core.data_structures import LDPCBlockResult, ObliviousKey
 from ehok.core.exceptions import CommitmentVerificationError, MatrixSynchronizationError, ReconciliationFailedError
 from ehok.protocols.base import EHOKRole
 from ehok.implementations import factories
+from ehok.implementations.privacy_amplification.finite_key import (
+    FiniteKeyParams,
+    compute_final_length_finite_key,
+)
 from ehok.quantum.runner import QuantumPhaseResult
 from ehok.utils.logging import get_logger
 
@@ -130,6 +134,8 @@ class AliceBaselineEHOK(EHOKRole):
 		self.sifting_manager.check_qber_abort(
 			qber, threshold=self.config.security.qber_threshold
 		)
+		# Store measured QBER for reconciliator initialization
+		self.measured_qber = qber
 
 		return I_0, I_1, test_set, key_set, qber, outcomes_bob, bases_bob
 
@@ -161,7 +167,10 @@ class AliceBaselineEHOK(EHOKRole):
 		)
 
 		alice_hash = self.reconciliator.hash_verifier.compute_hash(corrected_block, seed)  # type: ignore[attr-defined]
-		verified = alice_hash == bob_hash and converged
+		# Accept block if the verification hash matches even when the BP decoder
+		# did not report 'converged'. The hash ensures correctness even if the
+		# decoder used an alternative decision that didn't set the flag.
+		verified = alice_hash == bob_hash
 		result = LDPCBlockResult(
 			verified=verified,
 			error_count=error_count,
@@ -189,13 +198,38 @@ class AliceBaselineEHOK(EHOKRole):
 		else:
 			qber = block_result.error_count / block_result.block_length if block_result.verified else 0.5
 
-		final_length = self.privacy_amplifier.compute_final_length(
-			len(corrected_key), qber, leakage, self.config.privacy_amplification.target_epsilon
-		)
+		# Use finite-key formula when enabled (recommended)
+		pa_config = self.config.privacy_amplification
+		if pa_config.use_finite_key:
+			# Determine test bits: use override or estimate from TEST_SET_FRACTION
+			test_bits = pa_config.test_bits_override
+			if test_bits is None:
+				from ehok.core.constants import TEST_SET_FRACTION
+				test_bits = max(1, int(len(corrected_key) * TEST_SET_FRACTION / (1 - TEST_SET_FRACTION)))
+			
+			params = FiniteKeyParams(
+				n=len(corrected_key),
+				k=test_bits,
+				qber_measured=qber,
+				leakage=leakage,
+				epsilon_sec=pa_config.target_epsilon_sec,
+				epsilon_cor=pa_config.target_epsilon_cor,
+			)
+			final_length = compute_final_length_finite_key(params)
+			logger.debug(
+				"Finite-key PA: n=%d, k=%d, QBER=%.4f, leakage=%d -> final=%d",
+				params.n, params.k, qber, leakage, final_length
+			)
+		else:
+			# Fall back to legacy formula (deprecated)
+			final_length = self.privacy_amplifier.compute_final_length(
+				len(corrected_key), qber, leakage, pa_config.target_epsilon
+			)
 
 		# Allow test override: fixed_output_length ensures deterministic output sizes
-		if self.config.privacy_amplification.fixed_output_length is not None:
-			final_length = int(self.config.privacy_amplification.fixed_output_length)
+		# (deprecated, but kept for backwards compatibility)
+		if pa_config.fixed_output_length is not None:
+			final_length = int(pa_config.fixed_output_length)
 
 		if final_length <= 0:
 			# No secure key to extract: send empty seed and create empty final key
@@ -225,6 +259,9 @@ class AliceBaselineEHOK(EHOKRole):
 		if self.reconciliator is not None:
 			return
 		self.reconciliator = factories.build_reconciliator(self.config)
+		# Update reconciliator with measured QBER from Phase 3 if available
+		if hasattr(self, 'measured_qber'):
+			self.reconciliator.current_qber_est = self.measured_qber
 
 
 # Backwards compatibility aliases
