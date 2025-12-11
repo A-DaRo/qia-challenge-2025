@@ -108,7 +108,10 @@ def test_protocol_aborts_when_privacy_amplification_yields_zero_length(monkeypat
         res = stack_res[0]
         if not res["success"]:
             found_abort = True
-            assert "PRIVACY_AMPLIFICATION_NO_SECURE_KEY" in str(res.get("abort_reason", "")) or True
+            # The abort reason should reflect a privacy amplification zero-length outcome
+            assert (
+                "PRIVACY_AMPLIFICATION_NO_SECURE_KEY" in str(res.get("abort_reason", ""))
+            ), f"Abort reason does not indicate PA zero-length: {res.get('abort_reason')}"
     assert found_abort, "Protocol did not abort when PA yielded zero-length key"
 
 

@@ -200,31 +200,38 @@ class AliceBaselineEHOK(EHOKRole):
 
 		# Use finite-key formula when enabled (recommended)
 		pa_config = self.config.privacy_amplification
-		if pa_config.use_finite_key:
-			# Determine test bits: use override or estimate from TEST_SET_FRACTION
-			test_bits = pa_config.test_bits_override
-			if test_bits is None:
-				from ehok.core.constants import TEST_SET_FRACTION
-				test_bits = max(1, int(len(corrected_key) * TEST_SET_FRACTION / (1 - TEST_SET_FRACTION)))
-			
-			params = FiniteKeyParams(
-				n=len(corrected_key),
-				k=test_bits,
-				qber_measured=qber,
-				leakage=leakage,
-				epsilon_sec=pa_config.target_epsilon_sec,
-				epsilon_cor=pa_config.target_epsilon_cor,
-			)
-			final_length = compute_final_length_finite_key(params)
-			logger.debug(
-				"Finite-key PA: n=%d, k=%d, QBER=%.4f, leakage=%d -> final=%d",
-				params.n, params.k, qber, leakage, final_length
-			)
+		# If the reconciled key is empty, we should not instantiate finite-key
+		# parameter objects which require n>0. Short-circuit to final_length=0
+		# and proceed with the abort logic (empty seed / empty final key).
+		if len(corrected_key) == 0:
+			final_length = 0
 		else:
-			# Fall back to legacy formula (deprecated)
-			final_length = self.privacy_amplifier.compute_final_length(
+			if pa_config.use_finite_key:
+				# Determine test bits: use override or estimate from TEST_SET_FRACTION
+				test_bits = pa_config.test_bits_override
+				if test_bits is None:
+					from ehok.core.constants import TEST_SET_FRACTION
+					test_bits = max(1, int(len(corrected_key) * TEST_SET_FRACTION / (1 - TEST_SET_FRACTION)))
+
+				params = FiniteKeyParams(
+					n=len(corrected_key),
+					k=test_bits,
+					qber_measured=qber,
+					leakage=leakage,
+					epsilon_sec=pa_config.target_epsilon_sec,
+					epsilon_cor=pa_config.target_epsilon_cor,
+				)
+				final_length = compute_final_length_finite_key(params)
+				logger.debug(
+					"Finite-key PA: n=%d, k=%d, QBER=%.4f, leakage=%d -> final=%d",
+					params.n, params.k, qber, leakage, final_length,
+				)
+			else:
+				# Fall back to legacy formula (deprecated)
+				final_length = self.privacy_amplifier.compute_final_length(
 				len(corrected_key), qber, leakage, pa_config.target_epsilon
 			)
+
 
 		# Allow test override: fixed_output_length ensures deterministic output sizes
 		# (deprecated, but kept for backwards compatibility)
