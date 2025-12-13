@@ -30,7 +30,7 @@ env:
   PYTHON_VERSION: "3.10"
   NETSQUIDPYPI_USER: ${{ secrets.NETSQUIDPYPI_USER }}
   NETSQUIDPYPI_PWD: ${{ secrets.NETSQUIDPYPI_PWD }}
-  
+
 jobs:
   quality-gate:
     name: Stage 1 - Quality Gate
@@ -49,8 +49,8 @@ jobs:
           
       - name: Configure SquidASM
         run: |
-          if [ -z "${NETSQUID_USER}" ]; then
-            echo "NETSQUID_USER is not set; aborting."
+          if [ -z "${NETSQUIDPYPI_USER}" ]; then
+            echo "NETSQUIDPYPI_USER is not set; aborting."
             exit 1
           fi
           # clone SquidASM and run make install
@@ -103,8 +103,8 @@ jobs:
           
       - name: Configure SquidASM
         run: |
-          if [ -z "${NETSQUID_USER}" ]; then
-            echo "NETSQUID_USER is not set; aborting."
+          if [ -z "${NETSQUIDPYPI_USER}" ]; then
+            echo "NETSQUIDPYPI_USER is not set; aborting."
             exit 1
           fi
           # clone SquidASM and run make install
