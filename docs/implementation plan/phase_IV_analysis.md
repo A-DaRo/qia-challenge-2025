@@ -421,11 +421,11 @@ Where $F_{storage}$ is the fidelity of the adversary's quantum memory after wait
 - T1/T2 times → depolarizing strength conversion
 - Configuration-driven security parameter selection
 
-### 4.3 Legacy vs. Target Architecture
+### 4.3 Legacy Code Removal & Replacement Plan
 
-**Legacy ehok Approach**:
+**Legacy ehok Approach** (TO BE DELETED):
 
-The existing `ToeplitzAmplifier` implements:
+The existing `ToeplitzAmplifier` in `ehok/implementations/privacy_amplification/` implements:
 ```
 Reconciled Key → Toeplitz Hash → Single Final Key
 ```
@@ -433,13 +433,21 @@ Reconciled Key → Toeplitz Hash → Single Final Key
 Using the formula:
 $$\ell = n \cdot (1 - h(QBER + \mu)) - leak - 2\log_2\frac{1}{\varepsilon_{sec}}$$
 
-This is the **QKD finite-key formula** from Tomamichel et al.—**not valid for NSM-based E-HOK**.
+This is the **QKD finite-key formula** from Tomamichel et al.—**INVALID for NSM-based E-HOK**.
 
-**Target Architecture Required**:
+**Deletion Plan for Legacy Code**:
+
+1. **Extract**: Copy the working Toeplitz hashing logic into a new SquidASM-native `ToeplitzHasher` class
+2. **Replace Bounds**: Rewrite `compute_final_length()` to use NSM "Max Bound" instead of QKD formula
+3. **Validate**: Parity test comparing legacy vs. new on standard test vectors
+4. **Delete**: Remove legacy `finite_key.py`, `toeplitz_amplifier.py` entirely
+5. **Update Imports**: All downstream code references new NSM-aware module
+
+**Target Architecture Required** (POST-DELETION):
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    Target Phase IV Architecture                              │
+│                    Target Phase IV Architecture (NEW)                        │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
 │  ┌─────────────────────────────────────────────────────────────────────────┐│
@@ -455,13 +463,13 @@ This is the **QKD finite-key formula** from Tomamichel et al.—**not valid for 
 │                                        │                                     │
 │                                        ▼                                     │
 │  ┌─────────────────────────────────────────────────────────────────────────┐│
-│  │                    Privacy Amplification Layer (EXISTING)                ││
+│  │                    Privacy Amplification Layer (REWRITTEN)               ││
 │  │                                                                          ││
 │  │  ┌─────────────────────────────────────────────────────────────────┐    ││
-│  │  │ ToeplitzAmplifier                                                │    ││
-│  │  │   generate_hash_seed() ← Keep as-is                             │    ││
-│  │  │   compress()           ← Keep as-is                             │    ││
-│  │  │   compute_final_length() ← REPLACE with NSM-aware version       │    ││
+│  │  │ ToeplitzHasher (SquidASM-native)                                │    ││
+│  │  │   generate_hash_seed() ← Extracted from legacy                  │    ││
+│  │  │   compress()           ← Extracted from legacy                  │    ││
+│  │  │   compute_final_length() ← NEW NSM-aware implementation         │    ││
 │  │  └─────────────────────────────────────────────────────────────────┘    ││
 │  │                                                                          ││
 │  └─────────────────────────────────────────────────────────────────────────┘│
@@ -480,6 +488,8 @@ This is the **QKD finite-key formula** from Tomamichel et al.—**not valid for 
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+**No Deprecation, No Fallback**: Once new NSM-aware implementation passes validation, legacy code is deleted immediately.
 
 ### 4.4 Missing Infrastructure Analysis
 

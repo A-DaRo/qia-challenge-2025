@@ -389,17 +389,17 @@ The hash verification mechanism ensures Bob's corrected key matches Alice's orig
 | **Abort on Leakage Overflow** | ❌ | ❌ | **GAP** | Protocol integration |
 | Interactive Hashing | ❌ | ❌ | FUTURE | Complex extension |
 
-### 4.2 Legacy Code Assessment
+### 4.2 Legacy Code Assessment & Deletion Timeline
 
 The `ehok/implementations/reconciliation/` directory provides a comprehensive LDPC stack:
 
-| Component | File | Assessment |
-|-----------|------|------------|
-| `LDPCReconciliator` | `ldpc_reconciliator.py` | ✅ Complete orchestrator with rate adaptation |
-| `LDPCBeliefPropagation` | `ldpc_bp_decoder.py` | ✅ Full BP decoder with LLR computation |
-| `LDPCMatrixManager` | `ldpc_matrix_manager.py` | ✅ Parity-check matrix management |
-| `PolynomialHashVerifier` | `polynomial_hash.py` | ✅ Finite-field polynomial hashing |
-| `IntegratedQBEREstimator` | `qber_estimator.py` | ✅ QBER from correction counts |
+| Component | File | Assessment | Deletion Status |
+|-----------|------|------------|-----------------|
+| `LDPCReconciliator` | `ldpc_reconciliator.py` | ✅ Complete orchestrator with rate adaptation | Extract + Delete |
+| `LDPCBeliefPropagation` | `ldpc_bp_decoder.py` | ✅ Full BP decoder with LLR computation | Extract + Delete |
+| `LDPCMatrixManager` | `ldpc_matrix_manager.py` | ✅ Parity-check matrix management | Extract + Delete |
+| `PolynomialHashVerifier` | `polynomial_hash.py` | ✅ Finite-field polynomial hashing | Extract + Delete |
+| `IntegratedQBEREstimator` | `qber_estimator.py` | ✅ QBER from correction counts | Extract + Delete |
 
 **Interface Definition** (from `ehok/interfaces/reconciliation.py`):
 
@@ -413,6 +413,16 @@ The `IReconciliator` abstract base class defines:
 - One-way syndrome-based correction (no back-channel)
 - Leakage tracking per block
 - QBER-adaptive rate selection
+
+**Migration & Deletion Plan**:
+1. Extract all algorithmic logic (BP decoder, matrix management, rate selection) into SquidASM-native equivalents
+2. Write comprehensive parity tests comparing legacy vs. new reconciliation
+3. Validate byte-for-byte output equivalence on standard test vectors
+4. Upon validation: **DELETE entire `ehok/implementations/reconciliation/` directory**
+5. Replace all imports with references to new SquidASM-native reconciliation module
+6. Update all tests to use only new implementation
+
+No fallback, no deprecation period.
 
 ### 4.3 Gap Analysis: Safety Cap Enforcement
 

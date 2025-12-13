@@ -5,16 +5,47 @@ This module provides:
 1. CLI flag `--run-long` to conditionally run tests marked as `long`.
 2. Test LDPC matrix fixtures with frame_size=128 for accelerated testing.
 3. Protocol configuration fixtures for test isolation.
+4. Deterministic seed fixtures for reproducible testing (INFRA-004).
+
+INFRA-004 Requirements (sprint_0_specification.md)
+--------------------------------------------------
+1. Provide fixtures that seed Python `random` and NumPy RNG.
+2. Document policy for simulation randomness.
+3. Deterministic tests are repeatable: same seed → identical outputs.
+
+Test Markers
+------------
+- `unit`: Unit tests (no simulation required)
+- `integration`: Integration tests (require SquidASM simulation)
+- `deterministic`: Tests that must be byte-for-byte reproducible
+- `long`: Long-running tests (>2s), skipped without --run-long
+
+Randomness Policy
+-----------------
+For deterministic parity tests:
+- Use `deterministic_rng` fixture for seeded NumPy RNG
+- Use `deterministic_seed` fixture to seed Python's `random` module
+- Mark tests with @pytest.mark.deterministic
+
+For simulation tests:
+- NetSquid simulation randomness can be seeded via `ns.set_random_state(seed)`
+- Tests requiring simulation reproducibility must explicitly seed NetSquid
 
 Notes
 -----
 Test matrices are generated with frame_size=128 to reduce simulation time
 while preserving LDPC decoder behavior. Production code uses frame_size=4096.
 See docs/ldpc_matrix_tests.md for theoretical justification.
+
+References
+----------
+- sprint_0_specification.md (INFRA-004)
+- master_roadmap.md (TDM parity testing requirements)
 """
 
 from __future__ import annotations
 
+import random
 from pathlib import Path
 from typing import Generator
 
@@ -31,14 +62,14 @@ from ehok.implementations.reconciliation.peg_generator import (
     PEGMatrixGenerator,
     DegreeDistribution,
 )
-from ehok.utils.logging import get_logger
+from ehok.utils.logging import get_logger, reset_logging_state
 
 
 logger = get_logger("tests.conftest")
 
 
 # =============================================================================
-# Constants: Test Matrix Configuration
+# Constants: Test Configuration
 # =============================================================================
 
 TEST_FRAME_SIZE = 128
@@ -54,6 +85,9 @@ This value provides:
 TEST_LDPC_RATES = constants.LDPC_CODE_RATES
 """All production rates are available in test matrices."""
 
+DEFAULT_SEED = 42
+"""Default seed for deterministic testing."""
+
 
 # =============================================================================
 # CLI Options
@@ -68,6 +102,139 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=False,
         help="Force regeneration of test LDPC matrices even if they exist.",
     )
+    parser.addoption(
+        "--seed",
+        action="store",
+        default=str(DEFAULT_SEED),
+        help=f"Seed for deterministic tests (default: {DEFAULT_SEED}).",
+    )
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Register custom markers."""
+    config.addinivalue_line(
+        "markers", "unit: marks tests as unit tests (no simulation required)"
+    )
+    config.addinivalue_line(
+        "markers", "integration: marks tests as integration tests (require SquidASM)"
+    )
+    config.addinivalue_line(
+        "markers", "deterministic: marks tests that must be reproducible with fixed seed"
+    )
+    config.addinivalue_line(
+        "markers", "long: marks tests as long-running (>2s), skipped without --run-long"
+    )
+
+
+# =============================================================================
+# Fixtures: Deterministic Seeding (INFRA-004)
+# =============================================================================
+
+
+@pytest.fixture(scope="function")
+def deterministic_seed(request: pytest.FixtureRequest) -> int:
+    """
+    Provide a deterministic seed and set up all random states.
+
+    This fixture seeds both Python's `random` module and NumPy's legacy random
+    state to ensure reproducible test execution.
+
+    Parameters
+    ----------
+    request : pytest.FixtureRequest
+        Pytest request object for accessing CLI options.
+
+    Returns
+    -------
+    int
+        The seed value used.
+
+    Notes
+    -----
+    This fixture sets:
+    - `random.seed(seed)` for Python's random module
+    - `np.random.seed(seed)` for NumPy's legacy API
+
+    For tests requiring NetSquid simulation reproducibility, additionally call:
+    - `ns.set_random_state(ns.util.RandomState(seed=seed))`
+
+    Examples
+    --------
+    >>> def test_deterministic_operation(deterministic_seed):
+    ...     # Both random and np.random are seeded
+    ...     result = some_random_operation()
+    ...     assert result == expected_value  # Same every run
+    """
+    seed = int(request.config.getoption("--seed"))
+
+    # Seed Python's random module
+    random.seed(seed)
+
+    # Seed NumPy's legacy random state (for code using np.random.* directly)
+    np.random.seed(seed)
+
+    logger.debug("Deterministic seed set: %d", seed)
+    return seed
+
+
+@pytest.fixture(scope="function")
+def deterministic_rng(deterministic_seed: int) -> np.random.Generator:
+    """
+    Provide a seeded NumPy random generator for reproducible tests.
+
+    This is the preferred fixture for new code using NumPy's modern Generator API.
+
+    Parameters
+    ----------
+    deterministic_seed : int
+        Seed value from deterministic_seed fixture.
+
+    Returns
+    -------
+    np.random.Generator
+        Seeded NumPy random generator.
+
+    Examples
+    --------
+    >>> def test_with_rng(deterministic_rng):
+    ...     values = deterministic_rng.random(10)
+    ...     # Same values every run with same seed
+    """
+    return np.random.default_rng(seed=deterministic_seed)
+
+
+@pytest.fixture(scope="function")
+def rng() -> np.random.Generator:
+    """
+    Seeded random number generator for reproducible tests.
+
+    Uses DEFAULT_SEED for backward compatibility. For tests that need
+    CLI-configurable seeds, use `deterministic_rng` instead.
+
+    Returns
+    -------
+    np.random.Generator
+        NumPy random generator with fixed seed.
+    """
+    return np.random.default_rng(seed=DEFAULT_SEED)
+
+
+# =============================================================================
+# Fixtures: Logging Reset (for test isolation)
+# =============================================================================
+
+
+@pytest.fixture(autouse=True)
+def reset_logging() -> Generator[None, None, None]:
+    """
+    Reset logging state before each test for isolation.
+
+    This ensures that logging configuration from one test doesn't affect others.
+    """
+    reset_logging_state()
+    yield
+    # Optionally reset again after test
+    reset_logging_state()
 
 
 # =============================================================================

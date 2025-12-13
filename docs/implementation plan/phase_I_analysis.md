@@ -656,36 +656,37 @@ This is verified statistically during Phase II sifting.
 
 ---
 
-## 8. Deprecation Strategy and Migration Checkpoints
+## 8. Aggressive Legacy Removal Strategy
 
-### 8.1 Compatibility Approach
+### 8.1 Migration Approach: No Rollback
 
-The migration must preserve runnability of existing simulations while incrementally tightening NSM semantics.
+The migration must enforce NSM semantics **without maintaining backward compatibility** with legacy non-NSM code.
 
-#### 8.1.1 Phased Introduction
+#### 8.1.1 Phased Removal (No Rollback)
 
-1. **Phase 1a**: Introduce `TimingEnforcer` and `FeasibilityAnalyzer` as optional modules.
-2. **Phase 1b**: Add configuration flags `enforce_timing=True`, `pre_flight_check=True`.
-3. **Phase 1c**: Make enforcement default, deprecate non-enforcing mode.
+1. **Phase 1a**: Introduce `TimingEnforcer` and `FeasibilityAnalyzer` as new modules alongside legacy code.
+2. **Phase 1b**: Write comprehensive parity tests comparing legacy vs. new implementations.
+3. **Phase 1c**: Upon validation, **PERMANENTLY DELETE** legacy non-enforcing components.
+4. **Phase 1d**: All downstream code is rewritten to use NSM-compliant modules.
 
-#### 8.1.2 Configuration Shim
+#### 8.1.2 Configuration Transition (Breaking Change)
 
-Existing configurations without NSM parameters should continue to work with sensible defaults:
+Old configurations are no longer supported. Migration requires explicit conversion:
 
 ```yaml
-# Legacy format (still supported)
-links:
-  - stack1: alice
-    stack2: bob
-    typ: depolarise
-    cfg:
-      fidelity: 0.95
+# DELETED: Legacy format is no longer accepted
+# links:
+#   - stack1: alice
+#     stack2: bob
+#     typ: depolarise
+#     cfg:
+#       fidelity: 0.95
 
-# Extended format (recommended)
+# REQUIRED: New NSM-aware format (mandatory)
 links:
   - stack1: alice
     stack2: bob
-    typ: depolarise_nsm  # New type
+    typ: depolarise_nsm  # Only valid type after migration
     cfg:
       fidelity: 0.95
       nsm_params:
@@ -694,26 +695,30 @@ links:
         e_det: 0.0093
         p_dark: 1.5e-8
         delta_t_ns: 1e7  # 10 ms
-        assumed_r_storage: 0.75
+        assumed_r_storage: 0.75  # Must be explicitly set
 ```
 
-### 8.2 Migration Checkpoints
+**Breaking Change Warning**: Users upgrading to post-migration versions must explicitly update configurations. No automatic fallback or compatibility layer.
 
-| Checkpoint | Criteria | Test Method |
-|------------|----------|-------------|
-| **CP-PHI-001** | Timing enforcement exists and is testable | Simulation trace analysis shows $\Delta t$ gap |
-| **CP-PHI-002** | Pre-flight check exists with two-tiered abort | Unit test with $Q > 0.22$ aborts, $Q > 0.11$ warns |
-| **CP-PHI-003** | NSM noise parameters configurable | Integration test with [Erven 2014] parameters |
-| **CP-PHI-004** | Transcript records causal ordering | Audit function verifies `TIMING_BARRIER` markers |
+### 8.2 Validation Checkpoints (Gates to Deletion)
 
-### 8.3 Deprecation Timeline
+| Checkpoint | Criteria | Test Method | Status for Deletion |
+|------------|----------|-------------|---------------------|
+| **CP-PHI-001** | Timing enforcement exists and is testable | Parity test: legacy vs. enforcer | ✓ Both implementations agree |
+| **CP-PHI-002** | Pre-flight check behavior matches spec | Parity test: abort/warn boundaries | ✓ Both implementations abort at 22%, warn at 11% |
+| **CP-PHI-003** | NSM noise parameters configurable | Parity test: [Erven 2014] params | ✓ Both yield identical results |
+| **CP-PHI-004** | Transcript records causal ordering | Parity test: timing barrier markers | ✓ Both record identical markers |
+| **CP-PHI-005** | All references to legacy code removed | Code review + grep | ✓ Zero legacy references in codebase |
 
-| Version | Change | Backward Compatibility |
-|---------|--------|------------------------|
-| v0.2.0 | Introduce `TimingEnforcer`, `FeasibilityAnalyzer` | Full; new modules optional |
-| v0.3.0 | Add `enforce_nsm=True` config option | Full; default is `False` |
-| v0.4.0 | Default `enforce_nsm=True`; deprecation warning for `False` | Warning emitted |
-| v1.0.0 | Remove non-NSM mode; `enforce_nsm` always `True` | Breaking for non-compliant configs |
+Once **ALL** validation checkpoints pass, legacy code is deleted immediately. No "deprecation period."
+
+### 8.3 Deletion Timeline
+
+| Version | Action | Impact |
+|---------|--------|--------|
+| v0.2.0 | Introduce `TimingEnforcer`, `FeasibilityAnalyzer` (alongside legacy) | Non-breaking; legacy still works |
+| v0.3.0 | Validation complete; delete legacy code | **BREAKING** — configurations must be updated |
+| v0.4.0+ | NSM semantics are mandatory; no legacy modes exist | All code assumes NSM correctness |
 
 ---
 

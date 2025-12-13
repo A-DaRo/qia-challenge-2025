@@ -10,8 +10,8 @@ from typing import Any, Optional, Type, TypeVar, Union, Generator
 from dataclasses import asdict, is_dataclass
 
 from pydynaa import EventExpression
-from squidasm.sim.stack.common import LogManager
-from squidasm.sim.stack.csocket import ClassicalSocket
+from squidasm.sim.stack.common import LogManager # type: ignore
+from squidasm.sim.stack.csocket import ClassicalSocket # type: ignore
 
 logger = LogManager.get_stack_logger("ehok.utils.classical_sockets")
 

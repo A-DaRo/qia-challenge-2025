@@ -474,21 +474,29 @@ The `SiftingManager` class has no detection report validation logic.
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 4.5 Legacy Code Assessment
+### 4.5 Legacy Code Assessment & Removal Plan
 
 **File**: `ehok/core/sifting.py`
 
 | Method | Purpose | Migration Status |
 |--------|---------|------------------|
-| `identify_matching_bases(bases_alice, bases_bob)` | Computes $I_0$, $I_1$ from basis arrays | ✅ Reusable as-is |
-| `select_test_set(I_0, fraction, seed)` | Random test subset selection | ✅ Reusable; also in `RandomSamplingStrategy` |
-| `estimate_qber(outcomes_alice, outcomes_bob, test_indices)` | Computes $e_{obs}$ | ✅ Reusable; needs $\mu$ integration |
-| `check_qber_abort(qber, threshold)` | Threshold check | ⚠️ Must use $e_{adj}$ instead of $e_{obs}$ |
+| `identify_matching_bases(bases_alice, bases_bob)` | Computes $I_0$, $I_1$ from basis arrays | ✅ Extract logic, reimplement in SquidASM-native module |
+| `select_test_set(I_0, fraction, seed)` | Random test subset selection | ✅ Migrate to SquidASM context; delete legacy |
+| `estimate_qber(outcomes_alice, outcomes_bob, test_indices)` | Computes $e_{obs}$ | ✅ Reimplement with $\mu$ integration; delete legacy |
+| `check_qber_abort(qber, threshold)` | Threshold check | ⚠️ Rewrite to use $e_{adj}$; delete legacy version |
 
 **Assessment**: The legacy implementation provides correct baseline sifting logic but lacks:
-1. Ordered acknowledgment integration
-2. Chernoff bound validation
-3. Finite-size penalty calculation
+1. Ordered acknowledgment integration (security-critical)
+2. Chernoff bound validation (security-critical)
+3. Finite-size penalty calculation (security-critical)
+
+**Deletion Plan**: Once parity tests confirm all three gaps are closed in the new SquidASM-native sifting module:
+- Delete `ehok/core/sifting.py` entirely
+- Remove all imports of legacy sifting functions
+- Confirm test suite uses only SquidASM-native implementations
+- Update documentation to reference new module paths
+
+No deprecation period—deletion is immediate upon validation.
 
 ---
 

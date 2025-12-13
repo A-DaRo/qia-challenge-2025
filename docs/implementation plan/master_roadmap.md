@@ -14,8 +14,8 @@ This document is the **operational master plan** for implementing E-HOK (Entangl
 **Guiding Principles**:
 
 1. **Synthesize, Not Repeat**: This document hyperlinks to phase analyses for mathematical proofs. It operationalizes findings into tasks.
-2. **"Strangler Fig" Migration**: Legacy `ehok` components are wrapped, replicated in SquidASM context, validated for parity, then deprecated.
-3. **Test-Driven Migration (TDM)**: Every component has validation tests defined *before* migration. Green tests gatekeep the critical path.
+2. **Aggressive Legacy Removal**: Legacy `ehok` components are wrapped, replicated in SquidASM context, validated for parity, then **permanently deleted**. No rollback option.
+3. **Test-Driven Migration (TDM)**: Every component has validation tests defined *before* migration. Green tests gatekeep the critical path and must pass before legacy code removal.
 4. **No Code Here**: This document defines *what* to build and *when*—not *how* to implement.
 
 ---
@@ -45,13 +45,13 @@ This document is the **operational master plan** for implementing E-HOK (Entangl
 
 **Total Duration**: ~6 weeks (including buffer for unforeseen blockers)
 
-### 1.2 Migration Methodology: Strangler Fig Pattern
+### 1.2 Migration Methodology: Aggressive Legacy Removal
 
-The **Strangler Fig** pattern allows incremental replacement of legacy code without a disruptive rewrite:
+The **Aggressive Removal** strategy replaces legacy code component-by-component without maintaining dual implementations or rollback options:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                        Strangler Fig Migration Pattern                       │
+│                      Aggressive Legacy Removal Pattern                       │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
 │   Phase 1: WRAP                                                              │
@@ -64,7 +64,7 @@ The **Strangler Fig** pattern allows incremental replacement of legacy code with
 │   Phase 2: REPLICATE                                                         │
 │   ┌─────────────────────────────────────────────────────────────────────┐   │
 │   │ Implement SquidASM-native versions satisfying the same interface    │   │
-│   │ Both implementations coexist; feature flag selects which is used    │   │
+│   │ New implementation coexists temporarily during validation            │   │
 │   └─────────────────────────────────────────────────────────────────────┘   │
 │                                │                                             │
 │                                ▼                                             │
@@ -72,17 +72,26 @@ The **Strangler Fig** pattern allows incremental replacement of legacy code with
 │   ┌─────────────────────────────────────────────────────────────────────┐   │
 │   │ Run both implementations in parallel; compare outputs               │   │
 │   │ Test suite must show byte-for-byte parity on deterministic runs     │   │
+│   │ Validation GATES legacy code deletion—no removal without proof      │   │
 │   └─────────────────────────────────────────────────────────────────────┘   │
 │                                │                                             │
-│                                ▼                                             │
-│   Phase 4: DEPRECATE                                                         │
+│                                ▼ Parity Tests Pass                          │
+│   Phase 4: DELETE (No Rollback)                                              │
 │   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │ Remove legacy code from critical path; archive for reference        │   │
-│   │ Mark with @deprecated decorator; remove in next major version       │   │
+│   │ PERMANENTLY remove legacy code from repository                      │   │
+│   │ Update all internal imports to reference SquidASM-native version    │   │
+│   │ No deprecation period, no feature flag fallback                     │   │
+│   │ Version bump reflects breaking change                               │   │
 │   └─────────────────────────────────────────────────────────────────────┘   │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+**Key Differences from Strangler Fig**:
+- **No Feature Flags**: New implementation becomes the only path
+- **No Long-term Dual Maintenance**: Eliminates technical debt from maintaining two code paths
+- **Faster Iteration**: Validation gates immediate deletion, preventing stale code accumulation
+- **Clear Responsibility**: Each developer knows exactly which implementation is in use
 
 ### 1.3 Global Definitions
 
@@ -195,8 +204,12 @@ For each legacy component being migrated:
 2. **Write Tests Against Interface**: Tests reference interface, not implementation
 3. **Implement New Component**: SquidASM-native version satisfies interface
 4. **Parity Test**: Run both implementations with fixed seed; assert identical output
-5. **Switch Default**: Change factory to return new implementation
-6. **Archive Legacy**: Move to `_legacy/` folder with deprecation marker
+5. **Validation Gate**: Parity test must pass with ≥99% coverage overlap before proceeding
+6. **Delete Legacy**: Remove legacy implementation file and all references from codebase
+7. **Update Imports**: Redirect all internal and test imports to new SquidASM-native version
+8. **Verification**: Confirm test suite runs without fallback code paths
+
+**No Rollback Option**: Once legacy code is deleted, there is no mechanism to restore it. This enforces forward momentum and prevents accumulation of duplicated logic.
 
 ---
 
@@ -474,7 +487,7 @@ Bob Output:
 | RISK-001 | NetSquid timing API incompatible with Δt enforcement | Medium | Critical | Investigate `ns.sim_time()` access early in Sprint 1 |
 | RISK-002 | LDPC efficiency cliff at moderate QBER (>10%) | High | High | Implement adaptive rate selection; pre-flight feasibility check |
 | RISK-003 | Finite-key "Death Valley" causes zero key rate | Medium | High | Batch feasibility pre-check before quantum phase |
-| RISK-004 | Legacy code assumptions break under SquidASM | Medium | Medium | Strangler Fig pattern + parity tests |
+| RISK-004 | Legacy code assumptions break under SquidASM | Medium | Medium | Comprehensive parity tests before deletion + early detection via CI |
 | RISK-005 | Oblivious output structure incompatible with MPC use case | Low | High | Validate output format with application layer early |
 
 ### 5.2 Contingency Protocols
@@ -552,15 +565,6 @@ where:
 - [Phase III Analysis: Information Reconciliation](phase_III_analysis.md) — LDPC, wiretap cost, safety cap
 - [Phase IV Analysis: Privacy Amplification](phase_IV_analysis.md) — NSM bounds, oblivious output
 
-### Key Literature
-
-| Citation | Topic | Location |
-|----------|-------|----------|
-| [Lupo 2023] | NSM security bounds, virtual erasure channel | `docs/literature/lupo_et_al.pdf` |
-| [Erven 2014] | Experimental parameters, noise models | `docs/literature/erven_2014.pdf` |
-| [Scarani 2009] | Finite-key analysis, statistical penalties | `docs/literature/scarani_review.pdf` |
-| [Renner 2008] | Composable security, leftover hash lemma | `docs/literature/renner_thesis.pdf` |
-
 ### Project Infrastructure
 
 | Resource | Purpose |
@@ -568,15 +572,3 @@ where:
 | `ehok/` | Implementation workspace |
 | `squidasm/` | Framework source (read-only reference) |
 | `qia/lib/python3.10/site-packages/netqasm/` | SDK reference |
-
----
-
-## Document Revision History
-
-| Version | Date | Author | Changes |
-|---------|------|--------|---------|
-| 1.0.0 | Session | AI Assistant | Initial comprehensive roadmap |
-
----
-
-*End of Master Implementation Roadmap*
