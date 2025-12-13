@@ -3,23 +3,23 @@ Toeplitz hashing for privacy amplification.
 
 This module implements the privacy amplification phase using Toeplitz matrices.
 It provides functionality to generate a random Toeplitz seed, compress the
-reconciled key, and calculate the secure final key length based on the
-leftover hash lemma with rigorous finite-key corrections.
+reconciled key, and calculate the secure final key length using NSM-compliant
+finite-key bounds.
 
 References
 ----------
 [1] Tomamichel, M., Lim, C. C. W., Gisin, N., & Renner, R. (2012).
     "Tight finite-key analysis for quantum cryptography."
     Nature Communications, 3, 634.
+[2] Lupo et al. (2023): NSM Max Bound formula.
 """
 
 import secrets
 import numpy as np
-from typing import Any, Optional
+from typing import Optional
 from ehok.interfaces.privacy_amplification import IPrivacyAmplifier
 from ehok.core.constants import (
     TARGET_EPSILON_SEC,
-    PA_SECURITY_MARGIN,
     TEST_SET_FRACTION,
     MIN_TEST_SET_SIZE,
 )
@@ -41,11 +41,10 @@ class ToeplitzAmplifier(IPrivacyAmplifier):
     Toeplitz matrix privacy amplification implementation.
 
     This class implements the IPrivacyAmplifier interface using Toeplitz
-    matrices for 2-universal hashing with rigorous finite-key security bounds.
+    matrices for 2-universal hashing with rigorous NSM finite-key security bounds.
 
-    The implementation eliminates the need for arbitrary security margins
-    by using the Tomamichel et al. finite-key formula with statistical
-    fluctuation correction μ(ε).
+    The implementation uses the NSM-compliant finite-key formula with
+    statistical fluctuation correction μ(ε).
 
     Attributes
     ----------
@@ -59,25 +58,18 @@ class ToeplitzAmplifier(IPrivacyAmplifier):
         Key length above which FFT compression is used (if use_fft=True).
     """
 
-    # Deprecated parameter - kept for backwards compatibility
-    _deprecated_security_margin: Optional[int] = None
-
     def __init__(
         self,
-        security_margin: Optional[int] = None,
         epsilon_sec: float = TARGET_EPSILON_SEC,
         epsilon_cor: float = DEFAULT_EPSILON_COR,
         use_fft: bool = False,
         fft_threshold: int = 10000,
     ) -> None:
         """
-        Initialize Toeplitz amplifier with finite-key security parameters.
+        Initialize Toeplitz amplifier with NSM finite-key security parameters.
 
         Parameters
         ----------
-        security_margin : int, optional
-            **DEPRECATED**. Ignored in finite-key mode. Kept for backwards
-            compatibility only.
         epsilon_sec : float
             Target security parameter (default: 1e-9).
         epsilon_cor : float
@@ -87,16 +79,6 @@ class ToeplitzAmplifier(IPrivacyAmplifier):
         fft_threshold : int
             Key length above which FFT is used (if use_fft=True).
         """
-        if security_margin is not None:
-            logger.warning(
-                "security_margin is deprecated and ignored. "
-                "Finite-key formula automatically provides rigorous security bounds."
-            )
-            self._deprecated_security_margin = security_margin
-
-        # For backwards compatibility, keep security_margin attribute
-        self.security_margin = security_margin if security_margin is not None else PA_SECURITY_MARGIN
-
         self.epsilon_sec = epsilon_sec
         self.epsilon_cor = epsilon_cor
         self.use_fft = use_fft
@@ -415,43 +397,3 @@ class ToeplitzAmplifier(IPrivacyAmplifier):
             epsilon_sec=self.epsilon_sec,
             epsilon_cor=self.epsilon_cor,
         )
-
-    # Backwards compatibility: expose deprecated asymptotic formula
-    def compute_final_length_asymptotic(
-        self,
-        sifted_length: int,
-        qber: float,
-        leakage: float,
-        epsilon: float = TARGET_EPSILON_SEC,
-    ) -> int:
-        """
-        **DEPRECATED**: Calculate key length using asymptotic formula.
-
-        This method is kept for backwards compatibility and testing only.
-        Use `compute_final_length()` for production code.
-
-        The asymptotic formula does not account for finite-key effects and
-        requires an arbitrary security margin.
-        """
-        import warnings
-        warnings.warn(
-            "compute_final_length_asymptotic is deprecated. "
-            "Use compute_final_length() with finite-key correction.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-
-        # Calculate binary entropy h(qber)
-        h_qber = binary_entropy(qber) if 0 < qber < 1 else 0.0
-
-        # Min-entropy (asymptotic)
-        min_entropy = sifted_length * (1 - h_qber)
-
-        # Security cost
-        epsilon_cost = 2 * np.log2(1.0 / epsilon)
-
-        # Calculate final length with deprecated margin
-        margin = self._deprecated_security_margin or PA_SECURITY_MARGIN
-        m_float = min_entropy - leakage - epsilon_cost - margin
-
-        return max(0, int(np.floor(m_float)))

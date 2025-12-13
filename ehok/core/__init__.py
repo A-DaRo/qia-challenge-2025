@@ -32,6 +32,14 @@ from ehok.core.feasibility import (
     ABORT_CODE_DEATH_VALLEY,
     ABORT_CODE_INVALID_PARAMETERS,
 )
+from ehok.core.oblivious_formatter import (
+    AliceObliviousKey,
+    BobObliviousKey,
+    ProtocolMetrics,
+    ObliviousTransferResult,
+    ObliviousKeyFormatter,
+    validate_ot_correctness,
+)
 
 __all__ = [
     "ObliviousKey",
@@ -57,4 +65,11 @@ __all__ = [
     "ABORT_CODE_CAPACITY_RATE_VIOLATED",
     "ABORT_CODE_DEATH_VALLEY",
     "ABORT_CODE_INVALID_PARAMETERS",
+    # Sprint 3 OT output structures
+    "AliceObliviousKey",
+    "BobObliviousKey",
+    "ProtocolMetrics",
+    "ObliviousTransferResult",
+    "ObliviousKeyFormatter",
+    "validate_ot_correctness",
 ]

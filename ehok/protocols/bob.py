@@ -11,6 +11,10 @@ from pydynaa import EventExpression
 from ehok.core.config import ProtocolConfig
 from ehok.core.constants import TARGET_EPSILON_SEC
 from ehok.core.data_structures import LDPCBlockResult, ObliviousKey
+from ehok.core.oblivious_formatter import (
+    BobObliviousKey,
+    ObliviousKeyFormatter,
+)
 from ehok.core.exceptions import MatrixSynchronizationError
 from ehok.protocols.base import EHOKRole
 from ehok.implementations import factories
@@ -171,31 +175,86 @@ class BobBaselineEHOK(EHOKRole):
     def _phase5_privacy_amplification(
         self, bob_key: np.ndarray, block_result: LDPCBlockResult, I_1: np.ndarray, total_length: int
     ) -> Generator[EventExpression, None, ObliviousKey]:
+        """
+        Execute Phase V: Privacy Amplification for Bob.
+
+        Bob receives the Toeplitz seed from Alice and extracts his key.
+        His choice bit C is derived from the I_1 fraction (basis asymmetry).
+
+        In the NSM OT structure:
+        - Bob obtains S_C (the key corresponding to his choice)
+        - Bob CANNOT learn S_{1-C} due to NSM entropy bound
+
+        Parameters
+        ----------
+        bob_key : np.ndarray
+            Bob's reconciled key material.
+        block_result : LDPCBlockResult
+            Results from LDPC reconciliation.
+        I_1 : np.ndarray
+            Indices of Alice's unchosen basis (determines choice bit).
+        total_length : int
+            Total sifted length for fraction calculation.
+
+        Returns
+        -------
+        ObliviousKey
+            Contains final_length, key_value, and metadata.
+        """
         logger.info("=== PHASE 5: Privacy Amplification ===")
+
+        # Receive seed from Alice
         seed_msg = yield from self.context.csockets[self.PEER_NAME].recv()
         seed_bytes = bytes.fromhex(seed_msg)
+
+        # Get storage noise parameter for metadata
+        storage_noise_r = getattr(self.config, 'nsm', None)
+        if storage_noise_r is not None:
+            storage_noise_r = self.config.nsm.storage_noise_r
+        else:
+            storage_noise_r = 0.75  # Default
+
+        # Handle empty seed (death valley case)
         if len(seed_bytes) == 0:
             seed = np.zeros(0, dtype=np.uint8)
             final_key = np.zeros(0, dtype=np.uint8)
         else:
             seed = np.frombuffer(seed_bytes, dtype=np.uint8)
             final_key = self.privacy_amplifier.compress(bob_key, seed)
+
         final_length = len(final_key)
 
-        fraction_unknown = len(I_1) / total_length if total_length else 0
-        num_unknown = int(final_length * fraction_unknown)
-        knowledge_mask = np.zeros(final_length, dtype=np.uint8)
-        if num_unknown > 0:
-            knowledge_mask[:num_unknown] = 1
+        # Derive Bob's choice bit from I_1 fraction
+        # In E-HOK, the I_1/I_0 asymmetry determines which key Bob can reconstruct
+        choice_bit = ObliviousKeyFormatter.derive_choice_bit_from_i1_fraction(
+            len(I_1),
+            total_length,
+            seed=self.config.sampling_seed or 0,
+        )
 
+        # Create knowledge mask: Bob knows his key entirely (mask=0)
+        # The OT security comes from NSM bound, not from the mask
+        knowledge_mask = np.zeros(final_length, dtype=np.uint8)
+
+        # Compute QBER from reconciliation
         if block_result.block_length == 0:
             qber = 0.0 if block_result.verified else 0.5
         else:
             qber = block_result.error_count / block_result.block_length if block_result.verified else 0.5
+
+        logger.debug(
+            "Bob PA: key_len=%d, choice_bit=%d, I_1_frac=%.3f, r=%.3f",
+            final_length,
+            choice_bit,
+            len(I_1) / total_length if total_length else 0,
+            storage_noise_r,
+        )
+
+        # Create ObliviousKey output
         oblivious_key = ObliviousKey(
             key_value=final_key,
             knowledge_mask=knowledge_mask,
-            security_param=TARGET_EPSILON_SEC,
+            security_param=self.config.privacy_amplification.target_epsilon_sec,
             qber=qber,
             final_length=final_length,
         )
@@ -210,5 +269,6 @@ class BobBaselineEHOK(EHOKRole):
         if hasattr(self, "measured_qber"):
             self.reconciliator.current_qber_est = self.measured_qber
 
-# Backwards compatibility aliases
+
+# Protocol aliases
 BobEHOKProgram = BobBaselineEHOK

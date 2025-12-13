@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Generator, Dict, Any, Tuple
+from typing import Generator, Dict, Any, Tuple, Union
 
 import numpy as np
 from pydynaa import EventExpression
@@ -12,6 +12,11 @@ from pydynaa import EventExpression
 from ehok.core.config import ProtocolConfig
 from ehok.core.constants import TARGET_EPSILON_SEC
 from ehok.core.data_structures import LDPCBlockResult, ObliviousKey
+from ehok.core.oblivious_formatter import (
+    AliceObliviousKey,
+    ProtocolMetrics,
+    ObliviousKeyFormatter,
+)
 from ehok.core.exceptions import CommitmentVerificationError, MatrixSynchronizationError, ReconciliationFailedError
 from ehok.protocols.base import EHOKRole
 from ehok.implementations import factories
@@ -19,6 +24,11 @@ from ehok.implementations.privacy_amplification.finite_key import (
     FiniteKeyParams,
     compute_final_length_finite_key,
 )
+from ehok.implementations.privacy_amplification.nsm_privacy_amplifier import (
+    NSMPrivacyAmplificationParams,
+    compute_nsm_key_length,
+)
+from ehok.analysis.nsm_bounds import FeasibilityResult
 from ehok.quantum.runner import QuantumPhaseResult
 from ehok.utils.logging import get_logger
 
@@ -189,57 +199,84 @@ class AliceBaselineEHOK(EHOKRole):
 	def _phase5_privacy_amplification(
 		self, corrected_key: np.ndarray, block_result: LDPCBlockResult
 	) -> Generator[EventExpression, None, ObliviousKey]:
+		"""
+		Execute Phase V: Privacy Amplification using NSM bounds.
+
+		This method computes the secure key length using the NSM Max Bound:
+		    ℓ ≤ n · h_min(r) - |Σ| - 2·log₂(1/ε_sec)
+
+		Where h_min(r) = max { Γ[1 - log₂(1 + 3r²)], 1 - r }
+
+		Returns
+		-------
+		ObliviousKey
+			Contains final_length, key_value, and metadata.
+			The knowledge_mask is set to zeros for Alice (she knows her entire key).
+		"""
 		logger.info("=== PHASE 5: Privacy Amplification ===")
+
+		# Compute leakage from reconciliation (wiretap cost |Σ|)
 		leakage = self.reconciliator.estimate_leakage_block(  # type: ignore[attr-defined]
 			block_result.syndrome_length, block_result.hash_bits
 		)
+
+		# Compute QBER from reconciliation results
 		if block_result.block_length == 0:
 			qber = 0.0 if block_result.verified else 0.5
 		else:
 			qber = block_result.error_count / block_result.block_length if block_result.verified else 0.5
 
-		# Use finite-key formula when enabled (recommended)
 		pa_config = self.config.privacy_amplification
-		# If the reconciled key is empty, we should not instantiate finite-key
-		# parameter objects which require n>0. Short-circuit to final_length=0
-		# and proceed with the abort logic (empty seed / empty final key).
+
+		# Get storage noise parameter from NSM config
+		storage_noise_r = getattr(self.config, 'nsm', None)
+		if storage_noise_r is not None:
+			storage_noise_r = self.config.nsm.storage_noise_r
+		else:
+			# Default to Erven et al. value if nsm config not present
+			storage_noise_r = 0.75
+
+		# Handle empty reconciled key case
 		if len(corrected_key) == 0:
 			final_length = 0
+			entropy_bound_used = "none"
 		else:
-			if pa_config.use_finite_key:
-				# Determine test bits: use override or estimate from TEST_SET_FRACTION
-				test_bits = pa_config.test_bits_override
-				if test_bits is None:
-					from ehok.core.constants import TEST_SET_FRACTION
-					test_bits = max(1, int(len(corrected_key) * TEST_SET_FRACTION / (1 - TEST_SET_FRACTION)))
+			# Use NSM formula for key length calculation
+			nsm_params = NSMPrivacyAmplificationParams(
+				reconciled_key_length=len(corrected_key),
+				storage_noise_r=storage_noise_r,
+				syndrome_leakage_bits=block_result.syndrome_length,
+				hash_leakage_bits=block_result.hash_bits,
+				epsilon_sec=pa_config.target_epsilon_sec,
+				adjusted_qber=qber,
+			)
+			nsm_result = compute_nsm_key_length(nsm_params)
+			final_length = nsm_result.secure_key_length
+			entropy_bound_used = nsm_result.entropy_bound_used
 
-				params = FiniteKeyParams(
-					n=len(corrected_key),
-					k=test_bits,
-					qber_measured=qber,
-					leakage=leakage,
-					epsilon_sec=pa_config.target_epsilon_sec,
-					epsilon_cor=pa_config.target_epsilon_cor,
-				)
-				final_length = compute_final_length_finite_key(params)
-				logger.debug(
-					"Finite-key PA: n=%d, k=%d, QBER=%.4f, leakage=%d -> final=%d",
-					params.n, params.k, qber, leakage, final_length,
-				)
-			else:
-				# Fall back to legacy formula (deprecated)
-				final_length = self.privacy_amplifier.compute_final_length(
-				len(corrected_key), qber, leakage, pa_config.target_epsilon
+			logger.debug(
+				"NSM PA: n=%d, r=%.3f, h_min=%.4f, leakage=%d, ε=%.2e → ℓ=%d [%s]",
+				len(corrected_key),
+				storage_noise_r,
+				nsm_result.min_entropy_rate,
+				nsm_params.total_leakage,
+				pa_config.target_epsilon_sec,
+				final_length,
+				entropy_bound_used,
 			)
 
+			# Log death valley warning if needed
+			if nsm_result.feasibility != FeasibilityResult.FEASIBLE:
+				logger.warning(
+					"Death Valley: feasibility=%s, extractable=%.1f, consumed=%.1f",
+					nsm_result.feasibility.name,
+					nsm_result.extractable_entropy,
+					nsm_result.entropy_consumed,
+				)
 
-		# Allow test override: fixed_output_length ensures deterministic output sizes
-		# (deprecated, but kept for backwards compatibility)
-		if pa_config.fixed_output_length is not None:
-			final_length = int(pa_config.fixed_output_length)
-
+		# Generate Toeplitz seed and compress
 		if final_length <= 0:
-			# No secure key to extract: send empty seed and create empty final key
+			# No secure key: send empty seed
 			seed = np.array([], dtype=np.uint8)
 			self.context.csockets[self.PEER_NAME].send(seed.tobytes().hex())
 			final_key = np.zeros(0, dtype=np.uint8)
@@ -247,11 +284,14 @@ class AliceBaselineEHOK(EHOKRole):
 			seed = self.privacy_amplifier.generate_hash_seed(len(corrected_key), final_length)
 			self.context.csockets[self.PEER_NAME].send(seed.tobytes().hex())
 			final_key = self.privacy_amplifier.compress(corrected_key, seed)
+
+		# Create ObliviousKey output
+		# Alice knows all bits (knowledge_mask = 0)
 		knowledge_mask = np.zeros_like(final_key)
 		oblivious_key = ObliviousKey(
 			key_value=final_key,
 			knowledge_mask=knowledge_mask,
-			security_param=TARGET_EPSILON_SEC,
+			security_param=pa_config.target_epsilon_sec,
 			qber=qber,
 			final_length=final_length,
 		)
@@ -271,5 +311,5 @@ class AliceBaselineEHOK(EHOKRole):
 			self.reconciliator.current_qber_est = self.measured_qber
 
 
-# Backwards compatibility aliases
+# Protocol aliases
 AliceEHOKProgram = AliceBaselineEHOK

@@ -402,10 +402,6 @@ class TestConstants:
         assert constants.LDPC_BP_THRESHOLD == 1e-6
         assert 0.50 in constants.LDPC_DEGREE_DISTRIBUTIONS
 
-    def test_privacy_amplification_parameters(self):
-        """Verify privacy amplification parameters."""
-        assert constants.PA_SECURITY_MARGIN == 100
-
     def test_logging_configuration(self):
         """Verify logging configuration."""
         assert constants.LOG_LEVEL == "INFO"

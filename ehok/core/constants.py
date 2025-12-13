@@ -305,21 +305,6 @@ Edge-perspective degree distributions keyed by code rate, loaded from
 """
 
 # ============================================================================
-# Privacy Amplification
-# ============================================================================
-
-PA_SECURITY_MARGIN = 100
-"""
-Additional bits to compress for security buffer.
-
-Notes
------
-This margin accounts for estimation errors and provides additional security
-cushion. It's subtracted from the theoretical maximum key length calculated
-from the leftover hash lemma.
-"""
-
-# ============================================================================
 # Logging Configuration
 # ============================================================================
 

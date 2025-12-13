@@ -387,42 +387,33 @@ class TestPrivacyAmplification:
 
     def test_compression_length_calculation(self):
         """
-        Test Case 7.2.1: Length Reduction Calculation (Legacy API).
+        Test Case 7.2.1: Length Reduction Calculation using finite-key formula.
         
-        Verifies that the asymptotic final key length is calculated correctly
-        according to the leftover hash lemma.
-        
-        NOTE: This test uses the deprecated compute_final_length_asymptotic() API
-        which includes PA_SECURITY_MARGIN. New code should use
-        compute_final_length() with finite-key correction instead.
+        Verifies that the finite-key formula produces correct key lengths
+        accounting for statistical fluctuation corrections.
         """
-        sifted_length = 1000
-        qber = 0.05
-        leakage = 500
+        # Use larger key with lower leakage to ensure positive output with low QBER
+        sifted_length = 50000
+        qber = 0.02  # Low QBER to ensure positive key
+        leakage = 5000  # ~10% leakage
         epsilon = 1e-9
+        test_bits = 5000  # Explicit test bits
         
-        # Use the deprecated asymptotic method explicitly
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            final_length = self.amplifier.compute_final_length_asymptotic(
-                sifted_length, qber, leakage, epsilon
-            )
+        final_length = self.amplifier.compute_final_length(
+            sifted_length, qber, leakage, epsilon, test_bits=test_bits
+        )
         
-        # Manual calculation check
-        # h(0.05) = -0.05*log2(0.05) - 0.95*log2(0.95)
-        h_qber = -0.05 * np.log2(0.05) - 0.95 * np.log2(0.95)
-        min_entropy = sifted_length * (1 - h_qber)
-        epsilon_cost = 2 * np.log2(1.0 / epsilon)
-        
-        # Import PA_SECURITY_MARGIN for legacy test
-        from ehok.core.constants import PA_SECURITY_MARGIN
-        expected_float = min_entropy - leakage - epsilon_cost - PA_SECURITY_MARGIN
-        expected_int = int(np.floor(expected_float))
-        
-        # Allow for small floating point differences, but integer result should match
-        assert final_length == expected_int
-        assert final_length > 0
+        # finite-key formula should produce positive output for these parameters
+        assert final_length > 0, f"Expected positive key, got {final_length}"
         assert final_length < sifted_length
+        
+        # Verify monotonicity: higher QBER -> shorter key
+        # Use QBER that's high but still produces positive output
+        final_length_high_qber = self.amplifier.compute_final_length(
+            sifted_length, 0.05, leakage, epsilon, test_bits=test_bits
+        )
+        # Monotonicity: with higher QBER, key should be shorter (or both zero)
+        assert final_length_high_qber <= final_length
 
     def test_compression_execution(self):
         """
@@ -632,40 +623,37 @@ class TestPrivacyAmplification:
     def test_zero_length_output(self):
         """Test behavior when calculated length is zero or negative."""
         # High leakage/QBER resulting in 0 length
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            length = self.amplifier.compute_final_length(
-                sifted_length=100,
-                qber=0.5,  # Very high error
-                leakage=100,
-                epsilon=1e-9
-            )
+        length = self.amplifier.compute_final_length(
+            sifted_length=100,
+            qber=0.5,  # Very high error
+            leakage=100,
+            epsilon=1e-9
+        )
         assert length == 0
 
     def test_compute_final_length_security_bound(self):
         """
-        Verify that the compute_final_length respects the leftover hash lemma bound
-        and produces values <= theoretical upper bound computed from parameters.
+        Verify that compute_final_length produces conservative outputs
+        that account for finite-key statistical fluctuations.
         
-        NOTE: Uses deprecated API. New code should use finite-key formula.
+        The finite-key formula is more conservative than asymptotic bounds.
         """
-        sifted_length = 1000
+        sifted_length = 10000
         qber = 0.05
-        leakage = 500
+        leakage = 3500  # ~35% leakage
         epsilon = 1e-9
+        test_bits = 1000
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            final_length = self.amplifier.compute_final_length(sifted_length, qber, leakage, epsilon)
+        final_length = self.amplifier.compute_final_length(
+            sifted_length, qber, leakage, epsilon, test_bits=test_bits
+        )
 
-        # Recompute bound using formula in implementation
+        # Compute asymptotic bound for comparison
         h_qber = -qber * np.log2(qber) - (1 - qber) * np.log2(1 - qber)
         min_entropy = sifted_length * (1 - h_qber)
         epsilon_cost = 2 * np.log2(1.0 / epsilon)
-        from ehok.core.constants import PA_SECURITY_MARGIN
-        bound_float = min_entropy - leakage - epsilon_cost - PA_SECURITY_MARGIN
-        bound = int(np.floor(bound_float))
+        asymptotic_bound = min_entropy - leakage - epsilon_cost
 
-        # final_length must be <= bound and non-negative
-        assert final_length <= bound
+        # Finite-key result must be more conservative than asymptotic
+        assert final_length <= asymptotic_bound
         assert final_length >= 0

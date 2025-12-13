@@ -88,12 +88,53 @@ class ReconciliationConfig:
 
 
 @dataclass
+class NSMConfig:
+    """
+    Noisy Storage Model security parameters.
+
+    These parameters define the adversary model assumptions for NSM security.
+
+    Attributes
+    ----------
+    storage_noise_r : float
+        Depolarizing channel retention parameter r ∈ [0, 1].
+        r = 0: Complete depolarization (maximum security).
+        r = 1: Perfect storage (minimum security).
+        Default: 0.75 (Erven et al. 2014).
+    storage_rate_nu : float
+        Fraction of qubits adversary can store ν ∈ [0, 1].
+        Default: 0.002.
+    delta_t_ns : int
+        Mandatory wait time in nanoseconds for timing barrier.
+        Default: 1_000_000_000 (1 second).
+    """
+
+    storage_noise_r: float = 0.75
+    storage_rate_nu: float = 0.002
+    delta_t_ns: int = 1_000_000_000
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.storage_noise_r <= 1.0:
+            raise ValueError(
+                f"storage_noise_r must be in [0, 1], got {self.storage_noise_r}"
+            )
+        if not 0.0 <= self.storage_rate_nu <= 1.0:
+            raise ValueError(
+                f"storage_rate_nu must be in [0, 1], got {self.storage_rate_nu}"
+            )
+        if self.delta_t_ns <= 0:
+            raise ValueError(
+                f"delta_t_ns must be positive, got {self.delta_t_ns}"
+            )
+
+
+@dataclass
 class PrivacyAmplificationConfig:
     """
-    Privacy amplification parameters with finite-key security.
+    Privacy amplification parameters with NSM finite-key security.
 
-    The finite-key formula automatically computes secure output lengths
-    without requiring arbitrary security margins.
+    The NSM finite-key formula automatically computes secure output lengths
+    using the Max Bound: h_min(r) = max { Γ[1 - log₂(1 + 3r²)], 1 - r }.
 
     Attributes
     ----------
@@ -104,38 +145,25 @@ class PrivacyAmplificationConfig:
     test_bits_override : int, optional
         Override the number of test bits for finite-key calculation.
         If None, estimated from TEST_SET_FRACTION.
-    use_finite_key : bool
-        Whether to use the rigorous finite-key formula (recommended).
     use_fft_compression : bool
         Whether to use FFT-based O(n log n) compression for large keys.
     fft_threshold : int
         Key length above which FFT compression is used.
 
-    Deprecated Attributes
-    ---------------------
-    security_margin : int
-        **DEPRECATED**. Ignored by finite-key formula.
-    fixed_output_length : int, optional
-        **DEPRECATED**. No longer needed with finite-key formula.
-    target_epsilon : float
-        **DEPRECATED**. Use target_epsilon_sec instead.
+    Notes
+    -----
+    Legacy parameters (security_margin, fixed_output_length, target_epsilon)
+    have been removed as part of NSM compliance. All key length calculations
+    now use the NSM Max Bound formula exclusively.
     """
 
-    # New finite-key parameters
     target_epsilon_sec: float = constants.TARGET_EPSILON_SEC
     target_epsilon_cor: float = 1e-15
     test_bits_override: Optional[int] = None
-    use_finite_key: bool = True  # Enable finite-key formula by default
     use_fft_compression: bool = False
     fft_threshold: int = 10000
 
-    # Deprecated parameters (kept for backwards compatibility)
-    security_margin: int = constants.PA_SECURITY_MARGIN
-    target_epsilon: float = constants.TARGET_EPSILON_SEC
-    fixed_output_length: Optional[int] = None
-
     def __post_init__(self) -> None:
-        # Validate new parameters
         if not 0 < self.target_epsilon_sec < 1:
             raise ValueError("target_epsilon_sec must be in (0,1)")
         if not 0 < self.target_epsilon_cor < 1:
@@ -144,14 +172,6 @@ class PrivacyAmplificationConfig:
             raise ValueError("test_bits_override must be positive when set")
         if self.fft_threshold <= 0:
             raise ValueError("fft_threshold must be positive")
-
-        # Validate deprecated parameters (for backwards compatibility)
-        if self.security_margin < 0:
-            raise ValueError("security_margin must be non-negative")
-        if not 0 < self.target_epsilon < 1:
-            raise ValueError("target_epsilon must be in (0,1)")
-        if self.fixed_output_length is not None and self.fixed_output_length <= 0:
-            raise ValueError("fixed_output_length must be positive when set")
 
 
 @dataclass
@@ -164,6 +184,7 @@ class ProtocolConfig:
     privacy_amplification: PrivacyAmplificationConfig = field(
         default_factory=PrivacyAmplificationConfig
     )
+    nsm: NSMConfig = field(default_factory=NSMConfig)
     sampling_seed: Optional[int] = None
     noise_model: Optional[str] = None
     approximate_knowledge_mask: bool = True

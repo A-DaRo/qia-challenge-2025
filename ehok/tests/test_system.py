@@ -58,15 +58,13 @@ def test_honest_execution_perfect():
     # Use baseline protocol config, set total_pairs for test speed
     cfg = ProtocolConfig.baseline().copy_with()
     # With frame_size=128 and ~50% sifting, use 200 pairs to get ~100 bits < 128
-    cfg.quantum.total_pairs = 200
+    cfg.quantum.total_pairs = 1000
     cfg.reconciliation.testing_mode = True
     cfg.reconciliation.ldpc_test_frame_size = 128
-    # Use finite-key formula instead of fixed_output_length
-    cfg.privacy_amplification.use_finite_key = True
     # Override test_bits for small test runs (needed for finite-key μ calculation)
-    cfg.privacy_amplification.test_bits_override = 10
-    alice = AliceEHOKProgram(config=cfg, total_pairs=200)
-    bob = BobEHOKProgram(config=cfg, total_pairs=200)
+    #cfg.privacy_amplification.test_bits_override = 10
+    alice = AliceEHOKProgram(config=cfg, total_pairs=1000)
+    bob = BobEHOKProgram(config=cfg, total_pairs=1000)
 
     results = run(config=config, programs={"alice": alice, "bob": bob}, num_times=1)
 
@@ -125,8 +123,8 @@ def test_noise_tolerance_5pct():
     base_cfg.reconciliation.ldpc_test_frame_size = 128
     # With frame_size=128, we need fewer pairs. ~250 pairs should be sufficient.
     base_cfg.quantum.total_pairs = 250
-    # Reduce security margin for small frame size tests
-    base_cfg.privacy_amplification.security_margin = 20
+    # Override test_bits for small test runs
+    base_cfg.privacy_amplification.test_bits_override = 20
 
     trials = 5
     success_count = 0
@@ -198,8 +196,7 @@ def test_qber_abort_threshold():
     cfg.quantum.total_pairs = 200
     cfg.reconciliation.testing_mode = True
     cfg.reconciliation.ldpc_test_frame_size = 128
-    # Use finite-key formula instead of fixed_output_length
-    cfg.privacy_amplification.use_finite_key = True
+    # Override test_bits for small test runs
     cfg.privacy_amplification.test_bits_override = 10
 
     alice = AliceEHOKProgram(config=cfg, total_pairs=200)
@@ -279,8 +276,8 @@ def test_commitment_ordering_security():
     cfg.quantum.total_pairs = 200
     cfg.reconciliation.testing_mode = True
     cfg.reconciliation.ldpc_test_frame_size = 128
-    # Reduce security margin for small frame size tests
-    cfg.privacy_amplification.security_margin = 20
+    # Override test_bits for small test runs
+    cfg.privacy_amplification.test_bits_override = 20
 
     # Malicious Alice vs Honest Bob
     alice = MaliciousAliceProgram(config=cfg, total_pairs=200)

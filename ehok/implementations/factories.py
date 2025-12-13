@@ -67,8 +67,17 @@ def build_reconciliator(
 
 
 def build_privacy_amplifier(config: ProtocolConfig) -> IPrivacyAmplifier:
-    """Return privacy amplifier instance for configuration."""
-    return ToeplitzAmplifier(security_margin=config.privacy_amplification.security_margin)
+    """
+    Return privacy amplifier instance for configuration.
+    
+    Uses NSM-compliant finite-key parameters.
+    """
+    return ToeplitzAmplifier(
+        epsilon_sec=config.privacy_amplification.target_epsilon_sec,
+        epsilon_cor=config.privacy_amplification.target_epsilon_cor,
+        use_fft=config.privacy_amplification.use_fft_compression,
+        fft_threshold=config.privacy_amplification.fft_threshold,
+    )
 
 
 def build_sampling_strategy(config: ProtocolConfig) -> ISamplingStrategy:
