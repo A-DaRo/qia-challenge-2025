@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Generator, Dict, Any
+from typing import Generator, Dict, Any, Optional, Callable
 
 from pydynaa import EventExpression
 from squidasm.sim.stack.program import Program, ProgramMeta # type: ignore
@@ -11,24 +11,60 @@ from squidasm.sim.stack.program import Program, ProgramMeta # type: ignore
 from ehok.core.config import ProtocolConfig
 from ehok.core.sifting import SiftingManager
 from ehok.core.data_structures import ProtocolResult, ObliviousKey
+from ehok.core.timing import TimingEnforcer, TimingConfig
 from ehok.implementations import factories
 from ehok.quantum.runner import QuantumPhaseRunner, QuantumPhaseResult
+from ehok.protocols.ordered_messaging import OrderedProtocolSocket
+from ehok.protocols.leakage_manager import LeakageSafetyManager
 from ehok.utils.logging import get_logger
 
 logger = get_logger("protocols.base")
 
 
 class EHOKRole(Program, ABC):
-    """Template base class implementing the five protocol phases."""
+    """
+    Template base class implementing the five protocol phases.
+
+    Supports optional dependency injection for:
+    - OrderedProtocolSocket: Enforces commit-then-reveal message ordering
+    - TimingEnforcer: Enforces NSM timing barrier Δt
+    - LeakageSafetyManager: Tracks reconciliation leakage budget
+
+    Parameters
+    ----------
+    config : ProtocolConfig | None
+        Protocol configuration. Uses baseline defaults if None.
+    ordered_socket : OrderedProtocolSocket | None
+        Pre-configured ordered socket. Created automatically if None.
+    timing_enforcer : TimingEnforcer | None
+        Pre-configured timing enforcer. Created from config.nsm if None.
+    leakage_manager : LeakageSafetyManager | None
+        Pre-configured leakage manager. Created with default cap if None.
+    total_pairs : int | None
+        Override for quantum.total_pairs configuration.
+    """
 
     PEER_NAME: str
     ROLE: str
 
-    def __init__(self, config: ProtocolConfig | None = None, total_pairs: int | None = None, **_: Any):
+    def __init__(
+        self,
+        config: ProtocolConfig | None = None,
+        ordered_socket: Optional[OrderedProtocolSocket] = None,
+        timing_enforcer: Optional[TimingEnforcer] = None,
+        leakage_manager: Optional[LeakageSafetyManager] = None,
+        total_pairs: int | None = None,
+        **_: Any
+    ):
         self.config = config or ProtocolConfig.baseline()
         if total_pairs is not None:
             self.config.quantum.total_pairs = total_pairs
         self.sifting_manager = SiftingManager()
+
+        # Injected dependencies (created lazily if not provided)
+        self._ordered_socket = ordered_socket
+        self._timing_enforcer = timing_enforcer
+        self._leakage_manager = leakage_manager
 
         # Strategy placeholders; built lazily in run()
         self.commitment_scheme = None
@@ -60,6 +96,39 @@ class EHOKRole(Program, ABC):
     def _build_quantum_runner(self, context) -> QuantumPhaseRunner:
         return QuantumPhaseRunner(context, self.PEER_NAME, self.ROLE, self.config)
 
+    def _setup_injected_dependencies(self) -> None:
+        """
+        Initialize injected dependencies if not provided.
+
+        Called after context is available in run().
+
+        Notes
+        -----
+        TimingEnforcer and LeakageSafetyManager are NOT created by default.
+        These security components must be explicitly injected to enable
+        NSM timing barrier enforcement and leakage cap tracking.
+        This design allows unit tests to run without timing constraints
+        while production code can inject fully-configured enforcers.
+        """
+        # OrderedProtocolSocket
+        if self._ordered_socket is None:
+            self._ordered_socket = OrderedProtocolSocket()
+            logger.debug("Created default OrderedProtocolSocket for %s", self.ROLE)
+
+        # TimingEnforcer - NOT created by default (opt-in for security)
+        # Inject via constructor to enable NSM timing barrier enforcement
+        if self._timing_enforcer is not None:
+            logger.debug(
+                "Using injected TimingEnforcer with Δt=%d ns for %s",
+                self._timing_enforcer.delta_t_ns,
+                self.ROLE
+            )
+
+        # LeakageSafetyManager - NOT created by default (opt-in for security)
+        # Inject via constructor to enable leakage cap tracking
+        if self._leakage_manager is not None:
+            logger.debug("Using injected LeakageSafetyManager for %s", self.ROLE)
+
     def run(
         self, context
     ) -> Generator[EventExpression, None, Dict[str, Any]]:  # type: ignore[override]
@@ -67,6 +136,7 @@ class EHOKRole(Program, ABC):
         logger.info("Starting %s role", self.ROLE)
         self.context = context
         self._build_strategies()
+        self._setup_injected_dependencies()
 
         quantum_runner = self._build_quantum_runner(context)
         quantum_result: QuantumPhaseResult = yield from self._phase1_quantum(

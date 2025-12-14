@@ -29,7 +29,7 @@ except ImportError:
     NETSQUID_AVAILABLE = False
 
 try:
-    from squidasm.sim.stack.config import StackNetworkConfig
+    from squidasm.run.stack.config import StackNetworkConfig
     SQUIDASM_AVAILABLE = True
 except ImportError:
     StackNetworkConfig = None  # type: ignore
@@ -268,9 +268,16 @@ class TestQubitLeakOnAbort:
                 if q is not None:
                     qubitapi.discard(q)
         
-        # Memory should now be empty
+        # Memory position should now be empty
+        # peek() returns a list; after pop, it returns [None] for empty position
         retrieved_after = qmem.peek(0)
-        assert retrieved_after is None or len(retrieved_after) == 0
+        # Check that position is empty (either None, empty list, or [None])
+        is_empty = (
+            retrieved_after is None or 
+            len(retrieved_after) == 0 or 
+            all(q is None for q in retrieved_after)
+        )
+        assert is_empty, f"Memory position should be empty after pop, got: {retrieved_after}"
 
 
 # ============================================================================

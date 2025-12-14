@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
-from typing import Generator, Dict, Any, Tuple
+from typing import Generator, Dict, Any, Tuple, Optional
 
 import numpy as np
+import netsquid as ns
 from pydynaa import EventExpression
 
 from ehok.core.config import ProtocolConfig
@@ -15,8 +16,11 @@ from ehok.core.oblivious_formatter import (
     BobObliviousKey,
     ObliviousKeyFormatter,
 )
+from ehok.core.timing import TimingEnforcer
 from ehok.core.exceptions import MatrixSynchronizationError
 from ehok.protocols.base import EHOKRole
+from ehok.protocols.ordered_messaging import OrderedProtocolSocket
+from ehok.protocols.leakage_manager import LeakageSafetyManager
 from ehok.implementations import factories
 from ehok.quantum.runner import QuantumPhaseResult
 from ehok.utils.logging import get_logger
@@ -25,13 +29,33 @@ logger = get_logger("protocols.bob")
 
 
 class BobBaselineEHOK(EHOKRole):
-    """Baseline Bob role with pluggable strategies."""
+    """
+    Baseline Bob role with pluggable strategies.
+
+    Supports dependency injection for:
+    - OrderedProtocolSocket: Enforces commit-then-reveal ordering
+    - TimingEnforcer: Marks commit acknowledgment time for NSM timing barrier
+    - LeakageSafetyManager: Tracks reconciliation leakage budget
+    """
 
     PEER_NAME = "alice"
     ROLE = "bob"
 
-    def __init__(self, config: ProtocolConfig | None = None, **kwargs):
-        super().__init__(config, **kwargs)
+    def __init__(
+        self,
+        config: ProtocolConfig | None = None,
+        ordered_socket: Optional[OrderedProtocolSocket] = None,
+        timing_enforcer: Optional[TimingEnforcer] = None,
+        leakage_manager: Optional[LeakageSafetyManager] = None,
+        **kwargs
+    ):
+        super().__init__(
+            config=config,
+            ordered_socket=ordered_socket,
+            timing_enforcer=timing_enforcer,
+            leakage_manager=leakage_manager,
+            **kwargs
+        )
 
     # ------------------------------------------------------------------
     def _execute_remaining_phases(
@@ -96,6 +120,7 @@ class BobBaselineEHOK(EHOKRole):
         commitment, decommitment_salt = self.commitment_scheme.commit(data)
         self.context.csockets[self.PEER_NAME].send(commitment.hex())
         yield from self.context.connection.flush()
+
         return decommitment_salt, commitment
 
     def _phase3_sifting_sampling(

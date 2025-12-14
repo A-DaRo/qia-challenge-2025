@@ -106,10 +106,16 @@ class FeasibilityInputs:
         Target number of sifted bits for the session.
     expected_leakage_bits : int
         Expected syndrome + verification leakage in bits.
+    batch_size : int
+        Per-batch feasibility check size. 0 = full-session mode (default),
+        >0 = enables per-batch Death Valley detection for small batches.
+        Used to detect cases where individual batches are too small to
+        produce positive key even when aggregated session appears feasible.
 
     References
     ----------
     - sprint_1_specification.md Section 3.2
+    - remediation_specification.md Section 4.1
     """
 
     expected_qber: float
@@ -118,6 +124,12 @@ class FeasibilityInputs:
     epsilon_sec: float
     n_target_sifted_bits: int
     expected_leakage_bits: int
+    batch_size: int = 0
+
+    def __post_init__(self) -> None:
+        """Validate input parameters."""
+        if self.batch_size < 0:
+            raise ValueError(f"batch_size must be non-negative, got {self.batch_size}")
 
 
 @dataclass(frozen=True)

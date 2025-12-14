@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Generator, Dict, Any, Tuple, Union
+from typing import Generator, Dict, Any, Tuple, Union, Optional
 
 import numpy as np
+import netsquid as ns
 from pydynaa import EventExpression
 
 from ehok.core.config import ProtocolConfig
@@ -17,8 +18,11 @@ from ehok.core.oblivious_formatter import (
     ProtocolMetrics,
     ObliviousKeyFormatter,
 )
+from ehok.core.timing import TimingEnforcer
 from ehok.core.exceptions import CommitmentVerificationError, MatrixSynchronizationError, ReconciliationFailedError
 from ehok.protocols.base import EHOKRole
+from ehok.protocols.ordered_messaging import OrderedProtocolSocket, MessageType
+from ehok.protocols.leakage_manager import LeakageSafetyManager, BlockReconciliationReport, ABORT_CODE_LEAKAGE_CAP_EXCEEDED
 from ehok.implementations import factories
 from ehok.implementations.privacy_amplification.finite_key import (
     FiniteKeyParams,
@@ -36,13 +40,33 @@ logger = get_logger("protocols.alice")
 
 
 class AliceBaselineEHOK(EHOKRole):
-	"""Baseline Alice role with pluggable strategies."""
+	"""
+	Baseline Alice role with pluggable strategies.
+
+	Supports dependency injection for:
+	- OrderedProtocolSocket: Enforces commit-then-reveal ordering
+	- TimingEnforcer: Enforces NSM timing barrier Δt before basis reveal
+	- LeakageSafetyManager: Tracks reconciliation leakage budget
+	"""
 
 	PEER_NAME = "bob"
 	ROLE = "alice"
 
-	def __init__(self, config: ProtocolConfig | None = None, **kwargs):
-		super().__init__(config, **kwargs)
+	def __init__(
+		self,
+		config: ProtocolConfig | None = None,
+		ordered_socket: Optional[OrderedProtocolSocket] = None,
+		timing_enforcer: Optional[TimingEnforcer] = None,
+		leakage_manager: Optional[LeakageSafetyManager] = None,
+		**kwargs
+	):
+		super().__init__(
+			config=config,
+			ordered_socket=ordered_socket,
+			timing_enforcer=timing_enforcer,
+			leakage_manager=leakage_manager,
+			**kwargs
+		)
 
 	# ------------------------------------------------------------------
 	# Main template implementation
@@ -107,6 +131,17 @@ class AliceBaselineEHOK(EHOKRole):
 		commitment_msg = yield from self.context.csockets[self.PEER_NAME].recv()
 		commitment = bytes.fromhex(commitment_msg)
 		logger.info("Received commitment from Bob: %s...", commitment.hex()[:16])
+
+		# SECURITY: Start NSM timing barrier upon receiving Bob's commitment
+		# Alice must wait Δt before revealing her bases (commit-then-reveal)
+		if self._timing_enforcer is not None:
+			sim_time = int(ns.sim_time())
+			self._timing_enforcer.mark_commit_received(sim_time_ns=sim_time)
+			logger.debug(
+				"Timing barrier started at t=%d ns after commitment received",
+				sim_time
+			)
+
 		return commitment
 
 	def _phase3_sifting_sampling(
@@ -117,6 +152,17 @@ class AliceBaselineEHOK(EHOKRole):
 	) -> Generator[EventExpression, None, Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, np.ndarray, np.ndarray]]:
 		logger.info("=== PHASE 3: Sifting & Sampling ===")
 
+		# SECURITY: Enforce NSM timing barrier before basis reveal
+		# Alice must wait Δt after Bob's commitment acknowledgment
+		if self._timing_enforcer is not None:
+			sim_time = int(ns.sim_time())
+			self._timing_enforcer.mark_basis_reveal_attempt(sim_time_ns=sim_time)
+			logger.debug(
+				"Timing barrier verified at t=%d ns before basis reveal",
+				sim_time
+			)
+
+		# Send basis information (commit-then-reveal: bases revealed AFTER Δt)
 		bases_msg = bases_alice.tobytes().hex()
 		self.context.csockets[self.PEER_NAME].send(bases_msg)
 
@@ -188,6 +234,25 @@ class AliceBaselineEHOK(EHOKRole):
 			syndrome_length=len(syndrome),
 			hash_bits=self.reconciliator.hash_verifier.hash_length_bits,  # type: ignore[attr-defined]
 		)
+
+		# Wire leakage tracking for security accounting
+		if self._leakage_manager is not None:
+			report = BlockReconciliationReport(
+				block_index=0,
+				syndrome_bits=len(syndrome) * 8,
+				hash_bits=self.reconciliator.hash_verifier.hash_length_bits,  # type: ignore[attr-defined]
+				decode_converged=converged,
+				hash_verified=verified,
+				iterations=0,  # BP iterations not exposed in current interface
+			)
+			self._leakage_manager.account_block(report)
+			if self._leakage_manager.is_cap_exceeded:
+				logger.error(
+					"Leakage cap exceeded: total=%d bits, cap=%d bits",
+					self._leakage_manager.total_leakage_bits,
+					self._leakage_manager.max_leakage_bits
+				)
+				raise RuntimeError(ABORT_CODE_LEAKAGE_CAP_EXCEEDED)
 
 		ack = {"verified": verified, "error_count": error_count}
 		self.context.csockets[self.PEER_NAME].send(json.dumps(ack))

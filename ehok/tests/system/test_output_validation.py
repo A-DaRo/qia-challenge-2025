@@ -59,9 +59,13 @@ except ImportError:
 # Storage noise for testing
 TEST_STORAGE_NOISE_R = 0.3
 
-# Expected min-entropy from spec
-# h_min(r=0.3) ≈ max(Γ[1-log₂(1+3*0.3²)], 1-0.3) ≈ 0.805
-EXPECTED_MIN_ENTROPY_R_03 = 0.805
+# Expected min-entropy for r=0.3
+# h_min(r=0.3) = max{Γ[1-log₂(1+3r²)], 1-r}
+# For r=0.3: 
+#   - Virtual erasure bound: 1 - 0.3 = 0.7
+#   - Collision entropy bound: Γ[1-log₂(1+3*0.09)] = Γ[1-log₂(1.27)] ≈ 0.655
+# max(0.655, 0.7) = 0.7 (virtual erasure bound dominates)
+EXPECTED_MIN_ENTROPY_R_03 = 0.7
 MIN_ENTROPY_TOLERANCE = 0.01
 
 
@@ -146,8 +150,17 @@ class TestAliceObliviousOutput:
         """
         alice_output = AliceObliviousKey(**sample_alice_key_data)
         
-        key_0 = getattr(alice_output, 'key_0', None) or getattr(alice_output, 's0', None)
-        key_1 = getattr(alice_output, 'key_1', None) or getattr(alice_output, 's1', None)
+        # Get keys using proper None check (not `or` which fails for numpy arrays)
+        key_0 = getattr(alice_output, 'key_0', None)
+        if key_0 is None:
+            key_0 = getattr(alice_output, 's0', None)
+        
+        key_1 = getattr(alice_output, 'key_1', None)
+        if key_1 is None:
+            key_1 = getattr(alice_output, 's1', None)
+        
+        assert key_0 is not None, "Could not find key_0 or s0 attribute"
+        assert key_1 is not None, "Could not find key_1 or s1 attribute"
         
         assert len(key_0) == len(key_1), (
             f"Key lengths must match: len(S_0)={len(key_0)}, len(S_1)={len(key_1)}"
@@ -168,8 +181,17 @@ class TestAliceObliviousOutput:
         """
         alice_output = AliceObliviousKey(**sample_alice_key_data)
         
-        key_0 = getattr(alice_output, 'key_0', None) or getattr(alice_output, 's0', None)
-        key_1 = getattr(alice_output, 'key_1', None) or getattr(alice_output, 's1', None)
+        # Get keys using proper None check (not `or` which fails for numpy arrays)
+        key_0 = getattr(alice_output, 'key_0', None)
+        if key_0 is None:
+            key_0 = getattr(alice_output, 's0', None)
+        
+        key_1 = getattr(alice_output, 'key_1', None)
+        if key_1 is None:
+            key_1 = getattr(alice_output, 's1', None)
+        
+        assert key_0 is not None, "Could not find key_0 or s0 attribute"
+        assert key_1 is not None, "Could not find key_1 or s1 attribute"
         
         assert key_0.dtype == np.uint8, f"S_0 dtype should be uint8, got {key_0.dtype}"
         assert key_1.dtype == np.uint8, f"S_1 dtype should be uint8, got {key_1.dtype}"
@@ -532,19 +554,19 @@ class TestObliviousKeyFormatter:
     def test_formatter_produces_ot_structure(self):
         """Verify formatter produces correct OT structure."""
         # Check formatter has methods to produce Alice and Bob outputs
-        if hasattr(ObliviousKeyFormatter, '__init__'):
-            # Verify it can create OT outputs
-            has_alice_method = any(
-                m in dir(ObliviousKeyFormatter)
-                for m in ['format_alice', 'create_alice_output', 'alice_output']
-            )
-            has_bob_method = any(
-                m in dir(ObliviousKeyFormatter)
-                for m in ['format_bob', 'create_bob_output', 'bob_output']
-            )
-            
-            # Note: Soft check - formatter design may vary
-            if not has_alice_method or not has_bob_method:
-                pytest.skip(
-                    "ObliviousKeyFormatter method names don't match expected pattern"
-                )
+        # The actual method names are create_alice_keys and create_bob_key
+        has_alice_method = any(
+            m in dir(ObliviousKeyFormatter)
+            for m in ['create_alice_keys', 'format_alice', 'create_alice_output']
+        )
+        has_bob_method = any(
+            m in dir(ObliviousKeyFormatter)
+            for m in ['create_bob_key', 'format_bob', 'create_bob_output']
+        )
+        
+        assert has_alice_method, (
+            "FAIL: ObliviousKeyFormatter must have create_alice_keys method"
+        )
+        assert has_bob_method, (
+            "FAIL: ObliviousKeyFormatter must have create_bob_key method"
+        )

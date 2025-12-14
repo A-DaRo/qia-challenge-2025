@@ -28,16 +28,19 @@ except ImportError:
     NETSQUID_AVAILABLE = False
 
 try:
-    from squidasm.sim.stack.config import (
+    from squidasm.run.stack.config import (
         StackNetworkConfig, 
-        Link, 
-        NoiseType,
+        LinkConfig,
+        StackConfig,
         GenericQDeviceConfig,
+        DepolariseLinkConfig,
     )
-    from squidasm.sim.stack.build import build_generic_qdevice
+    from squidasm.run.stack.build import create_stack_network_builder
+    from netqasm.runtime.interface.config import Link, NoiseType
     SQUIDASM_AVAILABLE = True
 except ImportError:
     StackNetworkConfig = None  # type: ignore
+    LinkConfig = None  # type: ignore
     Link = None  # type: ignore
     NoiseType = None  # type: ignore
     SQUIDASM_AVAILABLE = False
@@ -265,10 +268,11 @@ class TestStatisticalFidelityVerification:
         # For fidelity = 0.95, this is ±1% tolerance
         
         tolerance = (FIDELITY_UPPER_BOUND - FIDELITY_LOWER_BOUND) / 2
-        assert tolerance == 0.01, "Statistical tolerance should be ±1%"
+        # Use pytest.approx for floating point comparison
+        assert tolerance == pytest.approx(0.01, abs=1e-9), "Statistical tolerance should be ±1%"
         
         center = (FIDELITY_UPPER_BOUND + FIDELITY_LOWER_BOUND) / 2
-        assert center == LINK_FIDELITY, (
+        assert center == pytest.approx(LINK_FIDELITY, abs=1e-9), (
             f"Bounds should be centered on {LINK_FIDELITY}"
         )
 

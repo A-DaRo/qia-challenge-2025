@@ -53,6 +53,10 @@ logger = get_logger(__name__)
 
 DEFAULT_ACK_TIMEOUT_NS = 5_000_000_000  # 5 seconds in nanoseconds
 
+# Abort codes for ordered messaging violations
+ABORT_CODE_ORDER_VIOLATION = "ABORT-II-ORDER-001"
+ABORT_CODE_ACK_TIMEOUT = "ABORT-II-ACK-001"
+
 
 # =============================================================================
 # Message Types
@@ -145,6 +149,29 @@ class OutOfOrderError(Exception):
     """
 
     pass
+
+
+class ProtocolViolation(Exception):
+    """
+    Raised when a protocol-level constraint is violated.
+
+    This is a general exception for violations that don't fit into more
+    specific categories (ordering, timeout, duplicate). Examples include:
+    - Invalid state transitions
+    - Message validation failures
+    - Security constraint violations
+
+    Attributes
+    ----------
+    message : str
+        Human-readable description of the violation.
+    context : dict, optional
+        Additional context about the violation.
+    """
+
+    def __init__(self, message: str, context: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(message)
+        self.context = context or {}
 
 
 # =============================================================================
@@ -614,6 +641,187 @@ class OrderedProtocolSocket:
         """Check if socket is in violation state."""
         return self.socket_state.state == SocketState.VIOLATION
 
+    # =========================================================================
+    # Generator-Based Async Methods for SquidASM Integration
+    # =========================================================================
+
+    def send_with_ack(
+        self,
+        socket,
+        msg_type: MessageType,
+        payload: Dict[str, Any],
+        timeout_ns: int = DEFAULT_ACK_TIMEOUT_NS,
+    ):
+        """
+        Send a message and block until ACK is received.
+
+        This is a generator method that must be called with `yield from`:
+            yield from ordered_socket.send_with_ack(socket, msg_type, payload)
+
+        The method:
+        1. Creates an envelope with the current sequence number
+        2. Sends the serialized envelope via the classical socket
+        3. Updates state to SENT_WAIT_ACK
+        4. Blocks (yields) until ACK is received
+        5. Validates ACK matches the sent message
+        6. Returns to IDLE state on success
+
+        Parameters
+        ----------
+        socket : ClassicalSocket
+            SquidASM classical socket for transmission.
+        msg_type : MessageType
+            Type of message being sent.
+        payload : Dict[str, Any]
+            Message payload (will be JSON-serialized).
+        timeout_ns : int
+            Maximum nanoseconds to wait for ACK.
+            Default: 5 seconds (5_000_000_000 ns).
+
+        Yields
+        ------
+        Any
+            Generator yields to SquidASM event loop.
+
+        Returns
+        -------
+        None
+            Returns when ACK successfully received.
+
+        Raises
+        ------
+        AckTimeoutError
+            If timeout_ns elapses without receiving ACK.
+        OrderingViolationError
+            If socket is not in IDLE state, or ACK validation fails.
+
+        Notes
+        -----
+        This method MUST be invoked via `yield from` in a NetQASM program
+        context. Direct calls will return a generator object, not results.
+
+        Security Invariant
+        ------------------
+        This method enforces commit-then-reveal ordering by ensuring that
+        the sender cannot proceed until the receiver has acknowledged
+        receipt. This prevents post-selection attacks.
+        """
+        # Validate state
+        if self.socket_state.state != SocketState.IDLE:
+            raise OrderingViolationError(
+                f"Cannot send: socket in {self.socket_state.state.name} state"
+            )
+
+        # Create and send envelope
+        envelope = self.create_envelope(msg_type, payload)
+        yield from socket.send(envelope.to_json())
+
+        # Update state
+        self.mark_sent(envelope)
+
+        logger.info(
+            "SEND_WITH_ACK initiated: type=%s seq=%d session=%s",
+            msg_type.value,
+            envelope.seq,
+            self.socket_state.session_id[:8],
+        )
+
+        # Block until ACK received
+        # Note: SquidASM classical sockets don't have native timeout.
+        # We implement via simulation time tracking.
+        import netsquid as ns
+
+        start_time_ns = int(ns.sim_time())
+
+        while self.socket_state.state == SocketState.SENT_WAIT_ACK:
+            # Check timeout
+            current_time_ns = int(ns.sim_time())
+            if current_time_ns - start_time_ns > timeout_ns:
+                self.mark_timeout()  # Raises AckTimeoutError
+
+            # Receive next message
+            response_json = yield from socket.recv()
+            if response_json is None:
+                continue
+
+            try:
+                response_envelope = MessageEnvelope.from_json(response_json)
+                # process_received handles ACK validation and state transition
+                self.process_received(response_envelope)
+            except (ValueError, OrderingViolationError) as e:
+                logger.error("Invalid response during ACK wait: %s", e)
+                self.socket_state.state = SocketState.VIOLATION
+                raise OrderingViolationError(f"ACK wait failed: {e}") from e
+
+        logger.info(
+            "SEND_WITH_ACK completed: type=%s seq=%d",
+            msg_type.value,
+            envelope.seq,
+        )
+
+    def recv_and_ack(
+        self,
+        socket,
+    ):
+        """
+        Receive a message and automatically send ACK.
+
+        This is a generator method that must be called with `yield from`:
+            envelope = yield from ordered_socket.recv_and_ack(socket)
+
+        The method:
+        1. Receives a serialized envelope from the classical socket
+        2. Deserializes and validates sequence number
+        3. Generates and sends ACK envelope
+        4. Returns the received envelope
+
+        Parameters
+        ----------
+        socket : ClassicalSocket
+            SquidASM classical socket for communication.
+
+        Yields
+        ------
+        Any
+            Generator yields to SquidASM event loop.
+
+        Returns
+        -------
+        MessageEnvelope
+            The received and acknowledged message envelope.
+
+        Raises
+        ------
+        OutOfOrderError
+            If message sequence number doesn't match expected.
+        OrderingViolationError
+            If session ID mismatch or socket in violation state.
+        """
+        # Receive message
+        message_json = yield from socket.recv()
+        envelope = MessageEnvelope.from_json(message_json)
+
+        logger.info(
+            "RECV_AND_ACK received: type=%s seq=%d session=%s",
+            envelope.msg_type.value,
+            envelope.seq,
+            envelope.session_id[:8],
+        )
+
+        # Process and get ACK (validates sequence, updates state)
+        ack_envelope = self.process_received(envelope)
+
+        if ack_envelope is not None:
+            # Send ACK
+            yield from socket.send(ack_envelope.to_json())
+            # Note: ACKs don't update send_seq to avoid infinite ACK chains
+            logger.info(
+                "RECV_AND_ACK sent ACK for seq=%d",
+                envelope.seq,
+            )
+
+        return envelope
+
 
 # =============================================================================
 # Protocol Message Payloads
@@ -802,6 +1010,7 @@ __all__ = [
     "AckTimeoutError",
     "DuplicateMessageError",
     "OutOfOrderError",
+    "ProtocolViolation",
     # Data structures
     "MessageEnvelope",
     "AckPayload",

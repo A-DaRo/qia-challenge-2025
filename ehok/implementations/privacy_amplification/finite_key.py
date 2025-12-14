@@ -1,6 +1,12 @@
 """
 Finite-key security analysis for privacy amplification.
 
+.. deprecated:: 1.0
+    This module provides legacy QKD finite-key bounds based on Tomamichel et al.
+    For NSM (Noisy Storage Model) security, use `nsm_privacy_amplifier.py` instead,
+    which implements the NSM Max Bound:
+        h_min(r) = max { Γ[1 - log₂(1 + 3r²)], 1 - r }
+
 This module implements rigorous finite-key security bounds based on
 Tomamichel et al. (2012), "Tight Finite-Key Analysis for Quantum Cryptography".
 
@@ -16,6 +22,7 @@ References
 [2] Renner, R. (2005). "Security of Quantum Key Distribution." PhD thesis.
 """
 
+import warnings
 from dataclasses import dataclass
 from typing import Optional
 import numpy as np
@@ -23,6 +30,14 @@ import numpy as np
 from ehok.utils.logging import get_logger
 
 logger = get_logger("finite_key")
+
+# Issue deprecation warning
+warnings.warn(
+    "ehok.implementations.privacy_amplification.finite_key is deprecated. "
+    "Use nsm_privacy_amplifier for NSM-compliant key length calculations.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 
 # Default security parameters

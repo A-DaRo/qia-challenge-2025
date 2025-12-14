@@ -4,6 +4,17 @@ Protocol configuration objects for the extensible E-HOK framework.
 This module centralises configuration so protocol runs are reproducible and
 strategy selection is explicit. Values default to the conservative baselines in
 ``core.constants`` but can be overridden per simulation.
+
+Configuration Categories
+------------------------
+1. **Physical Parameters**: Hardware/channel characteristics (μ, η, e_det, P_dark)
+2. **NSM Config**: Adversary model assumptions (r, ν, Δt)
+3. **Protocol Config**: Security/correctness targets (ε_sec, ε_cor)
+
+Note
+----
+Physical parameters are consolidated from `configs/protocol_config.py` for
+unified access. The original module is deprecated.
 """
 
 from __future__ import annotations
@@ -12,6 +23,87 @@ from dataclasses import dataclass, field, asdict, replace
 from typing import Optional, Dict, Any
 
 from . import constants
+
+
+# =============================================================================
+# Physical Parameters (consolidated from configs/protocol_config.py)
+# =============================================================================
+
+# Default values from Erven et al. (2014) Table I
+DEFAULT_MU_PAIR_PER_COHERENCE = 3.145e-5  # Mean photon pair number per coherence time
+DEFAULT_ETA_TOTAL_TRANSMITTANCE = 0.0150  # Total transmission efficiency
+DEFAULT_E_DET = 0.0093  # Intrinsic detection error rate
+DEFAULT_P_DARK = 1.50e-8  # Dark count probability per coherence time
+
+
+@dataclass(frozen=True)
+class PhysicalParameters:
+    """
+    Physical/hardware parameters for channel characterization.
+
+    These parameters describe the honest parties' devices and the quantum
+    channel. They are estimated before protocol execution and determine
+    the error correction requirements.
+
+    Attributes
+    ----------
+    mu_pair_per_coherence : float
+        Mean photon pair number per coherence time (pulse).
+        Controls multi-photon emission probability.
+        Default: 3.145 × 10⁻⁵ (Erven et al. 2014 Table I)
+    eta_total_transmittance : float
+        Total transmission efficiency from source to detector.
+        Includes source coupling, fiber loss, and detector efficiency.
+        Must be in (0, 1]. Default: 0.0150
+    e_det : float
+        Intrinsic detection error rate of the system.
+        Probability of click in wrong detector.
+        Must be in [0, 0.5]. Default: 0.0093
+    p_dark : float
+        Dark count probability per coherence time.
+        Must be in [0, 1]. Default: 1.50 × 10⁻⁸
+
+    Raises
+    ------
+    ValueError
+        If any parameter is outside its valid range.
+
+    References
+    ----------
+    - Erven et al. (2014) Table I: Experimental parameters.
+    """
+
+    mu_pair_per_coherence: float = DEFAULT_MU_PAIR_PER_COHERENCE
+    eta_total_transmittance: float = DEFAULT_ETA_TOTAL_TRANSMITTANCE
+    e_det: float = DEFAULT_E_DET
+    p_dark: float = DEFAULT_P_DARK
+
+    def __post_init__(self) -> None:
+        """Validate physical parameters."""
+        if self.mu_pair_per_coherence <= 0:
+            raise ValueError(
+                f"mu_pair_per_coherence must be positive, got {self.mu_pair_per_coherence}"
+            )
+
+        if self.eta_total_transmittance <= 0 or self.eta_total_transmittance > 1:
+            raise ValueError(
+                f"eta_total_transmittance must be in (0, 1], got {self.eta_total_transmittance}"
+            )
+
+        if self.e_det < 0 or self.e_det > 0.5:
+            raise ValueError(
+                f"e_det must be in [0, 0.5], got {self.e_det}"
+            )
+
+        if self.p_dark < 0 or self.p_dark > 1:
+            raise ValueError(
+                f"p_dark must be in [0, 1], got {self.p_dark}"
+            )
+
+
+# =============================================================================
+# Quantum Config
+# =============================================================================
 
 
 @dataclass

@@ -1,6 +1,11 @@
 """
 Protocol Configuration Schema for E-HOK.
 
+.. deprecated:: 1.0
+    This module is deprecated. Use `ehok.core.config` instead for the
+    consolidated configuration schema. `PhysicalParameters` is now
+    available from `ehok.core.config.PhysicalParameters`.
+
 This module provides typed configuration dataclasses for the E-HOK protocol,
 exposing NSM security parameters and physical model parameters through a
 validated, immutable schema.
@@ -33,12 +38,24 @@ References
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from typing import Optional
 
 from ehok.utils.logging import get_logger
 
+# Re-export PhysicalParameters from core config for backward compatibility
+from ehok.core.config import PhysicalParameters
+
 logger = get_logger(__name__)
+
+# Issue deprecation warning when module is imported
+warnings.warn(
+    "ehok.configs.protocol_config is deprecated. "
+    "Use ehok.core.config instead for PhysicalParameters and configuration classes.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 
 # =============================================================================
@@ -65,82 +82,9 @@ DEFAULT_EPSILON_COR = 3.09e-3  # Correctness error (dominated by EC failure)
 
 
 # =============================================================================
-# Physical Parameters Dataclass
+# PhysicalParameters is now imported from ehok.core.config
+# The class definition has been removed - use the import from core.config
 # =============================================================================
-
-
-@dataclass(frozen=True)
-class PhysicalParameters:
-    """
-    Physical/hardware parameters for channel characterization.
-
-    These parameters describe the honest parties' devices and the quantum
-    channel. They are estimated before protocol execution and determine
-    the error correction requirements.
-
-    Attributes
-    ----------
-    mu_pair_per_coherence : float
-        Mean photon pair number per coherence time (pulse).
-        Controls multi-photon emission probability.
-        Default: 3.145 × 10⁻⁵ (Erven et al. 2014 Table I)
-    eta_total_transmittance : float
-        Total transmission efficiency from source to detector.
-        Includes source coupling, fiber loss, and detector efficiency.
-        Must be in (0, 1]. Default: 0.0150
-    e_det : float
-        Intrinsic detection error rate of the system.
-        Probability of click in wrong detector.
-        Must be in [0, 0.5]. Default: 0.0093
-    p_dark : float
-        Dark count probability per coherence time.
-        Must be in [0, 1]. Default: 1.50 × 10⁻⁸
-
-    Raises
-    ------
-    ValueError
-        If any parameter is outside its valid range.
-
-    References
-    ----------
-    - Erven et al. (2014) Table I: Experimental parameters.
-
-    Examples
-    --------
-    >>> params = PhysicalParameters()  # Use defaults
-    >>> params.mu_pair_per_coherence
-    3.145e-05
-    >>> params = PhysicalParameters(eta_total_transmittance=0.1)
-    >>> params.eta_total_transmittance
-    0.1
-    """
-
-    mu_pair_per_coherence: float = DEFAULT_MU_PAIR_PER_COHERENCE
-    eta_total_transmittance: float = DEFAULT_ETA_TOTAL_TRANSMITTANCE
-    e_det: float = DEFAULT_E_DET
-    p_dark: float = DEFAULT_P_DARK
-
-    def __post_init__(self) -> None:
-        """Validate physical parameters."""
-        if self.mu_pair_per_coherence <= 0:
-            raise ValueError(
-                f"mu_pair_per_coherence must be positive, got {self.mu_pair_per_coherence}"
-            )
-
-        if self.eta_total_transmittance <= 0 or self.eta_total_transmittance > 1:
-            raise ValueError(
-                f"eta_total_transmittance must be in (0, 1], got {self.eta_total_transmittance}"
-            )
-
-        if self.e_det < 0 or self.e_det > 0.5:
-            raise ValueError(
-                f"e_det must be in [0, 0.5], got {self.e_det}"
-            )
-
-        if self.p_dark < 0 or self.p_dark > 1:
-            raise ValueError(
-                f"p_dark must be in [0, 1], got {self.p_dark}"
-            )
 
 
 # =============================================================================

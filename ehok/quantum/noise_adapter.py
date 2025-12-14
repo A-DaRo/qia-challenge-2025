@@ -36,7 +36,9 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from ehok.configs.protocol_config import PhysicalParameters
+# Import PhysicalParameters from core config (canonical location)
+# Note: Also available from configs/protocol_config.py for backward compatibility
+from ehok.core.config import PhysicalParameters
 from ehok.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -337,3 +339,371 @@ def validate_physical_params_for_simulation(
         )
 
     return warnings
+
+
+# =============================================================================
+# Physical Model Adapter Output
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class AdapterOutput:
+    """
+    Output container from PhysicalModelAdapter.
+
+    Attributes
+    ----------
+    link_fidelity : float
+        Calculated EPR pair fidelity for SquidASM link configuration.
+        Corresponds to F = 1 - p_max_mixed in netsquid_magic parameters.
+    prob_success : float
+        Per-cycle success probability for entanglement generation.
+    t_cycle_ns : float
+        Cycle time in nanoseconds (default: distance-based calculation).
+    storage_noise_r : float | None
+        NSM storage noise parameter r if T1/T2 configuration provided.
+    expected_qber : float
+        Expected QBER from device characterization.
+
+    Notes
+    -----
+    This output feeds into both:
+    1. SquidASM network configuration (fidelity, prob_success, t_cycle)
+    2. NSM security calculations (storage_noise_r, expected_qber)
+    """
+
+    link_fidelity: float
+    prob_success: float
+    t_cycle_ns: float
+    storage_noise_r: float | None
+    expected_qber: float
+
+
+# =============================================================================
+# Physical Model Adapter (TASK-NOISE-ADAPTER-001)
+# =============================================================================
+
+
+class PhysicalModelAdapter:
+    """
+    Bridges NSM physical parameters to SquidASM simulation configuration.
+
+    This adapter performs two critical translations:
+    1. NSM physical params (μ, η, e_det) → SquidASM DepolariseLinkConfig
+    2. NetSquid T1/T2 memory params → NSM storage noise parameter r
+
+    The adapter ensures that security calculations and simulation state
+    derive from consistent physical assumptions.
+
+    Parameters
+    ----------
+    physical_params : PhysicalParameters
+        NSM physical device characterization (μ, η, e_det, P_dark).
+    memory_T1_ns : float | None
+        Amplitude damping time T1 in nanoseconds. None if not modeling
+        adversary memory explicitly.
+    memory_T2_ns : float | None
+        Dephasing time T2 in nanoseconds. Must satisfy T2 ≤ T1.
+    delta_t_ns : float
+        NSM mandatory wait time Δt in nanoseconds.
+        Default: 1e9 ns (1 second, per Erven et al. 2014).
+
+    Attributes
+    ----------
+    output : AdapterOutput
+        Computed adapter output after initialization.
+
+    References
+    ----------
+    - Erven et al. (2014): Table I experimental parameters
+    - netsquid_magic.model_parameters.DepolariseModelParameters
+    - squidasm.run.stack.config.DepolariseLinkConfig
+    - sprint_1_specification.md Section 4 (TASK-NOISE-ADAPTER-001)
+
+    Examples
+    --------
+    >>> from ehok.configs.protocol_config import PhysicalParameters
+    >>> params = PhysicalParameters()  # Erven defaults
+    >>> adapter = PhysicalModelAdapter(
+    ...     physical_params=params,
+    ...     memory_T1_ns=1e9,
+    ...     memory_T2_ns=5e8,
+    ...     delta_t_ns=1e9
+    ... )
+    >>> adapter.output.link_fidelity
+    0.9907
+    """
+
+    def __init__(
+        self,
+        physical_params: PhysicalParameters,
+        memory_T1_ns: float | None = None,
+        memory_T2_ns: float | None = None,
+        delta_t_ns: float = 1_000_000_000,  # 1 second default
+    ) -> None:
+        self._physical_params = physical_params
+        self._memory_T1_ns = memory_T1_ns
+        self._memory_T2_ns = memory_T2_ns
+        self._delta_t_ns = delta_t_ns
+
+        # Validate T1/T2 relationship
+        if memory_T1_ns is not None and memory_T2_ns is not None:
+            if memory_T2_ns > memory_T1_ns:
+                raise ValueError(
+                    f"T2 ({memory_T2_ns} ns) cannot exceed T1 ({memory_T1_ns} ns)"
+                )
+
+        # Compute adapter output
+        self._output = self._compute_output()
+
+        logger.info(
+            "PhysicalModelAdapter initialized: fidelity=%.4f, r=%.4f, QBER=%.4f",
+            self._output.link_fidelity,
+            self._output.storage_noise_r or 0.0,
+            self._output.expected_qber,
+        )
+
+    @property
+    def output(self) -> AdapterOutput:
+        """Get computed adapter output."""
+        return self._output
+
+    @property
+    def physical_params(self) -> PhysicalParameters:
+        """Get physical parameters."""
+        return self._physical_params
+
+    def _compute_output(self) -> AdapterOutput:
+        """Compute all adapter output values."""
+        params = self._physical_params
+
+        # 1. Link fidelity from channel quality
+        # F = 1 - e_det is the first-order approximation
+        link_fidelity = 1.0 - params.e_det
+
+        # 2. Success probability per cycle
+        # P_success ≈ η × μ (detection probability)
+        prob_success = (
+            params.eta_total_transmittance * params.mu_pair_per_coherence
+        )
+        prob_success = min(1.0, max(0.0, prob_success))
+
+        # 3. Cycle time (default based on typical fiber propagation)
+        # For 1km fiber at 200,000 km/s: t_cycle = 5 μs
+        t_cycle_ns = 5_000.0  # 5 μs default
+
+        # 4. Storage noise r from T1/T2 if provided
+        storage_noise_r = None
+        if self._memory_T1_ns is not None and self._memory_T2_ns is not None:
+            storage_noise_r = self._compute_storage_noise_r(
+                T1_ns=self._memory_T1_ns,
+                T2_ns=self._memory_T2_ns,
+                delta_t_ns=self._delta_t_ns,
+            )
+
+        # 5. Expected QBER
+        expected_qber = self._compute_expected_qber(params)
+
+        return AdapterOutput(
+            link_fidelity=link_fidelity,
+            prob_success=prob_success,
+            t_cycle_ns=t_cycle_ns,
+            storage_noise_r=storage_noise_r,
+            expected_qber=expected_qber,
+        )
+
+    @staticmethod
+    def _compute_storage_noise_r(
+        T1_ns: float,
+        T2_ns: float,
+        delta_t_ns: float,
+    ) -> float:
+        """
+        Compute NSM storage noise parameter r from T1/T2 memory parameters.
+
+        The storage noise r represents the probability that a qubit stored
+        in the adversary's quantum memory retains its quantum state after
+        the mandatory wait time Δt.
+
+        Derivation
+        ----------
+        For a T1/T2 noise model, the fidelity of a stored qubit decays as:
+
+            F(t) = 0.5 × (1 + exp(-t/T1) × exp(-t/T2))
+
+        This models:
+        - Amplitude damping (T1): Population relaxation
+        - Dephasing (T2): Phase coherence loss
+
+        The NSM storage noise parameter r is the "retention probability":
+
+            r = exp(-Δt/T1) × exp(-Δt/T2) (the coherence factor)
+
+        Parameters
+        ----------
+        T1_ns : float
+            Amplitude damping time in nanoseconds.
+        T2_ns : float
+            Dephasing time in nanoseconds.
+        delta_t_ns : float
+            NSM mandatory wait time in nanoseconds.
+
+        Returns
+        -------
+        float
+            Storage noise parameter r ∈ [0, 1].
+            r = 0: Complete decoherence (ideal for security)
+            r = 1: Perfect storage (worst for security)
+
+        References
+        ----------
+        - König et al. (2012): Eq. (1) Markovian noise assumption
+        - netsquid.components.models.qerrormodels.T1T2NoiseModel
+        """
+        if T1_ns <= 0 or T2_ns <= 0:
+            raise ValueError("T1 and T2 must be positive")
+        if delta_t_ns < 0:
+            raise ValueError("delta_t must be non-negative")
+
+        # Compute decay factors
+        decay_T1 = math.exp(-delta_t_ns / T1_ns)
+        decay_T2 = math.exp(-delta_t_ns / T2_ns)
+
+        # Storage retention parameter r
+        r = decay_T1 * decay_T2
+
+        logger.debug(
+            "Storage noise computed: T1=%.2e ns, T2=%.2e ns, Δt=%.2e ns → r=%.4f",
+            T1_ns, T2_ns, delta_t_ns, r
+        )
+
+        return r
+
+    @staticmethod
+    def _compute_expected_qber(params: PhysicalParameters) -> float:
+        """Compute expected QBER from physical parameters."""
+        # Base error from intrinsic detector error
+        qber = params.e_det
+
+        # Dark count contribution: adds 50% error rate
+        detection_prob = (
+            params.eta_total_transmittance * params.mu_pair_per_coherence
+        )
+        if detection_prob > 1e-15:
+            dark_contribution = 0.5 * params.p_dark / detection_prob
+            qber += dark_contribution
+
+        return min(0.5, qber)
+
+    def to_squidasm_link_config(self):
+        """
+        Generate SquidASM-compatible link configuration.
+
+        Returns
+        -------
+        DepolariseLinkConfig
+            Configuration object for squidasm.run.stack.config.LinkConfig.
+
+        Notes
+        -----
+        Import is deferred to avoid circular dependencies with SquidASM.
+        """
+        from squidasm.run.stack.config import DepolariseLinkConfig
+
+        return DepolariseLinkConfig(
+            fidelity=self._output.link_fidelity,
+            prob_success=self._output.prob_success,
+            t_cycle=self._output.t_cycle_ns,
+        )
+
+    def to_stack_network_config(
+        self,
+        alice_name: str = "Alice",
+        bob_name: str = "Bob",
+    ):
+        """
+        Generate complete SquidASM network configuration.
+
+        Parameters
+        ----------
+        alice_name : str
+            Name for Alice's stack node.
+        bob_name : str
+            Name for Bob's stack node.
+
+        Returns
+        -------
+        StackNetworkConfig
+            Complete network configuration ready for simulation.
+
+        Notes
+        -----
+        Creates a two-node network with:
+        - Generic quantum devices (perfect except for link noise)
+        - Depolarizing quantum link with configured fidelity
+        - Instant classical link
+        """
+        from squidasm.run.stack.config import (
+            StackNetworkConfig,
+            StackConfig,
+            LinkConfig,
+        )
+
+        alice_stack = StackConfig.perfect_generic_config(alice_name)
+        bob_stack = StackConfig.perfect_generic_config(bob_name)
+
+        link = LinkConfig(
+            stack1=alice_name,
+            stack2=bob_name,
+            typ="depolarise",
+            cfg=self.to_squidasm_link_config(),
+        )
+
+        return StackNetworkConfig(
+            stacks=[alice_stack, bob_stack],
+            links=[link],
+        )
+
+
+# =============================================================================
+# Standalone Function
+# =============================================================================
+
+
+def estimate_storage_noise_from_netsquid(
+    T1_ns: float,
+    T2_ns: float,
+    delta_t_ns: float,
+) -> float:
+    """
+    Estimate NSM storage noise parameter r from NetSquid T1/T2 memory parameters.
+
+    This is a convenience function wrapping the static method from
+    PhysicalModelAdapter. Use this when you need only the storage noise
+    calculation without full adapter configuration.
+
+    Parameters
+    ----------
+    T1_ns : float
+        Amplitude damping time in nanoseconds.
+    T2_ns : float
+        Dephasing time in nanoseconds. Must satisfy T2 ≤ T1.
+    delta_t_ns : float
+        NSM mandatory wait time in nanoseconds.
+
+    Returns
+    -------
+    float
+        Storage noise parameter r ∈ [0, 1].
+
+    References
+    ----------
+    - system_test_specification.md SYS-INT-NOISE-002
+
+    Examples
+    --------
+    >>> r = estimate_storage_noise_from_netsquid(1e9, 5e8, 1e9)
+    >>> abs(r - 0.135) < 0.01  # exp(-1) × exp(-2) ≈ 0.135
+    True
+    """
+    return PhysicalModelAdapter._compute_storage_noise_r(T1_ns, T2_ns, delta_t_ns)
