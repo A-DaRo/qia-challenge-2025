@@ -75,9 +75,6 @@ _EPSILON = 1e-15
 _MAX_ITERATIONS = 100
 _CONVERGENCE_TOLERANCE = 1e-12
 
-# Crossover point where bounds are equal (r ≈ 0.82)
-_CROSSOVER_R_APPROXIMATE = 0.82
-
 
 # =============================================================================
 # Feasibility Result Enum

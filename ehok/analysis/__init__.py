@@ -1,6 +1,5 @@
 """Analysis and verification utilities for E-HOK."""
 
-from .metrics import compute_execution_metrics
 from .nsm_bounds import (
     NSMBoundsCalculator,
     NSMBoundsInputs,
@@ -14,7 +13,6 @@ from .nsm_bounds import (
 )
 
 __all__ = [
-    "compute_execution_metrics",
     "NSMBoundsCalculator",
     "NSMBoundsInputs",
     "NSMBoundsResult",
