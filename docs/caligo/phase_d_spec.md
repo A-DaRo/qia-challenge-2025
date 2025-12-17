@@ -74,7 +74,7 @@ Phase D bridges all preceding phases:
 
 | Dependency | Component Used | Purpose |
 |------------|----------------|---------|
-| **Phase A** | `types/phase_contracts.py` | `QuantumPhaseResult`, `SiftingPhaseResult`, `AmplificationResult` |
+| **Phase A** | `types/phase_contracts.py` | `QuantumPhaseResult`, `SiftingPhaseResult`, `AmplificationPhaseResult` |
 | **Phase A** | `types/exceptions.py` | `QBERThresholdExceeded`, `SecurityError` |
 | **Phase B** | `simulation/timing.py` | `TimingBarrier` for Δt enforcement |
 | **Phase B** | `simulation/detection.py` | `DetectionEventTracker` |
@@ -699,26 +699,36 @@ class QuantumPhaseResult:
     basis_choices : np.ndarray
         Basis choices, shape (n,), dtype uint8.
         Values are 0 (Z) or 1 (X).
-    timestamps : np.ndarray
-        Simulation timestamps (ns), shape (n,), dtype float64.
-    detection_events : np.ndarray
-        Detection success flags, shape (n,), dtype bool.
-        True if EPR pair was successfully distributed.
-    quantum_complete_time : float
-        Simulation time when quantum phase completed (ns).
+    round_ids : np.ndarray
+        Array of round identifiers, shape (n,), dtype int64.
+    generation_timestamp : float
+        Simulation time (ns) when quantum phase completed.
         Used as reference for timing barrier.
+    num_pairs_requested : int
+        Number of EPR pairs requested.
+    num_pairs_generated : int
+        Number of EPR pairs actually generated (may differ due to losses).
+    detection_events : List[DetectionEvent]
+        Detection event records for validation.
+    timing_barrier_marked : bool
+        True if TimingBarrier.mark_quantum_complete() was called.
     
     Invariants
     ----------
-    - All arrays have identical length n
+    - All arrays have identical length n = num_pairs_generated
     - measurement_outcomes[i] ∈ {0, 1}
     - basis_choices[i] ∈ {0, 1}
-    - quantum_complete_time > 0
+    - generation_timestamp > 0
+    - timing_barrier_marked == True (for NSM security)
     
     Usage
     -----
     This contract is produced by quantum/ and consumed by sifting/.
-    The timing barrier uses quantum_complete_time to enforce Δt.
+    The timing barrier uses generation_timestamp to enforce Δt.
+    
+    Note
+    ----
+    This definition mirrors Phase A types/phase_contracts.py exactly.
     """
 ```
 
@@ -1930,7 +1940,7 @@ class OTOutputFormatter:
 
 ```python
 @dataclass(frozen=True)
-class AmplificationResult:
+class AmplificationPhaseResult:
     """
     Contract: Phase IV → Protocol completion.
     

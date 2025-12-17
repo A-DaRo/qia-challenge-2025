@@ -386,48 +386,18 @@ def create_link_model_params(
     """
 ```
 
-#### 4.1.4 `FeasibilityChecker` Class
+#### 4.1.4 Note on `FeasibilityChecker`
 
-```python
-class FeasibilityChecker:
-    """
-    Validates NSM security conditions before protocol execution.
-    
-    Implements the "pre-flight check" that prevents resource consumption
-    when security is mathematically impossible.
-    
-    Attributes
-    ----------
-    nsm_params : NSMParameters
-        The NSM configuration to validate.
-    qber_hard_limit : float
-        Maximum QBER for any security (default: 0.22).
-    qber_conservative_limit : float
-        Recommended QBER threshold (default: 0.11).
-    
-    Methods
-    -------
-    check_all() -> FeasibilityResult
-        Run all feasibility checks and return aggregate result.
-    check_qber_threshold() -> bool
-        Verify channel QBER is below security threshold.
-    check_storage_capacity() -> bool
-        Verify adversary storage capacity constraint.
-    check_noise_ordering() -> bool
-        Verify trusted noise < untrusted storage noise.
-    
-    Raises
-    ------
-    FeasibilityError
-        If any hard security constraint is violated.
-    
-    References
-    ----------
-    - Schaffner et al. (2009): "strictly less" condition
-    - phase_I.md Section 2.A: Hard feasibility limit
-    """
-    
-    def check_noise_ordering(self) -> bool:
+> **Important:** The `FeasibilityChecker` class is defined in **Phase C** (`security/feasibility.py`), 
+> not in Phase B. Phase B's `NSMParameters` dataclass validates its own invariants in `__post_init__`,
+> but comprehensive security feasibility checking (QBER thresholds, storage capacity constraint, 
+> "strictly less" condition) belongs to the security layer.
+>
+> See [phase_c_spec.md](phase_c_spec.md) Section 4.2 for the full `FeasibilityChecker` specification.
+
+---
+
+### 4.2 Module: `timing.py` (< 150 LOC)
         """
         Verify the "strictly less" condition: Q_channel < Q_storage.
         
@@ -646,6 +616,31 @@ class TimingBarrier:
         -------
         float
             Elapsed time in nanoseconds, or 0.0 if not started.
+        """
+    
+    def assert_timing_compliant(self) -> None:
+        """
+        Assert that timing constraints are satisfied.
+        
+        Raises
+        ------
+        TimingViolationError
+            If Δt has not elapsed since quantum phase completion.
+            Error includes diagnostic information about elapsed time
+            and required wait time.
+        
+        Notes
+        -----
+        Call this method before revealing basis information.
+        Unlike can_reveal_basis(), this method ALWAYS raises if
+        timing is violated (no strict_mode flag needed).
+        
+        Example
+        -------
+        >>> barrier.mark_quantum_complete()
+        >>> yield from barrier.wait_delta_t()
+        >>> barrier.assert_timing_compliant()  # Raises if Δt not satisfied
+        >>> socket.send(bases)  # Safe to reveal
         """
 ```
 

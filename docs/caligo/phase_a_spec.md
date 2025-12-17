@@ -452,7 +452,46 @@ class ReconciliationPhaseResult:
     """
 ```
 
-#### 3.3.5 `ObliviousTransferOutput`
+#### 3.3.5 `AmplificationPhaseResult`
+
+```python
+@dataclass
+class AmplificationPhaseResult:
+    """
+    Contract: Phase IV → Final protocol output (role-specific).
+    
+    Contains the privacy-amplified output for a single party,
+    plus diagnostic metrics. This is the role-specific view;
+    the aggregate protocol output is ObliviousTransferOutput.
+    
+    Attributes
+    ----------
+    oblivious_key : Union[AliceObliviousKey, BobObliviousKey]
+        Role-dependent output key(s).
+    qber : float
+        Final adjusted QBER used for security calculations.
+    key_length : int
+        Length of extracted key(s) in bits.
+    entropy_consumed : float
+        Total min-entropy consumed (h_min * n - leakage).
+    entropy_rate : float
+        Efficiency: key_length / raw_bits.
+    metrics : Dict[str, Any]
+        Diagnostic data (timing, block stats, etc.).
+    
+    Post-conditions
+    ---------------
+    - POST-AMP-001: key_length > 0 (else abort before reaching here)
+    - POST-AMP-002: entropy_consumed >= key_length + 2*log(1/ε_sec)
+    
+    References
+    ----------
+    - Lupo et al. (2023), Eq. (43): Key length formula
+    - Erven et al. (2014): Experimental validation
+    """
+```
+
+#### 3.3.6 `ObliviousTransferOutput`
 
 ```python
 @dataclass
@@ -513,11 +552,17 @@ CaligoError (Base)
 │   ├── QBERThresholdExceeded     # QBER > threshold
 │   ├── NSMViolationError         # NSM assumptions violated
 │   ├── FeasibilityError          # Pre-flight check failed
-│   └── EntropyDepletedError      # No extractable entropy
+│   ├── EntropyDepletedError      # No extractable entropy
+│   └── CommitmentVerificationError # Commitment hash mismatch
 ├── ProtocolError
 │   ├── PhaseOrderViolation       # Phases executed out of order
 │   ├── ContractViolation         # Phase contract invariant failed
 │   └── ReconciliationError       # LDPC decoding failed
+├── ConnectionError
+│   ├── OrderingViolationError    # Message ordering violated
+│   ├── AckTimeoutError           # ACK not received in time
+│   ├── SessionMismatchError      # Session ID mismatch
+│   └── OutOfOrderError           # Sequence number out of order
 └── ConfigurationError
     ├── InvalidParameterError     # Configuration parameter out of range
     └── MissingConfigError        # Required configuration not provided

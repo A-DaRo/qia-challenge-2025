@@ -77,7 +77,7 @@ Phase E integrates all preceding phases into a cohesive execution framework:
 
 | Phase | Components Used | Purpose in Phase E |
 |-------|-----------------|-------------------|
-| **Phase A** | `types/phase_contracts.py` | `QuantumPhaseResult`, `SiftingResult`, `AmplificationResult` |
+| **Phase A** | `types/phase_contracts.py` | `QuantumPhaseResult`, `SiftingPhaseResult`, `AmplificationPhaseResult` |
 | **Phase A** | `types/exceptions.py` | `SecurityError`, `OrderingViolationError`, `TimingViolationError` |
 | **Phase A** | `types/keys.py` | `AliceObliviousKey`, `BobObliviousKey` |
 | **Phase B** | `simulation/timing.py` | `TimingBarrier` for NSM Δt enforcement |
@@ -629,7 +629,6 @@ class OrderedSocket:
     The ordered socket wraps a SquidASM ClassicalSocket and provides
     generator-based methods compatible with the SquidASM execution model:
     
-    ```python
     # In Alice's run() generator:
     ordered = OrderedSocket(session_id="...")
     
@@ -645,7 +644,6 @@ class OrderedSocket:
         socket=context.csockets["bob"]
     )
     commitment = bytes.fromhex(envelope.payload["commitment"])
-    ```
     
     Thread Safety
     -------------
@@ -949,9 +947,9 @@ from caligo.connection import OrderedSocket
 from caligo.simulation.timing import TimingBarrier
 from caligo.types.phase_contracts import (
     QuantumPhaseResult,
-    SiftingResult,
-    ReconciliationResult,
-    AmplificationResult,
+    SiftingPhaseResult,
+    ReconciliationPhaseResult,
+    AmplificationPhaseResult,
 )
 from caligo.utils.logging import get_logger
 
@@ -1170,7 +1168,7 @@ class CaligoProgram(Program, ABC):
     @abstractmethod
     def _phase2_sifting(
         self, quantum_result: QuantumPhaseResult
-    ) -> Generator[EventExpression, None, SiftingResult]:
+    ) -> Generator[EventExpression, None, SiftingPhaseResult]:
         """
         Execute Phase II: Commitment, sifting, QBER estimation.
         
@@ -1183,8 +1181,8 @@ class CaligoProgram(Program, ABC):
     
     @abstractmethod
     def _phase3_reconciliation(
-        self, sifting_result: SiftingResult
-    ) -> Generator[EventExpression, None, ReconciliationResult]:
+        self, sifting_result: SiftingPhaseResult
+    ) -> Generator[EventExpression, None, ReconciliationPhaseResult]:
         """
         Execute Phase III: LDPC error correction.
         
@@ -1197,8 +1195,8 @@ class CaligoProgram(Program, ABC):
     
     @abstractmethod
     def _phase4_amplification(
-        self, recon_result: ReconciliationResult
-    ) -> Generator[EventExpression, None, AmplificationResult]:
+        self, recon_result: ReconciliationPhaseResult
+    ) -> Generator[EventExpression, None, AmplificationPhaseResult]:
         """
         Execute Phase IV: Privacy amplification.
         
@@ -1210,7 +1208,7 @@ class CaligoProgram(Program, ABC):
         raise NotImplementedError
     
     def _format_success(
-        self, result: AmplificationResult
+        self, result: AmplificationPhaseResult
     ) -> Dict[str, Any]:
         """Format successful protocol completion."""
         return {
@@ -1282,7 +1280,7 @@ class AliceProgram(CaligoProgram):
     
     def _phase2_sifting(
         self, quantum_result: QuantumPhaseResult
-    ) -> Generator[EventExpression, None, SiftingResult]:
+    ) -> Generator[EventExpression, None, SiftingPhaseResult]:
         """
         Alice's Phase II: Receive commitment, wait, reveal bases.
         
@@ -1313,14 +1311,16 @@ class AliceProgram(CaligoProgram):
         )
         logger.info("Received commitment from Bob")
         
-        # 2. Mark commitment received (start timing barrier)
+        # 2. Mark quantum phase complete (if not already done)
+        # Note: Typically marked at end of Phase I, but commitment receipt
+        # can also serve as the reference point for Δt calculation
         if self._timing_barrier is not None:
-            import netsquid as ns
-            self._timing_barrier.mark_commit_received(int(ns.sim_time()))
+            self._timing_barrier.mark_quantum_complete()
         
         # 3. WAIT Δt — timing barrier enforcement
         if self._timing_barrier is not None:
-            self._timing_barrier.enforce_barrier()
+            yield from self._timing_barrier.wait_delta_t()
+            self._timing_barrier.assert_timing_compliant()
             logger.info("Timing barrier (Δt) satisfied")
         
         # 4. Reveal bases (with ACK)
@@ -1378,7 +1378,7 @@ class AliceProgram(CaligoProgram):
         from caligo.security import validate_qber
         validate_qber(qber, self.config.security)
         
-        return SiftingResult(
+        return SiftingPhaseResult(
             alice_outcomes=quantum_result.outcomes,
             bob_outcomes=bob_outcomes,
             alice_bases=quantum_result.bases,
@@ -1391,8 +1391,8 @@ class AliceProgram(CaligoProgram):
         )
     
     def _phase4_amplification(
-        self, recon_result: ReconciliationResult
-    ) -> Generator[EventExpression, None, AmplificationResult]:
+        self, recon_result: ReconciliationPhaseResult
+    ) -> Generator[EventExpression, None, AmplificationPhaseResult]:
         """
         Alice's Phase IV: Privacy amplification producing (S_0, S_1).
         
@@ -1432,7 +1432,7 @@ class AliceProgram(CaligoProgram):
         if key_length == 0:
             logger.warning("Death Valley: no secure key extractable")
             # Return empty keys
-            return AmplificationResult(
+            return AmplificationPhaseResult(
                 oblivious_key=AliceObliviousKey.empty(),
                 qber=recon_result.qber,
                 key_length=0,
@@ -1462,7 +1462,7 @@ class AliceProgram(CaligoProgram):
         logger.info("Produced keys: |S_0|=%d, |S_1|=%d",
                     len(alice_keys.key_0), len(alice_keys.key_1))
         
-        return AmplificationResult(
+        return AmplificationPhaseResult(
             oblivious_key=alice_keys,
             qber=recon_result.qber,
             key_length=key_length,
@@ -1520,7 +1520,7 @@ class BobProgram(CaligoProgram):
     
     def _phase2_sifting(
         self, quantum_result: QuantumPhaseResult
-    ) -> Generator[EventExpression, None, SiftingResult]:
+    ) -> Generator[EventExpression, None, SiftingPhaseResult]:
         """
         Bob's Phase II: Commit, receive bases, decommit, sift.
         
@@ -1591,7 +1591,7 @@ class BobProgram(CaligoProgram):
             seed=self.config.seed
         )
         
-        return SiftingResult(
+        return SiftingPhaseResult(
             alice_outcomes=None,  # Bob doesn't know Alice's outcomes
             bob_outcomes=quantum_result.outcomes,
             alice_bases=alice_bases,
@@ -1604,8 +1604,8 @@ class BobProgram(CaligoProgram):
         )
     
     def _phase4_amplification(
-        self, recon_result: ReconciliationResult
-    ) -> Generator[EventExpression, None, AmplificationResult]:
+        self, recon_result: ReconciliationPhaseResult
+    ) -> Generator[EventExpression, None, AmplificationPhaseResult]:
         """
         Bob's Phase IV: Receive seed, hash to S_C.
         
@@ -1631,7 +1631,7 @@ class BobProgram(CaligoProgram):
         if len(seed_bytes) == 0:
             # Death Valley — no secure key
             logger.warning("Received empty seed: Death Valley")
-            return AmplificationResult(
+            return AmplificationPhaseResult(
                 oblivious_key=BobObliviousKey.empty(),
                 qber=recon_result.qber,
                 key_length=0,
@@ -1667,7 +1667,7 @@ class BobProgram(CaligoProgram):
         logger.info("Produced key: |S_C|=%d, choice=%d",
                     len(bob_key.key_c), choice_bit)
         
-        return AmplificationResult(
+        return AmplificationPhaseResult(
             oblivious_key=bob_key,
             qber=recon_result.qber,
             key_length=len(bob_key.key_c),
@@ -1719,7 +1719,6 @@ class ProtocolOrchestrator:
     
     Usage
     -----
-    ```python
     orchestrator = ProtocolOrchestrator(config)
     
     # Pre-flight check
@@ -1731,7 +1730,6 @@ class ProtocolOrchestrator:
     results = orchestrator.run()
     alice_key = results["alice"]["oblivious_key"]
     bob_key = results["bob"]["oblivious_key"]
-    ```
     """
     
     def __init__(self, config: OrchestratorConfig):
@@ -1841,7 +1839,7 @@ ProtocolOrchestrator : class
 
 Usage
 -----
-```python
+
 from caligo.protocol import (
     AliceProgram,
     BobProgram,
@@ -1859,7 +1857,7 @@ config = OrchestratorConfig(
 # Run
 orchestrator = ProtocolOrchestrator(config)
 results = orchestrator.run()
-```
+
 """
 
 from caligo.protocol.base import CaligoProgram
