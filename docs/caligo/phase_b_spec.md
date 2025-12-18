@@ -78,7 +78,7 @@ Phase B directly addresses this gap by implementing `TimingBarrier` — a simula
 
 ### 3.1 The Noisy Storage Model (NSM)
 
-The NSM provides the security foundation for E-HOK. Understanding its mathematical structure is essential for correct simulation mapping.
+The NSM provides the security foundation for $\binom{2}{1}$-OT. Understanding its mathematical structure is essential for correct simulation mapping.
 
 #### 3.1.1 NSM Definition (König et al., 2012)
 
@@ -701,7 +701,7 @@ class EHOKAliceProgram(Program):
 ```python
 class CaligoNetworkBuilder:
     """
-    Factory for creating SquidASM network configurations for E-HOK.
+    Factory for creating SquidASM network configurations for $\binom{2}{1}$-OT.
     
     Provides a high-level API for constructing network configurations
     that incorporate NSM-specific parameters. Wraps the complexity of
@@ -717,7 +717,7 @@ class CaligoNetworkBuilder:
     Methods
     -------
     build_two_node_network(alice_name, bob_name) -> StackNetworkConfig
-        Create minimal Alice-Bob network for E-HOK.
+        Create minimal Alice-Bob network for $\binom{2}{1}$-OT.
     build_stack_config(name, num_qubits) -> StackConfig
         Create single node configuration.
     build_link_config(node1, node2, noise_type) -> LinkConfig
@@ -742,7 +742,7 @@ class CaligoNetworkBuilder:
         num_qubits: int = 10
     ) -> StackNetworkConfig:
         """
-        Create a two-node network configuration for E-HOK.
+        Create a two-node network configuration for $\binom{2}{1}$-OT.
         
         Parameters
         ----------

@@ -80,7 +80,7 @@ Phase C encodes these theoretical bounds as executable validation logic.
 
 ### 3.1 The Noisy Storage Model Security Paradigm
 
-ROT security fundamentally differs from QKD. In QKD, Alice and Bob collaborate against an external eavesdropper Eve. In E-HOK, **Alice and Bob distrust each other**, and security derives from physical limitations on the adversary's quantum memory.
+ROT security fundamentally differs from QKD. In QKD, Alice and Bob collaborate against an external eavesdropper Eve. In $\binom{2}{1}$-OT, **Alice and Bob distrust each other**, and security derives from physical limitations on the adversary's quantum memory.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -544,7 +544,7 @@ class FeasibilityChecker:
     """
     Pre-flight security feasibility validation.
     
-    This class validates whether the E-HOK protocol can produce a
+    This class validates whether the $\binom{2}{1}$-OT protocol can produce a
     secure oblivious key given the physical parameters. All checks
     MUST pass before protocol execution.
     
@@ -673,7 +673,7 @@ def check_batch_size_feasibility(
     """
     Check if batch size yields positive extractable key length.
     
-    Computes the expected final key length using the E-HOK formula:
+    Computes the expected final key length using the $\binom{2}{1}$-OT formula:
     
         ℓ = n · h_min(r) - |Σ| - 2·log₂(1/ε_sec) - Δ_finite
     
@@ -1317,7 +1317,7 @@ Numerical inversion uses Brent's method on the interval $[0, 1]$.
 ```python
 # caligo/security/bounds.py
 """
-NSM entropy bounds for E-HOK protocol security analysis.
+NSM entropy bounds for $\binom{2}{1}$-OT protocol security analysis.
 
 This module implements the entropy calculations required for
 privacy amplification key length determination in the Noisy

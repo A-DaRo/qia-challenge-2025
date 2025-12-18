@@ -4,11 +4,30 @@ Custom noise model wrappers for NSM-specific behavior.
 This module provides noise model wrappers that combine NSM theoretical
 parameters with NetSquid simulation components.
 
+Erven et al. (2014) QBER Model
+------------------------------
+The total QBER is composed of three contributions:
+
+1. **Source Error (Q_source)**: From imperfect entanglement generation
+   Q_source = (1 - F) / 2
+   where F is the fidelity of the prepared Bell state.
+
+2. **Detector Error (Q_det)**: Intrinsic measurement error rate
+   Q_det = e_det
+   This includes polarization misalignment and detector imperfections.
+
+3. **Dark Count Error (Q_dark)**: False positive detections
+   Q_dark = (1 - η) × P_dark × 0.5
+   where η is detection efficiency and P_dark is dark count probability.
+
+Full QBER: Q_total = Q_source + Q_det + Q_dark
+
 References
 ----------
 - König et al. (2012): Markovian storage noise model
 - Schaffner et al. (2009): Depolarizing channel analysis
 - Erven et al. (2014): Experimental parameters, Table I
+- Wehner et al. (2010): Implementation of two-party protocols in NSM
 """
 
 from __future__ import annotations
@@ -19,12 +38,16 @@ from typing import Any, Optional
 import numpy as np
 
 from caligo.types.exceptions import InvalidParameterError
-from caligo.utils.math import binary_entropy
-
-
-# Security thresholds
-QBER_HARD_LIMIT: float = 0.22
-QBER_CONSERVATIVE_LIMIT: float = 0.11
+from caligo.utils.math import (
+    binary_entropy,
+    compute_qber_erven,
+    suggested_ldpc_rate_from_qber,
+    blind_reconciliation_initial_config,
+)
+from caligo.simulation.constants import (
+    QBER_HARD_LIMIT,
+    QBER_CONSERVATIVE_LIMIT,
+)
 
 
 # =============================================================================
@@ -253,31 +276,96 @@ class ChannelNoiseProfile:
     @property
     def total_qber(self) -> float:
         """
-        Combined QBER from all noise sources.
+        Combined QBER from all noise sources (Erven et al. formula).
+
+        Delegates to shared utility function in caligo.utils.math.
 
         Returns
         -------
         float
-            Total QBER estimate.
+            Total QBER = Q_source + Q_det + Q_dark.
+
+        References
+        ----------
+        - Erven et al. (2014) Table I and Eq. 8
+        """
+        return compute_qber_erven(
+            fidelity=self.source_fidelity,
+            detector_error=self.detector_error,
+            detection_efficiency=self.detector_efficiency,
+            dark_count_prob=self.dark_count_rate,
+        )
+
+    @property
+    def qber_conditional(self) -> float:
+        """
+        Conditional QBER given a detection event occurred.
+
+        This is the QBER conditioned on Bob actually detecting something,
+        which is more relevant for post-selected analysis.
+
+        Returns
+        -------
+        float
+            Conditional QBER = E[error | detection].
 
         Notes
         -----
-        Simplified model:
-        Q = (1 - F)/2 + e_det + (1-η) * dark_rate / 2
-
-        For more accurate modeling, use the full Erven formula
-        which accounts for all detection scenarios.
+        Formula:
+            P(detect) = η + (1-η) × P_dark
+            Q_cond = [η × (Q_source + Q_det) + (1-η) × P_dark × 0.5] / P(detect)
         """
-        # Contribution from imperfect source
-        source_contribution = (1.0 - self.source_fidelity) / 2.0
+        q_source = (1.0 - self.source_fidelity) / 2.0
+        q_det = self.detector_error
+        eta = self.detector_efficiency
+        p_dark = self.dark_count_rate
 
-        # Contribution from detector error
-        detector_contribution = self.detector_error
+        # Probability of any detection event
+        p_detect = eta + (1.0 - eta) * p_dark
 
-        # Contribution from dark counts (when signal lost)
-        dark_contribution = (1.0 - self.detector_efficiency) * self.dark_count_rate / 2.0
+        if p_detect <= 0:
+            return 0.5  # No detection means random guessing
 
-        return source_contribution + detector_contribution + dark_contribution
+        # Error contribution from real photon detection
+        error_from_photon = eta * (q_source + q_det)
+
+        # Error contribution from dark count (random bit)
+        error_from_dark = (1.0 - eta) * p_dark * 0.5
+
+        return (error_from_photon + error_from_dark) / p_detect
+
+    @property
+    def detection_probability(self) -> float:
+        """
+        Total probability of a detection event.
+
+        Returns
+        -------
+        float
+            P(detect) = η + (1 - η) × P_dark.
+        """
+        eta = self.detector_efficiency
+        p_dark = self.dark_count_rate
+        return eta + (1.0 - eta) * p_dark
+
+    @property
+    def signal_to_noise_ratio(self) -> float:
+        """
+        Ratio of real detections to dark counts.
+
+        Returns
+        -------
+        float
+            SNR = η / [(1 - η) × P_dark].
+            Returns inf if dark count contribution is zero.
+        """
+        eta = self.detector_efficiency
+        dark_contribution = (1.0 - eta) * self.dark_count_rate
+
+        if dark_contribution <= 0:
+            return float("inf")
+
+        return eta / dark_contribution
 
     @property
     def is_secure(self) -> bool:
@@ -314,6 +402,43 @@ class ChannelNoiseProfile:
             Margin = 0.11 - total_qber. Positive means secure.
         """
         return QBER_CONSERVATIVE_LIMIT - self.total_qber
+
+    # =========================================================================
+    # Reconciliation Support Methods
+    # =========================================================================
+
+    def suggested_ldpc_rate(self, safety_margin: float = 0.05) -> float:
+        """
+        Suggest optimal LDPC code rate based on channel QBER.
+
+        Delegates to shared utility function in caligo.utils.math.
+
+        Parameters
+        ----------
+        safety_margin : float
+            Capacity margin (0-0.1). Default: 0.05.
+
+        Returns
+        -------
+        float
+            Suggested rate R ∈ [0.5, 0.95].
+        """
+        return suggested_ldpc_rate_from_qber(self.total_qber, safety_margin)
+
+    def blind_reconciliation_config(self) -> dict:
+        """
+        Generate configuration for blind reconciliation.
+
+        Returns configuration with channel-informed initial rate.
+
+        Returns
+        -------
+        dict
+            Configuration dict with initial_rate, max_iterations, etc.
+        """
+        config = blind_reconciliation_initial_config(self.total_qber)
+        config["expected_qber"] = self.total_qber
+        return config
 
     # =========================================================================
     # Factory Methods

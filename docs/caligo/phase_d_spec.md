@@ -25,7 +25,7 @@
 
 ## 1. Executive Summary
 
-**Phase D** implements the core protocol phases that constitute the E-HOK workflow. This phase translates theoretical cryptographic primitives into executable simulation components that integrate seamlessly with Phases A-C (Foundation, Simulation, Security layers).
+**Phase D** implements the core protocol phases that constitute the $\binom{2}{1}$-OT workflow. This phase translates theoretical cryptographic primitives into executable simulation components that integrate seamlessly with Phases A-C (Foundation, Simulation, Security layers).
 
 ### 1.1 Deliverable Overview
 
@@ -47,7 +47,7 @@ Phase D adheres to the Caligo design principles established in the architecture 
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  1. DOMAIN-DRIVEN MODULES                                                   │
-│     └── Package names reflect E-HOK phases (quantum/, sifting/, etc.)       │
+│     └── Package names reflect $\binom{2}{1}$-OT phases (quantum/, sifting/, etc.)       │
 │     └── Module names reflect cryptographic primitives                       │
 │                                                                             │
 │  2. SIMULATION-NATIVE EXECUTION                                             │
@@ -164,13 +164,13 @@ The 1-out-of-2 OT protocol enforces a strict temporal ordering that Phase D must
 
 ## 3. Theoretical Workflow Overview
 
-### 3.1 The E-HOK Security Model
+### 3.1 The $\binom{2}{1}$-OT Security Model
 
-E-HOK implements **1-out-of-2 Oblivious Transfer (OT)** using the Noisy Storage Model (NSM). The fundamental security assumption is:
+$\binom{2}{1}$-OT implements **1-out-of-2 Oblivious Transfer (OT)** using the Noisy Storage Model (NSM). The fundamental security assumption is:
 
 > **NSM Assumption:** An adversary's quantum memory decoheres faster than the protocol's timing constraints allow exploitation.
 
-This differs from QKD where Alice and Bob trust each other against an external eavesdropper Eve. In E-HOK:
+This differs from QKD where Alice and Bob trust each other against an external eavesdropper Eve. In $\binom{2}{1}$-OT:
 
 - **Alice** holds two messages (keys) $S_0$ and $S_1$
 - **Bob** has a choice bit $C \in \{0, 1\}$
@@ -402,7 +402,7 @@ class BasisSelector:
     Generate random measurement bases for quantum measurements.
     
     Uses cryptographically secure randomness for basis selection.
-    The randomness of basis choices is CRITICAL for E-HOK security:
+    The randomness of basis choices is CRITICAL for $\binom{2}{1}$-OT security:
     predictable bases would allow an adversary to gain full
     information about the key.
     
@@ -419,7 +419,7 @@ class BasisSelector:
     References
     ----------
     - BB84 basis selection: Bennett & Brassard (1984)
-    - E-HOK basis usage: Lemus et al. (2020), Section 3
+    - $\binom{2}{1}$-OT basis usage: Lemus et al. (2020), Section 3
     """
     
     def __init__(self, seed: Optional[int] = None):

@@ -1,9 +1,9 @@
-# Caligo: E-HOK Protocol Implementation Architecture
+# Caligo: $\binom{2}{1}$-OT Protocol Implementation Architecture
 
 **Author:** Lead Software Architect  
 **Date:** December 16, 2025  
 **Version:** 1.0  
-**Objective:** Design a clean-slate, domain-driven E-HOK protocol implementation with native SquidASM/NetSquid integration.
+**Objective:** Design a clean-slate, domain-driven $\binom{2}{1}$-OT protocol implementation with native SquidASM/NetSquid integration.
 
 ---
 
@@ -24,13 +24,13 @@
 
 ### 1.1 Project Genesis
 
-**Caligo** (Latin: "fog/mist" — evoking the obscured nature of oblivious transfer) is a ground-up reimplementation of the E-HOK (Efficient High-dimensional Oblivious Key) protocol. Rather than refactoring the existing `ehok` codebase, we choose a clean-slate approach for the following reasons:
+**Caligo** (Latin: "fog/mist" — evoking the obscured nature of oblivious transfer) is a ground-up reimplementation of the $\binom{2}{1}$-OT (Efficient High-dimensional Oblivious Key) protocol. Rather than refactoring the existing `ehok` codebase, we choose a clean-slate approach for the following reasons:
 
 | Rationale | Justification |
 |-----------|---------------|
 | **Technical debt elimination** | ehok suffers from architecture astronaut syndrome with 6+ abstraction layers |
 | **Simulation-first design** | ehok treats SquidASM as an afterthought; caligo designs around it |
-| **Domain alignment** | Package structure will mirror E-HOK's 4-phase protocol from day one |
+| **Domain alignment** | Package structure will mirror $\binom{2}{1}$-OT's 4-phase protocol from day one |
 | **Integration by design** | NetSquid noise models, timing, and discrete-event semantics are first-class citizens |
 
 ### 1.2 Core Design Principles
@@ -46,7 +46,7 @@
 │     └── Noise models are parameterizable from protocol configuration        │
 │                                                                             │
 │  2. DOMAIN-DRIVEN STRUCTURE                                                 │
-│     └── Package names reflect E-HOK phases, not software patterns           │
+│     └── Package names reflect $\binom{2}{1}$-OT phases, not software patterns           │
 │     └── A physicist should recognize the directory structure                │
 │                                                                             │
 │  3. LEAN MODULES (≤200 LOC)                                                 │
@@ -141,13 +141,13 @@ ehok treats SquidASM as a black box:
 
 ## 3. Domain Model Analysis
 
-### 3.1 E-HOK Protocol Phases
+### 3.1 $\binom{2}{1}$-OT Protocol Phases
 
-The E-HOK protocol implements **1-out-of-2 Oblivious Transfer** using the Noisy Storage Model (NSM). Security derives from the assumption that an adversary's quantum memory decoheres faster than the protocol's timing constraints allow exploitation.
+The $\binom{2}{1}$-OT protocol implements **1-out-of-2 Oblivious Transfer** using the Noisy Storage Model (NSM). Security derives from the assumption that an adversary's quantum memory decoheres faster than the protocol's timing constraints allow exploitation.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    E-HOK PROTOCOL: TEMPORAL FLOW                            │
+│                    $\binom{2}{1}$-OT PROTOCOL: TEMPORAL FLOW                            │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  TIME ═══════════════════════════════════════════════════════════════════►  │
@@ -676,7 +676,7 @@ To maintain clean architecture, Caligo enforces strict import rules:
 
 ### 6.1 Simulation Layer (`simulation/`)
 
-This package is **Caligo's core innovation** — the bridge between E-HOK's domain logic and SquidASM/NetSquid's simulation infrastructure.
+This package is **Caligo's core innovation** — the bridge between $\binom{2}{1}$-OT's domain logic and SquidASM/NetSquid's simulation infrastructure.
 
 #### 6.1.1 `physical_model.py` (< 180 LOC)
 
@@ -995,7 +995,7 @@ class FeasibilityResult(Enum):
 
 class FeasibilityChecker:
     """
-    Pre-flight feasibility validation for E-HOK execution.
+    Pre-flight feasibility validation for $\binom{2}{1}$-OT execution.
     
     Checks that physical parameters support secure protocol
     execution before committing resources.
@@ -1197,7 +1197,7 @@ class ProtocolPhase(Enum):
 
 class OrderedProtocolSocket:
     """
-    Enforces strict message ordering for E-HOK protocol.
+    Enforces strict message ordering for $\binom{2}{1}$-OT protocol.
     
     Prevents race conditions in the "Sandwich" protocol flow
     by requiring acknowledgments before state transitions.
@@ -1354,7 +1354,7 @@ class CaligoEPRGenerator:
         """
         Generate EPR pairs with immediate measurement.
         
-        This is the primary generation mode for E-HOK where
+        This is the primary generation mode for $\binom{2}{1}$-OT where
         Alice and Bob measure immediately in random bases.
         
         Yields
@@ -1410,7 +1410,7 @@ class CaligoEPRGenerator:
 
 **NetSquid Native Models (from netsquid.components.models.qerrormodels):**
 
-| Model | Parameters | E-HOK Usage |
+| Model | Parameters | $\binom{2}{1}$-OT Usage |
 |-------|------------|-------------|
 | `DepolarNoiseModel` | `depolar_rate`, `time_independent` | Source imperfection (μ) |
 | `DephaseNoiseModel` | `dephase_rate`, `time_independent` | Phase errors |
@@ -1785,10 +1785,10 @@ def batched_generation(context: ProgramContext, n: int, batch_size: int):
         
     return results
 
-# Pattern 3: Interleaved quantum and classical (E-HOK pattern)
+# Pattern 3: Interleaved quantum and classical ($\binom{2}{1}$-OT pattern)
 def ehok_phase1(context: ProgramContext, config: QuantumConfig):
     """
-    E-HOK Phase I with timing integration.
+    $\binom{2}{1}$-OT Phase I with timing integration.
     
     Key requirements:
     1. Generate all EPR pairs
@@ -2000,7 +2000,7 @@ class NSMViolationError(SecurityError):
 
 ### 8.4 Success Criteria
 
-1. **Functional**: Complete E-HOK OT execution produces valid S₀, S₁, Sᴄ keys
+1. **Functional**: Complete $\binom{2}{1}$-OT execution produces valid S₀, S₁, Sᴄ keys
 2. **Secure**: QBER thresholds enforced, Δt timing verified
 3. **Integrated**: Runs on SquidASM 0.12+ without patches
 4. **Maintainable**: All modules ≤ 200 LOC, 90%+ test coverage

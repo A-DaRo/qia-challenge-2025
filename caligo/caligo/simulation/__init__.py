@@ -68,6 +68,11 @@ from caligo.simulation.network_builder import (
     perfect_network_config,
     realistic_network_config,
     erven_experimental_config,
+    validate_qdevice_type,
+    validate_stack_config,
+    validate_network_config,
+    SUPPORTED_QDEVICE_TYPE,
+    BLOCKED_QDEVICE_TYPES,
 )
 
 __all__ = [
@@ -87,4 +92,10 @@ __all__ = [
     "perfect_network_config",
     "realistic_network_config",
     "erven_experimental_config",
+    # Hardware validation
+    "validate_qdevice_type",
+    "validate_stack_config",
+    "validate_network_config",
+    "SUPPORTED_QDEVICE_TYPE",
+    "BLOCKED_QDEVICE_TYPES",
 ]

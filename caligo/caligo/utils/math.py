@@ -14,6 +14,7 @@ References
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
 
@@ -103,6 +104,160 @@ def channel_capacity(qber: float) -> float:
         raise ValueError(f"qber={qber} must be in [0, 0.5]")
 
     return 1.0 - binary_entropy(qber)
+
+
+# Available LDPC code rates (frame size 4096)
+LDPC_CODE_RATES: tuple[float, ...] = (0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90)
+LDPC_F_CRIT: float = 1.22  # Efficiency criterion
+
+
+def suggested_ldpc_rate_from_qber(
+    qber: float,
+    safety_margin: float = 0.0,
+) -> float:
+    """
+    Suggest an LDPC code rate for a given QBER.
+
+     Selects the highest rate satisfying both:
+
+     1) A *leakage-efficiency* cap (avoid sending excessively long syndromes):
+         (1 - rate) / h(qber) < f_crit
+
+     2) A *decodability* bound (Shannon capacity for a BSC):
+         rate <= 1 - h(qber)
+
+    Parameters
+    ----------
+    qber : float
+        Estimated quantum bit error rate in [0, 0.5].
+    safety_margin : float
+        Additional margin to add to QBER for rate selection.
+
+    Returns
+    -------
+    float
+        Suggested LDPC code rate from available rates.
+
+    Notes
+    -----
+    With safety_margin > 0, the function uses qber + safety_margin
+    for rate selection, providing more redundancy.
+
+    References
+    ----------
+    - recon_phase_spec.md Section 5.1: Rate Selection
+    """
+    effective_qber = min(qber + safety_margin, 0.499)
+    entropy = binary_entropy(effective_qber)
+
+    if entropy < 1e-10:
+        # Very low QBER, use highest rate
+        return LDPC_CODE_RATES[-1]
+
+    # Decodability: for a BSC, rate must not exceed channel capacity 1 - h(e)
+    max_rate = max(0.0, 1.0 - entropy)
+    # Leakage-efficiency cap: f = (1-R)/h(e) < fcrit  =>  R > 1 - fcrit*h(e)
+    min_rate = max(0.0, 1.0 - LDPC_F_CRIT * entropy)
+
+    # Prefer rates that satisfy both bounds.
+    candidates = [r for r in LDPC_CODE_RATES if min_rate <= r <= max_rate]
+    if candidates:
+        return max(candidates)
+
+    # If no rate satisfies both, prefer decodability (capacity) over the
+    # leakage-efficiency cap; feasibility checks should gate extreme cases.
+    decodable = [r for r in LDPC_CODE_RATES if r <= max_rate]
+    if decodable:
+        return max(decodable)
+
+    # Default to lowest rate.
+    return LDPC_CODE_RATES[0]
+
+
+def blind_reconciliation_initial_config(qber: float) -> dict[str, Any]:
+    """
+    Generate blind reconciliation configuration from estimated QBER.
+
+    Provides initial parameters for blind reconciliation based on
+    the channel quality.
+
+    Parameters
+    ----------
+    qber : float
+        Estimated quantum bit error rate in [0, 0.5].
+
+    Returns
+    -------
+    dict[str, Any]
+        Configuration dictionary with keys:
+        - initial_rate: Suggested LDPC code rate
+        - rate_adaptation: "puncturing" or "shortening"
+
+    Notes
+    -----
+    - Low QBER (<2%): High rate with puncturing for efficiency
+    - Moderate QBER (2-5%): Medium-high rate with puncturing
+    - Higher QBER (5-8%): Medium rate with shortening
+    - High QBER (>8%): Low rate with shortening for reliability
+
+    References
+    ----------
+    - recon_phase_spec.md Section 3.2: Blind Reconciliation
+    """
+    if qber < 0.02:
+        return {"initial_rate": 0.90, "rate_adaptation": "puncturing"}
+    elif qber < 0.05:
+        return {"initial_rate": 0.80, "rate_adaptation": "puncturing"}
+    elif qber < 0.08:
+        return {"initial_rate": 0.70, "rate_adaptation": "shortening"}
+    else:
+        return {"initial_rate": 0.60, "rate_adaptation": "shortening"}
+
+
+def compute_qber_erven(
+    fidelity: float,
+    detector_error: float,
+    detection_efficiency: float,
+    dark_count_prob: float,
+) -> float:
+    """
+    Compute total QBER using Erven et al. (2014) formula.
+
+    The total QBER combines three error sources:
+
+    1. **Source errors**: From imperfect Bell state preparation
+       Q_source = (1 - F) / 2
+
+    2. **Detector errors**: Intrinsic measurement errors
+       Q_det = e_det
+
+    3. **Dark count errors**: False detections when no photon arrives
+       Q_dark = (1 - η) × P_dark / 2
+
+    Parameters
+    ----------
+    fidelity : float
+        EPR source fidelity F ∈ (0.5, 1].
+    detector_error : float
+        Intrinsic detector error rate e_det ∈ [0, 0.5].
+    detection_efficiency : float
+        Combined detection efficiency η ∈ (0, 1].
+    dark_count_prob : float
+        Dark count probability P_dark ∈ [0, 1].
+
+    Returns
+    -------
+    float
+        Total QBER = Q_source + Q_det + Q_dark.
+
+    References
+    ----------
+    - Erven et al. (2014) Eq. 8 and Table I
+    """
+    q_source = (1.0 - fidelity) / 2.0
+    q_det = detector_error
+    q_dark = (1.0 - detection_efficiency) * dark_count_prob / 2.0
+    return q_source + q_det + q_dark
 
 
 def finite_size_penalty(n: int, k: int, epsilon_sec: float = 1e-10) -> float:

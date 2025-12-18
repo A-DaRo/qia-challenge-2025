@@ -79,7 +79,7 @@
 
 ### 3.1 Module: `keys.py` (< 100 LOC)
 
-**Purpose:** Define the canonical representation of oblivious keys — the final output of the E-HOK protocol.
+**Purpose:** Define the canonical representation of oblivious keys — the final output of the $\binom{2}{1}$-OT protocol.
 
 #### 3.1.1 `ObliviousKey` (Base Dataclass)
 
@@ -88,7 +88,7 @@
 │                         ObliviousKey Specification                          │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  An ObliviousKey represents a cryptographic key extracted via the E-HOK     │
+│  An ObliviousKey represents a cryptographic key extracted via the $\binom{2}{1}$-OT     │
 │  protocol. The key is "oblivious" because one party (Bob) learns only       │
 │  one of two possible keys, while the other party (Alice) doesn't know       │
 │  which key Bob obtained.                                                    │
@@ -117,7 +117,7 @@
 @dataclass(frozen=True)
 class AliceObliviousKey:
     """
-    Alice's output from the E-HOK protocol: two keys S₀ and S₁.
+    Alice's output from the $\binom{2}{1}$-OT protocol: two keys S₀ and S₁.
     
     Alice possesses both keys but does not know which one Bob received.
     This is the "sender" output in 1-out-of-2 Oblivious Transfer.
@@ -152,7 +152,7 @@ class AliceObliviousKey:
 @dataclass(frozen=True)
 class BobObliviousKey:
     """
-    Bob's output from the E-HOK protocol: one key Sᴄ and his choice bit C.
+    Bob's output from the $\binom{2}{1}$-OT protocol: one key Sᴄ and his choice bit C.
     
     Bob receives exactly one of Alice's two keys, determined by his choice
     bit C. He cannot learn anything about the other key S_{1-C}.
@@ -298,7 +298,7 @@ class DetectionEvent:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                     E-HOK Phase Boundary Contracts                          │
+│                     $\binom{2}{1}$-OT Phase Boundary Contracts                          │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  Phase I (Quantum) ──► QuantumPhaseResult ──► Phase II (Sifting)           │
@@ -499,7 +499,7 @@ class ObliviousTransferOutput:
     """
     Final protocol output: 1-out-of-2 OT keys.
     
-    The terminal output of the E-HOK protocol, containing:
+    The terminal output of the $\binom{2}{1}$-OT protocol, containing:
     - For Alice: Two keys (S₀, S₁)
     - For Bob: One key (Sᴄ) and his choice bit C
     
@@ -573,7 +573,7 @@ CaligoError (Base)
 ```python
 class ProtocolPhase(Enum):
     """
-    Enumeration of E-HOK protocol phases.
+    Enumeration of $\binom{2}{1}$-OT protocol phases.
     
     Used for state machine tracking and transcript annotation.
     Phase transitions must follow the order:

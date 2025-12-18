@@ -131,11 +131,11 @@ Understanding SquidASM's execution model is essential for Phase E implementation
 
 ### 1.5 Critical Protocol Flow (Phase E Scope)
 
-Phase E orchestrates the complete E-HOK protocol execution:
+Phase E orchestrates the complete $\binom{2}{1}$-OT protocol execution:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    E-HOK ORCHESTRATION FLOW (Phase E)                       │
+│                    $\binom{2}{1}$-OT ORCHESTRATION FLOW (Phase E)                       │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  ALICE                                          BOB                         │
@@ -890,7 +890,7 @@ __all__ = [
 
 ### 5.1 Design Overview
 
-The protocol package implements the complete E-HOK workflow as SquidASM-compatible programs. The design uses a **template method pattern** where a base class defines the phase sequencing, and role-specific subclasses (Alice, Bob) implement phase behaviors.
+The protocol package implements the complete $\binom{2}{1}$-OT workflow as SquidASM-compatible programs. The design uses a **template method pattern** where a base class defines the phase sequencing, and role-specific subclasses (Alice, Bob) implement phase behaviors.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -956,7 +956,7 @@ from caligo.utils.logging import get_logger
 
 class CaligoProgram(Program, ABC):
     """
-    Template base class for Caligo E-HOK protocol programs.
+    Template base class for Caligo $\binom{2}{1}$-OT protocol programs.
     
     This class implements the Template Method pattern, defining the
     high-level protocol flow while delegating role-specific behavior
@@ -1081,7 +1081,7 @@ class CaligoProgram(Program, ABC):
         self, context: ProgramContext
     ) -> Generator[EventExpression, None, Dict[str, Any]]:
         """
-        Execute E-HOK protocol as SquidASM generator.
+        Execute $\binom{2}{1}$-OT protocol as SquidASM generator.
         
         This is the main entry point called by SquidASM runtime.
         
@@ -1108,7 +1108,7 @@ class CaligoProgram(Program, ABC):
         self._context = context
         self._setup_dependencies()
         logger = get_logger(f"protocol.{self.ROLE}")
-        logger.info("Starting %s E-HOK protocol", self.ROLE)
+        logger.info("Starting %s $\binom{2}{1}$-OT protocol", self.ROLE)
         
         try:
             # Phase I: Quantum (symmetric)
@@ -1232,9 +1232,9 @@ class CaligoProgram(Program, ABC):
 
 ### 5.3 Module: `alice.py` (~150 LOC)
 
-**Purpose:** Alice's E-HOK protocol implementation.
+**Purpose:** Alice's $\binom{2}{1}$-OT protocol implementation.
 
-#### 5.3.1 Alice's Role in E-HOK
+#### 5.3.1 Alice's Role in $\binom{2}{1}$-OT
 
 Alice has specific responsibilities in each phase:
 
@@ -1250,7 +1250,7 @@ Alice has specific responsibilities in each phase:
 ```python
 class AliceProgram(CaligoProgram):
     """
-    Alice's E-HOK protocol implementation.
+    Alice's $\binom{2}{1}$-OT protocol implementation.
     
     Alice is the "sender" in the 1-out-of-2 OT terminology. She:
     - Creates EPR pairs (initiator role)
@@ -1472,9 +1472,9 @@ class AliceProgram(CaligoProgram):
 
 ### 5.4 Module: `bob.py` (~150 LOC)
 
-**Purpose:** Bob's E-HOK protocol implementation.
+**Purpose:** Bob's $\binom{2}{1}$-OT protocol implementation.
 
-#### 5.4.1 Bob's Role in E-HOK
+#### 5.4.1 Bob's Role in $\binom{2}{1}$-OT
 
 Bob has specific responsibilities in each phase:
 
@@ -1490,7 +1490,7 @@ Bob has specific responsibilities in each phase:
 ```python
 class BobProgram(CaligoProgram):
     """
-    Bob's E-HOK protocol implementation.
+    Bob's $\binom{2}{1}$-OT protocol implementation.
     
     Bob is the "receiver" in the 1-out-of-2 OT terminology. He:
     - Receives EPR pairs (responder role)
@@ -1708,7 +1708,7 @@ class OrchestratorConfig:
 
 class ProtocolOrchestrator:
     """
-    Orchestrates E-HOK protocol execution within SquidASM.
+    Orchestrates $\binom{2}{1}$-OT protocol execution within SquidASM.
     
     Responsibilities
     ----------------
@@ -1823,7 +1823,7 @@ class ProtocolOrchestrator:
 """
 Protocol package for SquidASM program implementations.
 
-This package provides the executable E-HOK protocol as
+This package provides the executable $\binom{2}{1}$-OT protocol as
 SquidASM-compatible programs.
 
 Main Classes
@@ -2478,7 +2478,7 @@ def run_protocol(network, config):
    *Key contributions:* Commit-then-reveal semantics, timing barrier requirements.
 
 2. **Lupo, C., et al.** (2023). "Quantum and device-independent unconditionally secure digital signatures."  
-   *Key contributions:* E-HOK protocol specification, QBER limits.
+   *Key contributions:* $\binom{2}{1}$-OT protocol specification, QBER limits.
 
 3. **Schaffner, C., et al.** (2009). "Simple protocols for oblivious transfer."  
    *Key contributions:* NSM security model, protocol structure.

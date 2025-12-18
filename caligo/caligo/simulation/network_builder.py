@@ -21,10 +21,20 @@ from caligo.simulation.physical_model import (
     NSMParameters,
     QBER_CONSERVATIVE_LIMIT,
 )
-from caligo.types.exceptions import NetworkConfigError
+from caligo.types.exceptions import NetworkConfigError, UnsupportedHardwareError
 from caligo.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+# =============================================================================
+# Constants
+# =============================================================================
+
+# Caligo only supports Generic QDevice due to NetQASM 2.x / SquidASM 0.13.x
+# instruction incompatibility. See protocol_flow_bug.md for details.
+SUPPORTED_QDEVICE_TYPE = "generic"
+BLOCKED_QDEVICE_TYPES = frozenset({"nv", "nv_config", "trapped_ion"})
 
 
 # =============================================================================
@@ -35,6 +45,87 @@ logger = get_logger(__name__)
 StackNetworkConfig = Any
 StackConfig = Any
 LinkConfig = Any
+
+
+# =============================================================================
+# Validation Utilities
+# =============================================================================
+
+
+def validate_qdevice_type(qdevice_typ: str) -> None:
+    """
+    Validate that the QDevice type is supported by Caligo.
+
+    Caligo enforces Generic QDevice only due to NetQASM 2.x / SquidASM 0.13.x
+    instruction incompatibility. NV hardware triggers MOV instructions that
+    are not implemented in the processor.
+
+    Parameters
+    ----------
+    qdevice_typ : str
+        The QDevice type string (e.g., "generic", "nv").
+
+    Raises
+    ------
+    UnsupportedHardwareError
+        If the QDevice type is not supported.
+
+    References
+    ----------
+    - protocol_flow_bug.md: Full bug analysis
+    - squidasm/sim/stack/processor.py:734: RuntimeError on MOV instruction
+    """
+    qdevice_typ_lower = qdevice_typ.lower()
+    if qdevice_typ_lower in BLOCKED_QDEVICE_TYPES:
+        raise UnsupportedHardwareError(
+            f"QDevice type '{qdevice_typ}' is not supported by Caligo. "
+            f"NetQASM 2.x generates MOV instructions that SquidASM 0.13.x "
+            f"cannot execute. Use qdevice_typ='{SUPPORTED_QDEVICE_TYPE}' instead. "
+            f"See docs/caligo/protocol_flow_bug.md for details."
+        )
+    if qdevice_typ_lower != SUPPORTED_QDEVICE_TYPE:
+        logger.warning(
+            f"QDevice type '{qdevice_typ}' is not explicitly supported. "
+            f"Recommended: '{SUPPORTED_QDEVICE_TYPE}'"
+        )
+
+
+def validate_stack_config(config: Any) -> None:
+    """
+    Validate a StackConfig for Caligo compatibility.
+
+    Parameters
+    ----------
+    config : StackConfig
+        The stack configuration to validate.
+
+    Raises
+    ------
+    UnsupportedHardwareError
+        If the configuration uses unsupported hardware.
+    """
+    qdevice_typ = getattr(config, "qdevice_typ", None)
+    if qdevice_typ is not None:
+        validate_qdevice_type(qdevice_typ)
+
+
+def validate_network_config(config: Any) -> None:
+    """
+    Validate a StackNetworkConfig for Caligo compatibility.
+
+    Parameters
+    ----------
+    config : StackNetworkConfig
+        The network configuration to validate.
+
+    Raises
+    ------
+    UnsupportedHardwareError
+        If any node uses unsupported hardware.
+    """
+    stacks = getattr(config, "stacks", [])
+    for stack in stacks:
+        validate_stack_config(stack)
 
 
 # =============================================================================
@@ -132,8 +223,8 @@ class CaligoNetworkBuilder:
         - Instant classical links (no propagation delay)
 
         The quantum link noise model is selected based on NSM parameters:
-        - If channel_fidelity == 1.0: NoNoise (testing only)
-        - Otherwise: Depolarise with fidelity = channel_fidelity
+        - If channel_fidelity == 1.0: "perfect" quantum link
+        - Otherwise: "depolarise" quantum link with fidelity = channel_fidelity
         """
         try:
             from squidasm.run.stack.config import (
@@ -148,13 +239,17 @@ class CaligoNetworkBuilder:
                 "Install with: pip install squidasm"
             ) from e
 
-        # Determine noise model based on fidelity
-        if self._nsm_params.channel_fidelity == 1.0:
-            link_noise_type = "NoNoise"
-            fidelity_param = 1.0
+        # Determine noise model based on fidelity.
+        #
+        # SquidASM's stack runner expects LinkConfig.typ to be a lowercase
+        # registered netbuilder model name (e.g. "perfect", "depolarise").
+        fidelity_param = float(self._nsm_params.channel_fidelity)
+        if fidelity_param == 1.0:
+            link_noise_type = "perfect"
+            link_cfg_payload = None
         else:
-            link_noise_type = "Depolarise"
-            fidelity_param = self._nsm_params.channel_fidelity
+            link_noise_type = "depolarise"
+            link_cfg_payload = {"fidelity": fidelity_param}
 
         # Create node configurations
         alice_config = StackConfig(
@@ -176,7 +271,7 @@ class CaligoNetworkBuilder:
             stack1=alice_name,
             stack2=bob_name,
             typ=link_noise_type,
-            cfg={"fidelity": fidelity_param} if link_noise_type == "Depolarise" else {},
+            cfg=link_cfg_payload,
         )
 
         # Build network config

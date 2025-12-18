@@ -55,6 +55,23 @@ class NetworkConfigError(SimulationError):
     pass
 
 
+class UnsupportedHardwareError(SimulationError):
+    """
+    Raised when unsupported quantum hardware type is requested.
+
+    Caligo only supports Generic QDevice type due to NetQASM 2.x / SquidASM
+    0.13.x instruction incompatibility. NV hardware triggers MOV instructions
+    that are not implemented in the processor.
+
+    References
+    ----------
+    - protocol_flow_bug.md: NetQASM 2.x / SquidASM 0.13.x incompatibility
+    - squidasm/sim/stack/processor.py: _interpret_two_qubit_instr() line 734
+    """
+
+    pass
+
+
 class EPRGenerationError(SimulationError):
     """Raised when EPR pair generation fails."""
 
@@ -150,9 +167,97 @@ class ContractViolation(ProtocolError):
 
 
 class ReconciliationError(ProtocolError):
-    """Raised when LDPC decoding fails after maximum iterations."""
+    """Base exception for Phase III reconciliation errors."""
 
     pass
+
+
+class DecodingFailed(ReconciliationError):
+    """
+    Raised when BP decoder fails to converge after all retries.
+
+    Attributes
+    ----------
+    blocks_failed : int
+        Number of blocks that failed decoding.
+    blocks_total : int
+        Total number of blocks attempted.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        blocks_failed: int = 0,
+        blocks_total: int = 0,
+    ) -> None:
+        super().__init__(message)
+        self.blocks_failed = blocks_failed
+        self.blocks_total = blocks_total
+
+
+class LeakageCapExceeded(ReconciliationError):
+    """
+    Raised when syndrome leakage exceeds safety cap.
+
+    Attributes
+    ----------
+    actual_leakage : int
+        Total leakage accumulated (bits).
+    max_allowed : int
+        Safety cap L_max (bits).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        actual_leakage: int = 0,
+        max_allowed: int = 0,
+    ) -> None:
+        super().__init__(message)
+        self.actual_leakage = actual_leakage
+        self.max_allowed = max_allowed
+
+
+class HashVerificationFailed(ReconciliationError):
+    """
+    Raised when block hash verification fails.
+
+    Indicates Alice and Bob have different keys after decoding.
+
+    Attributes
+    ----------
+    block_id : int
+        Identifier of the failed block.
+    """
+
+    def __init__(self, message: str, block_id: int = 0) -> None:
+        super().__init__(message)
+        self.block_id = block_id
+
+
+class MatrixSynchronizationError(ReconciliationError):
+    """
+    Raised when Alice/Bob LDPC matrix checksums don't match.
+
+    Attributes
+    ----------
+    local_checksum : str
+        Local matrix pool checksum.
+    remote_checksum : str
+        Remote party's checksum.
+    """
+
+    def __init__(
+        self,
+        local_checksum: str,
+        remote_checksum: str,
+    ) -> None:
+        super().__init__(
+            f"Matrix checksum mismatch: local={local_checksum[:16]}..., "
+            f"remote={remote_checksum[:16]}..."
+        )
+        self.local_checksum = local_checksum
+        self.remote_checksum = remote_checksum
 
 
 # =============================================================================
