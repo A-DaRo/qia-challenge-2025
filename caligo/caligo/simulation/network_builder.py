@@ -249,7 +249,12 @@ class CaligoNetworkBuilder:
             link_cfg_payload = None
         else:
             link_noise_type = "depolarise"
-            link_cfg_payload = {"fidelity": fidelity_param}
+            # DepolariseQLinkConfig requires prob_success and t_cycle
+            link_cfg_payload = {
+                "fidelity": fidelity_param,
+                "prob_success": 1.0,  # Assume deterministic generation for now
+                "t_cycle": 1000.0,    # 1 microsecond cycle
+            }
 
         # Create node configurations
         alice_config = StackConfig(

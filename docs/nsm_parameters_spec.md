@@ -1,9 +1,9 @@
 # NSM Parameters Implementation Specification
 
 **Document Type:** Implementation Specification  
-**Version:** 1.0  
+**Version:** 2.0  
 **Date:** December 18, 2025  
-**Status:** Draft  
+**Status:** Final Draft  
 **Parent Document:** [nsm_parameters_enforcement.md](nsm_parameters_enforcement.md)
 
 ---
@@ -12,13 +12,14 @@
 
 1. [Overview](#1-overview)
 2. [Architecture Principles](#2-architecture-principles)
-3. [Phase 1: Foundation Components](#3-phase-1-foundation-components)
-4. [Phase 2: Enhanced Noise Modeling](#4-phase-2-enhanced-noise-modeling)
-5. [Phase 3: Validation Framework](#5-phase-3-validation-framework)
-6. [Phase 4: Advanced Features](#6-phase-4-advanced-features)
-7. [SquidASM Pipeline Injection Specification](#7-squidasm-pipeline-injection-specification)
-8. [Module Organization](#8-module-organization)
-9. [Integration Contracts](#9-integration-contracts)
+3. [Core Components](#3-core-components)
+4. [NSM-to-Physical Parameter Mapping](#4-nsm-to-physical-parameter-mapping)
+5. [SquidASM Pipeline Injection](#5-squidasm-pipeline-injection)
+6. [Squid Package Dependencies](#6-squid-package-dependencies)
+7. [Confrontation With Enforcement Spec](#7-confrontation-with-enforcement-spec)
+8. [Implementation Contracts](#8-implementation-contracts)
+9. [Package Structure (Final)](#9-package-structure-final)
+10. [Testing Strategy](#10-testing-strategy)
 
 ---
 
@@ -26,962 +27,1470 @@
 
 ### 1.1 Purpose
 
-This document specifies the implementation architecture for enforcing Noisy Storage Model (NSM) parameters within the Caligo simulation environment. It translates the theoretical requirements from `nsm_parameters_enforcement.md` into actionable component designs.
+This document specifies the **single-phase** implementation architecture for enforcing Noisy Storage Model (NSM) parameters within the Caligo simulation environment. It bridges NSM theoretical parameters to their physical representations via runtime injection into SquidASM.
 
 ### 1.2 Design Goals
 
 | Goal | Rationale |
 |------|-----------|
-| **Separation of Concerns** | NSM parameters (security) vs. channel parameters (physics) vs. simulation config |
-| **Fail-Fast Validation** | Invalid parameters rejected at construction, not runtime |
-| **Pipeline Transparency** | Clear injection points with no hidden side effects |
-| **Testability** | Each component independently testable with mock dependencies |
-| **Extensibility** | New noise models addable without modifying existing code |
+| **Direct NSM-to-Config Mapping** | NSM/channel parameters translate directly to SquidASM/netbuilder configs (which then construct NetSquid noise processes) |
+| **Fail-Fast Validation** | Invalid parameters rejected at construction via `__post_init__` |
+| **Pipeline Transparency** | Clear injection points at Link, Device, and Protocol levels |
+| **Literature-Grounded Formulas** | All QBER/security computations derive from published results |
 
-### 1.3 Key Abstractions
+### 1.3 Scope Boundaries
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        ABSTRACTION HIERARCHY                                │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│   Security Layer          │   Physics Layer           │   Simulation Layer  │
-│   ──────────────          │   ─────────────           │   ────────────────  │
-│                           │                           │                     │
-│   NSMParameters           │   ChannelParameters       │   NetworkConfig     │
-│   ├─ storage_noise_r      │   ├─ length_km            │   ├─ nodes          │
-│   ├─ storage_rate_nu      │   ├─ attenuation          │   ├─ links          │
-│   ├─ delta_t_ns           │   ├─ t1_ns, t2_ns         │   └─ noise_profiles │
-│   └─ channel_fidelity     │   └─ cycle_time_ns        │                     │
-│                           │                           │                     │
-│   SecurityAnalyzer        │   ChannelNoiseProfile     │   NoiseInjector     │
-│   ├─ verify_condition()   │   ├─ total_qber           │   ├─ inject()       │
-│   └─ compute_bounds()     │   └─ detection_prob       │   └─ configure()    │
-│                           │                           │                     │
-│   TimingBarrier           │   NoiseModelFactory       │   PipelineAdapter   │
-│   ├─ wait_delta_t()       │   ├─ create_depolar()     │   ├─ to_squidasm()  │
-│   └─ verify_compliance()  │   └─ create_t1t2()        │   └─ to_netbuilder()│
-│                           │                           │                     │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+**In Scope:**
+- NSM parameter dataclasses with validation
+- SquidASM/netbuilder configuration injection (links + qdevices)
+- SquidASM pipeline injection mechanisms
+- TimingBarrier for Δt enforcement
+- Analytic feasibility/security condition verification
+
+**Out of Scope (external tooling):**
+- Parameter sweep automation
+- Visualization components
+- Statistical analysis pipelines
 
 ---
 
 ## 2. Architecture Principles
 
-### 2.1 Layered Configuration Flow
-
-NSM parameters flow through three transformation stages before reaching the simulation:
+### 2.1 Unified Configuration Flow
 
 ```
-User Config (YAML/Python)
-         │
-         ▼
-┌─────────────────────────┐
-│  1. VALIDATION LAYER    │  ← Invariant checks, type coercion
-│     NSMParameters       │  ← ChannelNoiseProfile
-│     ChannelParameters   │  ← Dataclass __post_init__
-└───────────┬─────────────┘
-            │
-            ▼
-┌─────────────────────────┐
-│  2. TRANSLATION LAYER   │  ← NSM → NetSquid mapping
-│     NoiseModelFactory   │  ← Creates DepolarNoiseModel, T1T2NoiseModel
-│     ProfileTranslator   │  ← Maps QBER components to model params
-└───────────┬─────────────┘
-            │
-            ▼
-┌─────────────────────────┐
-│  3. INJECTION LAYER     │  ← SquidASM pipeline integration
-│     NoiseInjector       │  ← Attaches models to QDevice, Link
-│     PipelineAdapter     │  ← Bridges Caligo config to StackNetworkConfig
-└───────────┬─────────────┘
-            │
-            ▼
-      SquidASM Runtime
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         NSM PARAMETER FLOW                                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   User Configuration                                                        │
+│   ──────────────────                                                        │
+│   NSMParameters(r, ν, Δt, F, η, e_det, P_dark)                              │
+│            │                                                                │
+│            ▼                                                                │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │                    VALIDATION + TRANSLATION                         │   │
+│   │  • Invariant enforcement via __post_init__                          │   │
+│   │  • Derived properties: depolar_prob, qber_channel, qber_storage     │   │
+│   │  • Security condition: Q_channel < Q_storage                        │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│            │                                                                │
+│            ├──────────────────┬──────────────────┬─────────────────────┐    │
+│            ▼                  ▼                  ▼                     ▼    │
+│   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐  │
+│   │ LinkConfig  │    │ QDeviceConfig│   │TimingBarrier│    │  Security   │  │
+│   │ (EPR noise) │    │ (T1/T2/gate)│    │ (Δt wait)   │    │  Verifier   │  │
+│   └──────┬──────┘    └──────┬──────┘    └──────┬──────┘    └─────────────┘  │
+│          │                  │                  │                            │
+│          └──────────────────┴──────────────────┘                            │
+│                             │                                               │
+│                             ▼                                               │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │                    SQUIDASM RUNTIME INJECTION                       │   │
+│   │  • MagicDistributor with DoubleClickModelParameters                 │   │
+│   │  • QuantumProcessor with T1T2NoiseModel + DepolarNoiseModel         │   │
+│   │  • CaligoProgram with integrated TimingBarrier                      │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.2 Dependency Inversion
+### 2.2 Immutable Configuration
 
-Components depend on **abstractions** (protocols/interfaces), not concrete implementations:
-
-| Component | Depends On | Not On |
-|-----------|------------|--------|
-| `CaligoNetworkBuilder` | `INoiseModelFactory` | `DepolarNoiseModel` directly |
-| `TimingBarrier` | `ISimulationClock` | `netsquid.sim_time()` directly |
-| `SecurityAnalyzer` | `IQBERMeasurement` | Concrete protocol implementation |
-
-### 2.3 Configuration Immutability
-
-All parameter dataclasses are **frozen** after construction:
-- Prevents accidental mutation during simulation
-- Enables safe sharing across threads/processes
-- Simplifies reasoning about state
+All parameter dataclasses use `@dataclass(frozen=True)`:
+- Thread-safe sharing across simulation components
+- Prevents accidental mutation during protocol execution
+- Enables deterministic replay of simulations
 
 ---
 
-## 3. Phase 1: Foundation Components
+## 3. Core Components
 
-### 3.1 NSMParameters Dataclass
+### 3.1 NSMParameters
 
 **Location:** `caligo/simulation/physical_model.py`
 
-**Responsibility:** Encapsulate and validate all NSM security parameters.
+```python
+@dataclass(frozen=True)
+class NSMParameters:
+    """
+    Noisy Storage Model parameters for security analysis and simulation.
 
-**Invariants:**
+    Encapsulates all NSM parameters required for E-HOK protocol execution
+    with validated mappings to NetSquid noise models.
 
-| ID | Constraint | Rationale |
-|----|------------|-----------|
-| INV-NSM-001 | `storage_noise_r ∈ [0, 1]` | Probability bound |
-| INV-NSM-002 | `storage_rate_nu ∈ [0, 1]` | Fraction bound |
-| INV-NSM-003 | `storage_dimension_d == 2` | Qubit assumption |
-| INV-NSM-004 | `delta_t_ns > 0` | Positive wait time |
-| INV-NSM-005 | `channel_fidelity ∈ (0.5, 1]` | Above random threshold |
-| INV-NSM-006 | `detection_eff_eta ∈ (0, 1]` | Physical efficiency |
+    Parameters
+    ----------
+    storage_noise_r : float
+        Depolarizing parameter r ∈ [0, 1]. Represents preservation probability
+        in adversary's noisy quantum storage. r=1 means perfect storage (no
+        security), r=0 means complete depolarization (maximum security).
+    storage_rate_nu : float
+        Adversary storage rate ν ∈ [0, 1]. Fraction of qubits adversary can
+        store. Security requires C_N · ν < 1/2.
+    delta_t_ns : float
+        Wait time Δt in nanoseconds. Time Alice waits before revealing basis
+        to allow adversary's stored qubits to decohere.
+    channel_fidelity : float
+        EPR pair fidelity F ∈ (0.5, 1]. Source quality parameter.
+    detection_eff_eta : float
+        Combined detection efficiency η ∈ (0, 1]. Includes transmittance
+        and detector efficiency.
+    detector_error : float
+        Intrinsic detector error e_det ∈ [0, 0.5]. Measurement apparatus
+        imperfections.
+    dark_count_prob : float
+        Dark count probability P_dark ∈ [0, 1]. Spurious detector clicks.
 
-**Derived Properties:**
+    Attributes
+    ----------
+    depolar_prob : float
+        NetSquid depolarization probability = 1 - r.
+    qber_storage : float
+        Storage-induced QBER threshold = (1 - r) / 2.
+    qber_channel : float
+        Total channel QBER from Erven et al. formula.
+    storage_capacity : float
+        Classical capacity C_N of depolarizing storage channel.
 
-| Property | Formula | Purpose |
-|----------|---------|---------|
-| `depolar_prob` | `1 - r` | NetSquid `depolar_rate` |
-| `qber_channel` | Erven formula | Security condition check |
-| `storage_capacity` | `1 - h(depolar_prob)` | Capacity bound |
-| `qber_storage` | `(1 - r) / 2` | Security threshold |
+    Raises
+    ------
+    InvalidParameterError
+        If any invariant is violated during construction.
 
-**Factory Methods:**
+    Notes
+    -----
+    **Invariants:**
+    
+    - INV-NSM-001: storage_noise_r ∈ [0, 1]
+    - INV-NSM-002: storage_rate_nu ∈ [0, 1]  
+    - INV-NSM-003: delta_t_ns > 0
+    - INV-NSM-004: channel_fidelity ∈ (0.5, 1]
+    - INV-NSM-005: detection_eff_eta ∈ (0, 1]
+    - INV-NSM-006: detector_error ∈ [0, 0.5]
+    - INV-NSM-007: dark_count_prob ∈ [0, 1]
 
-| Method | Use Case |
-|--------|----------|
-| `from_erven_experimental()` | Reproduce Erven 2014 parameters |
-| `for_testing(r, F, Δt)` | Simplified test configurations |
-| `from_yaml(path)` | Load from configuration file |
+    **Literature References:**
+    
+    - König et al. (2012): NSM definition, storage capacity constraint
+    - Schaffner et al. (2009): 11% QBER threshold, depolarizing analysis
+    - Erven et al. (2014): Experimental parameters (Table I)
 
-### 3.2 ChannelNoiseProfile Dataclass
+    Examples
+    --------
+    >>> params = NSMParameters(
+    ...     storage_noise_r=0.75,
+    ...     storage_rate_nu=0.002,
+    ...     delta_t_ns=1_000_000,
+    ...     channel_fidelity=0.95,
+    ...     detection_eff_eta=0.015,
+    ...     detector_error=0.0093,
+    ...     dark_count_prob=1.5e-8,
+    ... )
+    >>> params.qber_storage
+    0.125
+    >>> params.verify_security_condition()
+    True
+    """
+    
+    storage_noise_r: float
+    storage_rate_nu: float
+    delta_t_ns: float
+    channel_fidelity: float
+    detection_eff_eta: float = 1.0
+    detector_error: float = 0.0
+    dark_count_prob: float = 0.0
+
+    def __post_init__(self) -> None:
+        """Validate all invariants after initialization."""
+        ...
+
+    @property
+    def depolar_prob(self) -> float:
+        """NetSquid depolarization probability = 1 - r."""
+        ...
+
+    @property
+    def qber_storage(self) -> float:
+        """Storage-induced QBER threshold = (1 - r) / 2."""
+        ...
+
+    @property
+    def qber_channel(self) -> float:
+        """Total channel QBER using Erven et al. formula."""
+        ...
+
+    @property
+    def storage_capacity(self) -> float:
+        """Classical capacity C_N = 1 - h((1-r)/2) of depolarizing channel."""
+        ...
+
+    def verify_security_condition(self) -> bool:
+        """
+        Verify fundamental NSM security condition.
+
+        Returns
+        -------
+        bool
+            True if Q_channel < Q_storage AND C_N · ν < 1/2.
+
+        Raises
+        ------
+        SecurityError
+            If security condition is violated.
+        """
+        ...
+
+    @classmethod
+    def from_erven_experimental(cls) -> "NSMParameters":
+        """Create parameters matching Erven et al. (2014) Table I."""
+        ...
+```
+
+### 3.2 ChannelNoiseProfile
 
 **Location:** `caligo/simulation/noise_models.py`
 
-**Responsibility:** Aggregate physical channel noise sources for QBER computation.
+```python
+@dataclass(frozen=True)
+class ChannelNoiseProfile:
+    """
+    Aggregate noise profile for the trusted quantum channel.
 
-**Invariants:**
+    Combines multiple noise sources into a unified QBER estimate using
+    the Erven et al. (2014) formulation.
 
-| ID | Constraint | Rationale |
-|----|------------|-----------|
-| INV-CNP-001 | `source_fidelity ∈ (0.5, 1]` | Above random |
-| INV-CNP-002 | `detector_efficiency ∈ (0, 1]` | Physical bound |
-| INV-CNP-003 | `detector_error ∈ [0, 0.5]` | Error rate bound |
-| INV-CNP-004 | `dark_count_rate ∈ [0, 1]` | Probability bound |
-| INV-CNP-005 | `transmission_loss ∈ [0, 1)` | Loss must allow transmission |
+    Parameters
+    ----------
+    source_fidelity : float
+        EPR source fidelity F ∈ (0.5, 1]. Intrinsic pair quality.
+    detector_efficiency : float
+        Combined detection efficiency η ∈ (0, 1].
+    detector_error : float
+        Intrinsic detector error e_det ∈ [0, 0.5].
+    dark_count_rate : float
+        Dark count probability P_dark ∈ [0, 1].
 
-**Key Methods:**
+    Attributes
+    ----------
+    total_qber : float
+        Combined QBER = Q_source + Q_det + Q_dark.
+    is_secure : bool
+        True if total_qber < 0.11 (Schaffner threshold).
+    is_feasible : bool
+        True if total_qber < 0.22 (König hard limit).
 
-| Method | Behavior |
-|--------|----------|
-| `total_qber` | Compute Q_channel via Erven formula |
-| `is_secure` | Check `total_qber < 0.11` |
-| `is_feasible` | Check `total_qber < 0.22` |
-| `to_nsm_parameters(r, ν, Δt)` | Convert to full NSMParameters |
+    Notes
+    -----
+    **QBER Components (Erven et al. 2014):**
+    
+    - Q_source = (1 - F) / 2
+    - Q_det = e_det  
+    - Q_dark = (1 - η) · P_dark · 0.5
+    - Q_total = Q_source + Q_det + Q_dark
+    """
 
-### 3.3 ChannelParameters Dataclass
+    source_fidelity: float
+    detector_efficiency: float
+    detector_error: float
+    dark_count_rate: float
 
-**Location:** `caligo/simulation/physical_model.py`
+    @property
+    def total_qber(self) -> float:
+        """Compute total QBER using Erven formula."""
+        ...
 
-**Responsibility:** Physical channel characteristics for honest party link.
+    def to_double_click_params(self) -> "DoubleClickModelParameters":
+        """
+        Convert to netsquid_magic DoubleClickModelParameters.
 
-**Key Properties:**
+        Returns
+        -------
+        DoubleClickModelParameters
+            Parameters for heralded entanglement generation.
+        """
+        ...
+```
 
-| Property | Physical Meaning |
-|----------|------------------|
-| `propagation_delay_ns` | Light travel time |
-| `transmittance` | $10^{-\text{loss}/10}$ |
-| `total_loss_db` | Channel attenuation |
-
-### 3.4 TimingBarrier Class
+### 3.3 TimingBarrier
 
 **Location:** `caligo/simulation/timing.py`
 
-**Responsibility:** Enforce $\Delta t$ wait time as causal barrier in discrete-event simulation.
+```python
+class TimingBarrier:
+    """
+    Enforces NSM timing constraint Δt in discrete-event simulation.
 
-**State Machine:**
+    Implements a state machine ensuring Alice cannot reveal basis choices
+    until time Δt has elapsed since quantum phase completed.
 
+    Parameters
+    ----------
+    delta_t_ns : float
+        Required wait time in nanoseconds.
+    strict_mode : bool
+        If True, raises TimingViolationError on violations. Default: True.
+
+    Attributes
+    ----------
+    state : TimingBarrierState
+        Current state: IDLE → WAITING → READY.
+    quantum_complete_time : Optional[float]
+        Simulation time when quantum phase ended.
+    timing_compliant : bool
+        True if protocol respected timing constraints.
+
+    Notes
+    -----
+    **State Machine:**
+    
+    ```
+    IDLE ──[mark_quantum_complete()]──► WAITING ──[wait_delta_t()]──► READY
+      ▲                                                                 │
+      └─────────────────────────── reset() ─────────────────────────────┘
+    ```
+
+    **Integration with SquidASM:**
+    
+    The `wait_delta_t()` method is a generator that yields to NetSquid's
+    discrete-event simulator via `ns.sim_run(duration=remaining)`.
+    """
+
+    def __init__(self, delta_t_ns: float, strict_mode: bool = True) -> None:
+        ...
+
+    def mark_quantum_complete(self) -> None:
+        """
+        Record quantum phase completion timestamp.
+
+        Transitions state from IDLE to WAITING.
+        Records current simulation time via ns.sim_time().
+
+        Raises
+        ------
+        TimingViolationError
+            If called when state is not IDLE.
+        """
+        ...
+
+    def wait_delta_t(self) -> Generator[EventExpression, None, None]:
+        """
+        Yield control to simulator for Δt nanoseconds.
+
+        Transitions state from WAITING to READY after wait completes.
+
+        Yields
+        ------
+        EventExpression
+            NetSquid event expression for simulation advancement.
+
+        Raises
+        ------
+        TimingViolationError
+            If called when state is not WAITING.
+        """
+        ...
+
+    def can_reveal_basis(self) -> bool:
+        """Check if basis revelation is permitted (state == READY)."""
+        ...
 ```
-         mark_quantum_complete()          wait_delta_t()
-    IDLE ─────────────────────────► WAITING ──────────────► READY
-     ▲                                                        │
-     └────────────────────────── reset() ─────────────────────┘
-```
 
-**Interface Contract:**
-
-| Method | Precondition | Postcondition |
-|--------|--------------|---------------|
-| `mark_quantum_complete()` | State is IDLE | State is WAITING, timestamp recorded |
-| `wait_delta_t()` | State is WAITING | Yields until Δt elapsed, state becomes READY |
-| `can_reveal_basis()` | None | Returns `state == READY` |
-| `reset()` | None | State becomes IDLE |
-
-**Simulation Integration:**
-
-The `wait_delta_t()` method is a **generator** that yields to the SquidASM event loop:
-- Calculates remaining wait time from `ns.sim_time()`
-- Yields `EventExpression` to advance simulation clock
-- Does NOT block Python thread
-
-### 3.5 CaligoNetworkBuilder Class
+### 3.4 CaligoNetworkBuilder (Runtime Injection Adapter)
 
 **Location:** `caligo/simulation/network_builder.py`
 
-**Responsibility:** Factory for SquidASM `StackNetworkConfig` with NSM-aware noise models.
+This is the *primary* integration surface between Caligo’s NSM parameters and the SquidASM execution pipeline. It produces a SquidASM `StackNetworkConfig` that can be passed directly to SquidASM’s stack runner.
 
-**Builder Pattern:**
+Key responsibilities:
 
-```
-CaligoNetworkBuilder(nsm_params, channel_params)
-    │
-    ├── .with_detection_model(efficiency, dark_count)  [Phase 2]
-    ├── .with_memory_noise(T1, T2)
-    ├── .with_gate_noise(depolar_prob)
-    │
-    └── .build_two_node_network(alice, bob, num_qubits)
-            │
-            └── Returns: StackNetworkConfig
-```
+- Select the correct netsquid-netbuilder link model (`"perfect"`, `"depolarise"`, `"heralded-double-click"`)
+- Provide the correct **config payload** for that model (dict or config object)
+- Configure device-level noise via `GenericQDeviceConfig` (T1/T2, gate depolarization)
+- Remain compatible with SquidASM’s `StackNetworkConfig` conversion (`squidasm/run/stack/config.py::_convert_stack_network_config`)
 
-**Current Limitation:** Only supports `fidelity` parameter for link noise.
+### 3.5 Feasibility / “Strictly Less” Validation
 
----
+**Location:** `caligo/security/feasibility.py`
 
-## 4. Phase 2: Enhanced Noise Modeling
+Caligo already contains a pre-flight validation layer that operationalizes literature requirements from Schaffner/Wehner/Erven:
 
-### 4.1 Detection Efficiency Model
+- QBER thresholds (11% conservative, 22% absolute)
+- Storage capacity constraint $C_{\mathcal{N}}\,\nu < 1/2$
+- “Strictly less” channel-vs-storage noise condition (as a feasibility check)
 
-**Goal:** Explicitly model photon loss before measurement.
-
-**Component:** `DetectionEfficiencyModel`
-
-**Integration Point:** Extend `CaligoNetworkBuilder` to accept `detection_efficiency` parameter.
-
-**Semantic Behavior:**
-1. Accept $\eta \in (0, 1]$ as detection efficiency
-2. Map to `DoubleClickModelParameters.detector_efficiency`
-3. Affects EPR heralding success probability
-4. Impacts measured QBER through conditional statistics
-
-**Mapping Strategy:**
-
-| NSM Parameter | netsquid_magic Parameter | Relationship |
-|---------------|-------------------------|--------------|
-| $\eta$ | `detector_efficiency` | Direct mapping |
-| - | `prob_success` | Computed from $\eta$ and loss model |
-
-### 4.2 Dark Count Injection
-
-**Goal:** Model spurious detector clicks that introduce errors.
-
-**Component:** `DarkCountInjector`
-
-**Semantic Behavior:**
-1. Accept $P_{\text{dark}} \in [0, 1]$ as dark count probability
-2. For each detection window without signal photon:
-   - With probability $P_{\text{dark}}$, register false click
-   - False clicks produce random measurement outcomes
-3. Contributes to QBER: $Q_{\text{dark}} = (1-\eta) \cdot P_{\text{dark}} \cdot 0.5$
-
-**Integration Approach:**
-
-Two options exist:
-
-| Approach | Mechanism | Tradeoff |
-|----------|-----------|----------|
-| **A. Model-level** | Extend `DoubleClickModelParameters` | Accurate but requires netsquid_magic modification |
-| **B. Post-processing** | Apply dark count errors after measurement | Approximate but non-invasive |
-
-**Recommendation:** Approach B for Phase 2, migrate to A in Phase 4.
-
-### 4.3 DoubleClick Model Integration
-
-**Goal:** Use netsquid_magic's realistic heralded entanglement model.
-
-**Component:** `HeraldedLinkConfigBuilder`
-
-**Semantic Behavior:**
-1. Replace simple `depolarise` link type with `heralded_double_click`
-2. Configure full parameter set:
-
-| Parameter | Source | Description |
-|-----------|--------|-------------|
-| `detector_efficiency` | ChannelNoiseProfile | Combined η |
-| `dark_count_probability` | ChannelNoiseProfile | P_dark |
-| `visibility` | Derived from source_fidelity | Interference quality |
-| `emission_prob` | Fixed or configured | Single-photon emission |
-| `length_A`, `length_B` | ChannelParameters | Fiber lengths |
-
-**Registration Requirement:**
-
-Custom link types must be registered with netsquid_netbuilder:
-- Define `HeraldedDoubleClickQLinkModule`
-- Register in `QLinkModuleRegistry`
-- Reference by string name in `LinkConfig.typ`
-
-### 4.4 Measurement Error Mapping
-
-**Goal:** Map intrinsic detector error $e_{\text{det}}$ to gate-level noise.
-
-**Component:** `MeasurementErrorMapper`
-
-**Semantic Behavior:**
-1. Accept $e_{\text{det}} \in [0, 0.5]$ as detector error rate
-2. Map to `GenericQDeviceConfig.single_qubit_gate_depolar_prob`
-3. Approximate mapping: `gate_depolar ≈ 2 × e_det` (worst case)
-
-**Rationale:**
-- Measurement in SquidASM is implemented as gate + projection
-- Gate depolarization introduces bit flips with probability $p/2$
-- Setting $p = 2 \cdot e_{\text{det}}$ achieves approximate error rate
-
-**Limitation:** This is an approximation. Exact modeling requires custom measurement instruction.
+This spec treats feasibility checks as the canonical place to enforce *analytic* NSM constraints (those that cannot be simulated because the adversary is not modeled as an in-simulator agent).
 
 ---
 
-## 5. Phase 3: Validation Framework
+## 4. NSM-to-Physical Parameter Mapping
 
-### 5.1 NSM Condition Verifier
+### 4.1 Literature-Derived Formulas
 
-**Goal:** Runtime verification of $Q_{\text{channel}} < Q_{\text{storage}}$.
 
-**Component:** `NSMSecurityVerifier`
+All formulas in this section are directly extracted from published literature with precise citations.
 
-**Interface:**
+#### 4.1.1 Depolarizing Storage Channel (Wehner, Schaffner, Terhal 2008)
 
-| Method | Input | Output |
-|--------|-------|--------|
-| `verify(measured_qber, nsm_params)` | Empirical QBER, parameters | `bool` or raises `SecurityError` |
-| `compute_margin(measured_qber, nsm_params)` | As above | Security margin (float) |
-| `is_within_threshold(measured_qber, threshold)` | QBER, threshold | `bool` |
+From *Cryptography from Noisy Storage* (PRL 100, 220502):
 
-**Verification Logic:**
+> "Let $\mathcal{N}(\rho) := r\rho + (1-r)(\mathbf{1}/2)$ be the fixed depolarizing 'quantum-storage' channel that Bob cannot influence."
 
-```
-compute Q_storage = (1 - r) / 2
-IF measured_qber >= Q_storage:
-    RAISE SecurityError("NSM condition violated")
-IF measured_qber >= 0.11:
-    LOG WARNING "Above Schaffner conservative threshold"
-IF measured_qber >= 0.22:
-    RAISE SecurityError("Above König hard limit")
-RETURN True
-```
+The NSM models adversary storage as a depolarizing channel:
 
-**Integration Point:** Called by `Orchestrator` after sifting phase completes.
+$$
+\mathcal{N}_r(\rho) = r \cdot \rho + (1-r) \cdot \frac{\mathbf{I}}{d}
+$$
 
-### 5.2 QBER Measurement Validator
+Where:
+- $r \in [0, 1]$: Preservation probability (state retention)
+- $d = 2$: Qubit dimension
+- $(1-r)$: Depolarization probability → **NetSquid `depolar_rate`**
 
-**Goal:** Validate empirical QBER matches theoretical prediction.
+**All-or-Nothing Result (Wehner et al. 2008):**
 
-**Component:** `QBERValidator`
+> "For $r \geq 1/\sqrt{2}$ we have $\max_{S_i} \Delta(S_i) = 1$ and for $r < 1/\sqrt{2}$, $\max_{S_i} \Delta(S_i) = \frac{1}{2} + \frac{r}{2\sqrt{2}}$."
 
-**Interface:**
+This defines the threshold where adversary strategy switches from measurement to storage.
 
-| Method | Purpose |
-|--------|---------|
-| `validate(measured, expected, tolerance)` | Compare with absolute tolerance |
-| `validate_relative(measured, expected, rel_tol)` | Compare with relative tolerance |
-| `compute_deviation(measured, expected)` | Return signed deviation |
+#### 4.1.2 Classical Capacity (Schaffner, Terhal, Wehner 2009)
 
-**Usage Context:**
-- Post-sifting: Compare measured QBER against `ChannelNoiseProfile.total_qber`
-- Debugging: Identify simulation configuration errors
-- Regression testing: Ensure noise models behave consistently
+From *Robust Cryptography in the Noisy-Quantum-Storage Model* (QIC 9:11&12, Eq. 6):
 
-### 5.3 Timing Compliance Reporter
+> "A memory has one other pertinent parameter we need; namely, a storage rate, $\nu$, which represents the fraction of qubits which an adversarial Bob can store in memory."
 
-**Goal:** Track and report timing constraint compliance throughout protocol.
+**Depolarizing Channel Definition (Eq. 6):**
+$$
+\mathcal{N}_r(\rho) = r\rho + (1-r)\frac{\mathbf{I}}{d} \quad \text{for } 0 \le r \le 1
+$$
 
-**Component:** `TimingComplianceReporter`
+**Security requires (from Erven et al. 2014, Eq. 7):**
+$$
+C_{\mathcal{N}_r, \nu n} < \frac{C_{\text{BB84}} \cdot m_1}{2} - 1 - \log_2\left(\frac{1}{2\varepsilon}\right)
+$$
 
-**Tracked Metrics:**
+**Classical Capacity of Depolarizing Channel:**
+$$
+C_{\mathcal{N}} = 1 - h\left(\frac{1-r}{2}\right)
+$$
 
-| Metric | Description |
-|--------|-------------|
-| `quantum_complete_time` | Timestamp when quantum phase ended |
-| `basis_reveal_time` | Timestamp when basis was revealed |
-| `actual_wait_duration` | `reveal_time - complete_time` |
-| `required_wait_duration` | Configured $\Delta t$ |
-| `compliance_status` | COMPLIANT / VIOLATED / PENDING |
+Where $h(x) = -x \log_2(x) - (1-x) \log_2(1-x)$ is binary entropy.
 
-**Report Generation:**
-- JSON export for analysis
-- Integration with Caligo logging system
-- Failure details on violation
+#### 4.1.3 QBER Security Threshold (Schaffner et al. 2009, Table 1)
 
-### 5.4 Integration Test Suite
+From *Robust Cryptography in the Noisy-Quantum-Storage Model*:
 
-**Goal:** End-to-end tests validating NSM parameter enforcement.
+> "We can obtain secure oblivious transfer as long as the quantum bit-error rate of the channel does not exceed **11%** and the noise on the channel is **strictly less** than the quantum storage noise. This is optimal for the protocol considered."
 
-**Test Categories:**
+**Security Condition:**
+$$
+Q_{\text{channel}} < Q_{\text{storage}} = \frac{1-r}{2}
+$$
 
-| Category | Tests |
-|----------|-------|
-| **Parameter Sweep** | Vary $(r, \nu, \Delta t)$ systematically |
-| **Boundary Conditions** | Test at QBER thresholds (0.11, 0.22) |
-| **Timing Enforcement** | Verify TimingBarrier blocks premature reveal |
-| **Noise Injection** | Confirm configured fidelity matches measured |
-| **Security Condition** | Verify Q_channel < Q_storage detection |
+**QBER Thresholds:**
+- **11% (Schaffner):** Conservative threshold for depolarizing storage
+- **22% (König):** Absolute maximum (hard limit)
 
-**Test Fixtures:**
-- `perfect_channel_fixture`: F=1.0, no errors
-- `erven_experimental_fixture`: Erven 2014 parameters
-- `high_noise_fixture`: Near threshold QBER
-- `violation_fixture`: Parameters that should trigger security error
+#### 4.1.4 Channel QBER Components (Erven et al. 2014)
 
----
+From *An Experimental Implementation of Oblivious Transfer in the Noisy Storage Model*, the total channel QBER comprises three components:
 
-## 6. Phase 4: Advanced Features
+**Source Error (from fidelity):**
+$$
+Q_{\text{source}} = \frac{1 - F}{2}
+$$
 
-### 6.1 Custom StateSampler Factory
+**Detector Error:**
+$$
+Q_{\text{det}} = e_{\text{det}}
+$$
 
-**Goal:** Full control over EPR state generation noise model.
+**Dark Count Error:**
+$$
+Q_{\text{dark}} = (1 - \eta) \cdot P_{\text{dark}} \cdot 0.5
+$$
 
-**Component:** `CaligoStateSamplerFactory`
+**Total QBER:**
+$$
+Q_{\text{channel}} = Q_{\text{source}} + Q_{\text{det}} + Q_{\text{dark}}
+$$
 
-**Semantic Behavior:**
-1. Implement `IStateDeliverySamplerFactory` interface
-2. Accept arbitrary noise profile configuration
-3. Generate `StateSampler` with exact state mixture:
-   - Base Bell state fidelity from `source_fidelity`
-   - Depolarization from configured profile
-   - Optional custom error channels
+#### 4.1.5 Honest Bob Detection Probability (Wehner et al. 2010, Eq. 3)
 
-**Extension Points:**
-- Asymmetric noise (different arms)
-- Non-Markovian noise models
-- Correlated errors across pairs
+From *Implementation of two-party protocols in the noisy-storage model* (Phys. Rev. A 81, 052336):
 
-### 6.2 Configurable Heralding Model
+$$
+P_{B,\text{no click}}^h = \sum_{n=0}^{\infty} P_{\text{src}}^n P_{B,\text{no click}}^{h|n}
+$$
 
-**Goal:** Support heralding models beyond depolarise/double-click.
+**Click probability:**
+$$
+P_{B,\text{click}}^h = \eta + (1 - \eta) \cdot P_{\text{dark}}
+$$
 
-**Component:** `HeraldingModelRegistry`
+**Conditional Error Rate:**
+$$
+P_{B,\text{err}}^h = \frac{\eta \cdot (Q_{\text{source}} + Q_{\text{det}}) + (1-\eta) \cdot P_{\text{dark}} \cdot 0.5}{P_{B,\text{click}}^h}
+$$
 
-**Supported Models:**
+#### 4.1.6 ROT Rate Formula (Erven et al. 2014, Eq. 8)
 
-| Model | Use Case |
-|-------|----------|
-| `perfect` | Ideal EPR pairs (testing) |
-| `depolarise` | Simple symmetric noise |
-| `double_click` | Realistic heralded entanglement |
-| `single_click` | Single-photon interference |
-| `custom` | User-defined via factory |
+The secure ROT string length formula:
 
-**Registration API:**
+$$
+l \le \frac{1}{2}\nu \gamma^{\mathcal{N}_r}\left(\frac{R}{\nu}\right)\frac{m}{n} - n \cdot f \cdot h(p_{\text{err}}) - \log_2\left(\frac{1}{2\varepsilon}\right)
+$$
 
-```
-HeraldingModelRegistry.register(
-    name="custom_model",
-    factory=CustomModelFactory,
-    config_class=CustomModelConfig,
-)
-```
+Where:
+- $\gamma^{\mathcal{N}_r}$: Strong converse parameter of adversary's memory
+- $R$: Rate at which dishonest Bob would need to store quantum information
+- $m$: Number of rounds where both parties measured
+- $f$: Error correction efficiency relative to Shannon limit
+- $p_{\text{err}}$: Total error probability
 
-### 6.3 Parameter Sweep Automation
+### 4.2 Parameter Translation Table
 
-**Goal:** Systematic exploration of NSM parameter space.
+| NSM Parameter | Symbol | Where it lives | Translation / Injection |
+|--------------|--------|----------------|--------------------------|
+| Storage noise | $r$ | Analytic security bound (not simulated adversary) | $Q_{\text{storage}}=(1-r)/2$ and $C_{\mathcal{N}}=1-h(\frac{1-r}{2})$ |
+| Storage rate | $\nu$ | Analytic security bound | Check $C_{\mathcal{N}}\,\nu < 1/2$ |
+| Wait time | $\Delta t$ | SquidASM program runtime | `TimingBarrier(delta_t_ns)` enforced in `Program.run()` |
+| Channel fidelity | $F$ | netsquid-netbuilder qlink config | **Depolarise link:** `DepolariseQLinkConfig.fidelity = F` and internal $p_{\max\,mix}=\frac{4}{3}(1-F)$ |
+| Detection efficiency | $\eta$ | netsquid-netbuilder qlink config | **Heralded double-click:** `HeraldedDoubleClickQLinkConfig.detector_efficiency` (or split into fiber loss × detector eff) |
+| Detector error | $e_{\text{det}}$ | netsquid-netbuilder qdevice config | `GenericQDeviceConfig.*_gate_depolar_prob ≈ 2 e_{\text{det}}` (documented approximation) |
+| Dark count | $P_{\text{dark}}$ | netsquid-netbuilder qlink config | `HeraldedDoubleClickQLinkConfig.dark_count_probability = P_dark` |
 
-**Component:** `NSMParameterSweep`
+### 4.3 Erven et al. (2014) Experimental Values
 
-**Semantic Behavior:**
-1. Define parameter ranges: `r ∈ [0.5, 1.0]`, `ν ∈ [0, 0.1]`, `Δt ∈ [1μs, 10ms]`
-2. Generate grid or random samples
-3. Execute protocol for each configuration
-4. Collect metrics: QBER, key rate, security margin
-5. Export results for analysis
-
-**Output Format:**
-- CSV/Parquet for numerical analysis
-- JSON for full protocol traces
-- Plots (optional): QBER vs r, key rate vs Δt
-
-### 6.4 Security Margin Visualization
-
-**Goal:** Visual representation of security margins across parameter space.
-
-**Component:** `SecurityMarginVisualizer`
-
-**Visualizations:**
-
-| Plot Type | Axes | Purpose |
-|-----------|------|---------|
-| **Heatmap** | (r, ν) → margin | Identify secure operating region |
-| **Line Plot** | Δt → QBER | Show timing sensitivity |
-| **Scatter** | Measured vs Expected QBER | Validate simulation accuracy |
-| **Phase Diagram** | (r, QBER) → secure/insecure | Binary security classification |
+| Parameter | Symbol | Value | Description |
+|-----------|--------|-------|-------------|
+| Mean photon number | $\mu$ | $3.145 \times 10^{-5}$ | Per coherence time |
+| Transmittance | $\eta$ | $0.0150$ | Combined efficiency |
+| Detection error | $e_{\text{det}}$ | $0.0093$ | Intrinsic error rate |
+| Dark count prob | $P_{\text{dark}}$ | $1.50 \times 10^{-8}$ | Per pulse |
+| Storage noise | $r$ | $0.75$ | Depolarizing parameter |
+| Storage rate | $\nu$ | $0.002$ | Fraction storable |
 
 ---
 
-## 7. SquidASM Pipeline Injection Specification
+## 5. SquidASM Pipeline Injection
 
-### 7.1 Injection Architecture
+This section is the implementation core of the spec. It answers a single question:
+
+> How do Caligo’s NSM parameters become **real NetSquid noise processes** inside SquidASM when we run Phase E?
+
+The key insight (mirroring the enforcement spec) is that Caligo does **not** inject `netsquid.components.models.qerrormodels.*` objects directly.
+
+Instead, Caligo injects **configuration objects** into SquidASM:
+
+- SquidASM converts `StackNetworkConfig` → netsquid-netbuilder `NetworkConfig`.
+- netsquid-netbuilder selects registered qlink/qdevice builders by string `typ`.
+- those builders construct the `netsquid_magic` distributor protocols and the NetSquid noise models.
+
+This distinction matters because it determines the *correct API boundary* for runtime injection.
+
+### 5.1 Injection Architecture Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                    SQUIDASM INJECTION ARCHITECTURE                          │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│   Caligo Layer                                                              │
-│   ────────────                                                              │
+│   CALIGO LAYER                                                              │
+│   ════════════                                                              │
 │                                                                             │
-│   ┌───────────────────┐                                                     │
-│   │  NSMParameters    │──────────────────────────┐                          │
-│   └───────────────────┘                          │                          │
-│            │                                     │                          │
-│            ▼                                     ▼                          │
-│   ┌───────────────────┐              ┌───────────────────┐                  │
-│   │ NoiseModelFactory │              │  TimingBarrier    │                  │
-│   │  .create_*()      │              │  (injected into   │                  │
-│   └────────┬──────────┘              │   CaligoProgram)  │                  │
-│            │                         └───────────────────┘                  │
-│            ▼                                                                │
-│   ┌───────────────────┐                                                     │
-│   │ PipelineAdapter   │                                                     │
-│   │  .configure()     │                                                     │
-│   └────────┬──────────┘                                                     │
-│            │                                                                │
-├────────────┼────────────────────────────────────────────────────────────────┤
-│            │                                                                │
-│   SquidASM Layer                                                            │
-│   ─────────────                                                             │
-│            │                                                                │
-│            ▼                                                                │
-│   ┌───────────────────┐      ┌───────────────────┐                          │
-│   │ StackNetworkConfig│─────►│  StackConfig      │                          │
-│   │  .links           │      │  .qdevice_cfg     │                          │
-│   └────────┬──────────┘      └────────┬──────────┘                          │
-│            │                          │                                     │
-│            ▼                          ▼                                     │
-│   ┌───────────────────┐      ┌───────────────────┐                          │
-│   │   LinkConfig      │      │ GenericQDeviceConfig                         │
-│   │  .typ = "custom"  │      │  .T1, .T2         │                          │
-│   │  .cfg = {...}     │      │  .gate_depolar    │                          │
-│   └────────┬──────────┘      └────────┬──────────┘                          │
-│            │                          │                                     │
-├────────────┼──────────────────────────┼─────────────────────────────────────┤
-│            │                          │                                     │
-│   netsquid_netbuilder Layer                                                 │
-│   ─────────────────────                                                     │
-│            │                          │                                     │
-│            ▼                          ▼                                     │
-│   ┌───────────────────┐      ┌───────────────────┐                          │
-│   │ QLinkModule       │      │ QDeviceModule     │                          │
-│   │ .create_distributor()    │ .build_processor()│                          │
-│   └────────┬──────────┘      └────────┬──────────┘                          │
-│            │                          │                                     │
-├────────────┼──────────────────────────┼─────────────────────────────────────┤
-│            │                          │                                     │
-│   netsquid_magic Layer                                                      │
-│   ────────────────────                                                      │
-│            │                          │                                     │
-│            ▼                          │                                     │
-│   ┌───────────────────┐               │                                     │
-│   │ MagicDistributor  │               │                                     │
-│   │ .state_sampler    │◄──────────────┤                                     │
-│   └────────┬──────────┘               │                                     │
-│            │                          │                                     │
-├────────────┼──────────────────────────┼─────────────────────────────────────┤
-│            │                          │                                     │
-│   NetSquid Layer                      │                                     │
-│   ──────────────                      │                                     │
-│            │                          │                                     │
-│            ▼                          ▼                                     │
-│   ┌───────────────────┐      ┌───────────────────┐                          │
-│   │  StateSampler     │      │ QuantumProcessor  │                          │
-│   │  (EPR states)     │      │ .memory_noise     │                          │
-│   └───────────────────┘      │ .phys_instructions│                          │
-│                              └───────────────────┘                          │
+│   NSMParameters + ChannelParameters                                         │
+│        │                                                                    │
+│        ├──► CaligoNetworkBuilder ──► StackNetworkConfig                      │
+│        │                              ├── stacks[*].qdevice_cfg (Generic)   │
+│        │                              └── links[*] (typ + cfg)              │
+│        │                                                                    │
+│        └──► TimingBarrier ─────────► AliceProgram (Δt enforced in run())    │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   SQUIDASM STACK RUNNER                                                     │
+│   ══════════════════                                                        │
+│                                                                             │
+│   run(StackNetworkConfig, programs)                                         │
+│        │                                                                    │
+│        └──► _convert_stack_network_config()                                 │
+│                ("heralded" → "heralded-double-click")                        │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   NETSQUID_NETBUILDER                                                       │
+│   ═════════════════                                                         │
+│                                                                             │
+│   Registered qlink models:                                                  │
+│     "perfect", "depolarise", "heralded-single-click", "heralded-double-click"│
+│   Builds netsquid_magic distributors + NetSquid processors/noise             │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 7.2 Injection Points
+### 5.2 Link-Level Injection (EPR Noise)
 
-#### 7.2.1 Link-Level Injection (EPR Noise)
+**Target:** EPR pair generation noise via `LinkConfig`
 
-**Target:** `LinkConfig` in StackNetworkConfig
+**Injection Point:** `squidasm/run/stack/config.py::LinkConfig` (and downstream conversion via `_convert_stack_network_config`)
 
-**Mechanism:**
-
-1. **Standard Types:** Use built-in `typ` values (`"perfect"`, `"depolarise"`)
-2. **Custom Types:** Register custom QLinkModule with netbuilder
-
-**Standard Injection (Current):**
-
+```python
+@dataclass
+class LinkConfig:
+    stack1: str
+    stack2: str
+    # Important: these strings must match netsquid-netbuilder model names.
+    # Link models registered by netsquid-netbuilder:
+    # "perfect", "depolarise", "heralded-single-click", "heralded-double-click"
+    typ: str
+    cfg: Optional[Dict[str, Any]] = None
 ```
-LinkConfig(
+
+#### 5.2.1 What “cfg” Really Is
+
+In SquidASM `LinkConfig.cfg` is passed through to netsquid-netbuilder. It can be either:
+
+- A dict that can be unpacked into the corresponding `...QLinkConfig` dataclass (netbuilder will construct it), **or**
+- An explicit config object, e.g. `DepolariseLinkConfig(...)` / `HeraldedLinkConfig(...)` from `squidasm/run/stack/config.py`.
+
+If a dict is used, it must contain **all required fields** of the target config dataclass. In particular, depolarising links require `prob_success` and either `t_cycle` or (`length`, `speed_of_light`).
+
+This is the most common runtime-injection failure mode: the pipeline appears correct, but the builder fails during preprocessing because the dict is incomplete.
+
+#### 5.2.2 Canonical Injection Flow (Runtime)
+
+Caligo ultimately calls SquidASM’s stack runner:
+
+```python
+from squidasm.run.stack.run import run as squidasm_run
+
+results = squidasm_run(stack_network_config, {"Alice": alice_program, "Bob": bob_program})
+```
+
+The runner accepts either a `StackNetworkConfig` or a netsquid-netbuilder `NetworkConfig`. If given `StackNetworkConfig`, SquidASM will convert it internally using `_convert_stack_network_config`.
+
+This makes **`CaligoNetworkBuilder`** the correct injection point for all runtime noise configuration.
+
+#### 5.2.3 Implementation: Depolarising Link (Fidelity-Only)
+
+This is the minimal, already-supported injection pattern and corresponds to the “current SquidASM default configuration” called out in the enforcement spec.
+
+**Correct payload (config object form, preferred):**
+
+```python
+from squidasm.run.stack.config import DepolariseLinkConfig, LinkConfig
+
+link_cfg = DepolariseLinkConfig(
+    fidelity=float(nsm_params.channel_fidelity),
+    prob_success=1.0,
+    t_cycle=float(channel_params.cycle_time_ns),
+    random_bell_state=False,
+)
+
+link = LinkConfig(stack1="Alice", stack2="Bob", typ="depolarise", cfg=link_cfg)
+```
+
+**Correct payload (dict form):**
+
+```python
+link = LinkConfig(
     stack1="Alice",
     stack2="Bob",
     typ="depolarise",
-    cfg={"fidelity": nsm_params.channel_fidelity}
+    cfg={
+        "fidelity": float(nsm_params.channel_fidelity),
+        "prob_success": 1.0,
+        "t_cycle": float(channel_params.cycle_time_ns),
+        "random_bell_state": False,
+    },
 )
 ```
 
-**Enhanced Injection (Phase 2+):**
+**How fidelity becomes depolarising noise** (what actually happens in the pipeline):
 
-```
-LinkConfig(
+- netsquid-netbuilder converts $F$ to a maximally-mixed fraction using `fidelity_to_prob_max_mixed(F)`.
+- For a depolarised Bell state $\rho=(1-p)|\Phi^+\rangle\langle\Phi^+| + p\,I/4$, fidelity satisfies:
+
+$$
+F = 1 - \frac{3p}{4}\quad\Rightarrow\quad p = \frac{4}{3}(1-F)
+$$
+
+This corrects a common (but slightly wrong) shortcut `prob_max_mixed = 1 - F`.
+
+#### 5.2.4 Implementation: Heralded Double-Click Link (η, P_dark, visibility)
+
+This is the enforcement spec’s main missing feature: explicit detection efficiency and dark counts in the entanglement generation layer.
+
+**Correct model name:** `typ="heralded-double-click"`.
+
+**Correct payload (config object form, preferred):**
+
+```python
+from squidasm.run.stack.config import HeraldedLinkConfig, LinkConfig
+
+visibility = max(0.0, min(1.0, 2.0 * float(nsm_params.channel_fidelity) - 1.0))
+
+qlink_cfg = HeraldedLinkConfig(
+    # Fiber / propagation
+    length=float(channel_params.length_km),
+    p_loss_length=float(channel_params.attenuation_db_per_km),
+    speed_of_light=float(channel_params.speed_of_light_km_s),
+    # Detection model
+    detector_efficiency=float(nsm_params.detection_eff_eta),
+    dark_count_probability=float(nsm_params.dark_count_prob),
+    visibility=visibility,
+    # Multiplexing / coincidence defaults
+    num_multiplexing_modes=1,
+    num_resolving=False,
+    coin_prob_ph_ph=1.0,
+    coin_prob_ph_dc=1.0,
+    coin_prob_dc_dc=1.0,
+)
+
+link = LinkConfig(
     stack1="Alice",
     stack2="Bob",
-    typ="heralded_double_click",  # Custom registered type
-    cfg={
-        "detector_efficiency": channel_profile.detector_efficiency,
-        "dark_count_probability": channel_profile.dark_count_rate,
-        "visibility": derived_visibility,
-        ...
-    }
+    typ="heralded-double-click",
+    cfg=qlink_cfg,
 )
 ```
 
-#### 7.2.2 Device-Level Injection (Memory/Gate Noise)
+**Optional: split η into fiber loss × detector efficiency**
 
-**Target:** `GenericQDeviceConfig` in StackConfig
+In NSM notation, $\eta$ is often used as a *combined* transmittance/detection efficiency (Erven Table I). The heralded-double-click model separates fiber loss and detector efficiency.
 
-**Mechanism:** Configure QDevice parameters before network construction.
+If Caligo is configured with a physical channel length $L$ and attenuation $\alpha$ (dB/km), one can compute fiber transmittance:
 
-**Injection Points:**
+$$
+\eta_{\text{fiber}} = 10^{-\alpha L / 10}
+$$
 
-| Parameter | NetSquid Effect |
-|-----------|-----------------|
-| `T1` | Amplitude damping on stored qubits |
-| `T2` | Phase damping on stored qubits |
-| `single_qubit_gate_depolar_prob` | Noise per single-qubit gate |
-| `two_qubit_gate_depolar_prob` | Noise per two-qubit gate |
-| `num_qubits` | Memory capacity |
+and then set:
 
-**Configuration Flow:**
+$$
+\eta_{\text{det}} = \min\left(1, \frac{\eta_{\text{total}}}{\eta_{\text{fiber}}}\right)
+$$
 
-```
-ChannelParameters
-    │
-    ├─► T1, T2 ─────────────────► GenericQDeviceConfig.T1, T2
-    │
-ChannelNoiseProfile
-    │
-    └─► detector_error ─────────► GenericQDeviceConfig.single_qubit_gate_depolar_prob
-```
+This keeps the operational meaning of $\eta$ consistent with Erven/Wehner while using the more detailed netbuilder model.
 
-#### 7.2.3 Protocol-Level Injection (Timing)
+**Implementation note:** Caligo already implements `CaligoNetworkBuilder` in `caligo/simulation/network_builder.py` with the authoritative signature `(nsm_params, channel_params)`. The current implementation supports `"perfect"` and `"depolarise"`; this spec requires extending it to support `"heralded-double-click"` when $\eta$/$P_{\text{dark}}$ must be injected at runtime.
 
-**Target:** `CaligoProgram` base class
+### 5.3 Device-Level Injection (Memory/Gate Noise)
 
-**Mechanism:** TimingBarrier created from NSMParameters and integrated into program flow.
+**Target:** Quantum processor noise via `GenericQDeviceConfig`
+
+**Injection Point:** `netsquid_netbuilder/modules/qdevices/generic.py`
+
+**Key Parameters:**
+
+| Parameter | Effect | NSM Source |
+|-----------|--------|------------|
+| `T1` | Amplitude damping time | ChannelParameters.t1_ns |
+| `T2` | Dephasing time | ChannelParameters.t2_ns |
+| `single_qubit_gate_depolar_prob` | Gate error rate | 2 × detector_error |
+| `num_qubits` | Memory capacity | Protocol requirement |
+
+#### 5.3.1 What This Actually Models (and What It Does Not)
+
+- These parameters model **honest-party device noise** (memory decoherence and gate imperfections) in the SquidASM node stacks.
+- They do **not** model adversary storage noise $r$ (the dishonest Bob is not an in-simulator actor; see enforcement spec Section 3.2.4).
+
+This matters for interpretation: $r$ and $\nu$ must be enforced in *analytic* security checks (capacity bounds, min-entropy bounds), while the simulation must faithfully measure $Q_{\text{channel}}$ under the configured channel model.
+
+### 5.4 Protocol-Level Injection (Timing)
+
+**Target:** CaligoProgram base class
 
 **Injection Flow:**
 
-```
-ProtocolParameters.nsm_params.delta_t_ns
-    │
-    └─► TimingBarrier(delta_t_ns)
-            │
-            └─► CaligoProgram._timing_barrier
-                    │
-                    └─► Alice._run_protocol()
-                            │
-                            ├─► mark_quantum_complete()
-                            ├─► yield from wait_delta_t()
-                            └─► reveal_basis()
-```
+```python
+class CaligoProgram(Program, ABC):
+    """Base class for Caligo protocol programs with timing enforcement."""
 
-### 7.3 Custom Link Type Registration
-
-To use advanced noise models (Phase 2+), custom link types must be registered:
-
-**Step 1: Define Configuration Dataclass**
-
-```
-@dataclass
-class CaligoHeraldedLinkConfig:
-    """Configuration for Caligo heralded entanglement link."""
-    detector_efficiency: float
-    dark_count_probability: float
-    visibility: float
-    emission_probability: float
-    length_alice_km: float
-    length_bob_km: float
-```
-
-**Step 2: Implement QLinkModule**
-
-```
-class CaligoHeraldedQLinkModule(IQLinkModule):
-    """NetBuilder module for Caligo heralded links."""
-    
-    CONFIG_CLASS = CaligoHeraldedLinkConfig
-    
-    def create_distributor(self, config, node_a, node_b):
-        model_params = DoubleClickModelParameters(
-            detector_efficiency=config.detector_efficiency,
-            dark_count_probability=config.dark_count_probability,
-            ...
+    def __init__(self, params: ProtocolParameters) -> None:
+        self._params = params
+        self._timing_barrier = TimingBarrier(
+            delta_t_ns=params.nsm_params.delta_t_ns
         )
-        return MagicDistributor(
-            nodes=[node_a, node_b],
-            state_sampler_factory=DoubleClickStateSamplerFactory(),
-            model_params=model_params,
-        )
+
+    def run(self, context: Any) -> Generator[Any, None, Dict[str, Any]]:
+        """Protocol execution with timing barrier integration."""
+        # ... quantum phase ...
+
+        # Mark quantum phase complete
+        self._timing_barrier.mark_quantum_complete()
+
+        # Wait for Δt (yields to NetSquid simulator)
+        yield from self._timing_barrier.wait_delta_t()
+
+        # Now safe to reveal basis
+        yield from self._reveal_basis(context)
 ```
 
-**Step 3: Register with NetBuilder**
+#### 5.4.1 Why Timing Is the Only “Adversary Storage” Enforcement in Simulation
 
-```
-QLinkModuleRegistry.register("caligo_heralded", CaligoHeraldedQLinkModule)
-```
+As the enforcement spec emphasizes, the adversary is not explicitly simulated. The only “physical enforcement” of the NSM storage assumption inside the simulator is the causal structure created by the enforced wait $\Delta t$:
 
-**Step 4: Use in LinkConfig**
+- Alice’s basis information is unavailable during $[t_{\text{quantum\_done}},\, t_{\text{quantum\_done}} + \Delta t)$.
+- This matches the NSM assumption that any stored quantum information must undergo $\mathcal{F}_{\Delta t}$ before it can be exploited.
 
-```
-LinkConfig(typ="caligo_heralded", cfg={...})
-```
+Everything else about adversary storage quality ($r$) and quantity ($\nu$) is necessarily analytic.
 
-### 7.4 Runtime Parameter Propagation
+### 5.5 Runtime Injection Failure Modes (Checklist)
 
-Parameters flow through the stack at different lifecycle stages:
+These issues are easy to miss because they occur *below* Caligo, inside SquidASM/netbuilder:
 
-| Stage | When | What Propagates |
-|-------|------|-----------------|
-| **Configuration** | Before `run_simulation()` | All static parameters |
-| **Network Build** | During `_setup_network()` | Link/device configs |
-| **Program Init** | During `Program.__init__()` | TimingBarrier, session params |
-| **Protocol Runtime** | During `run()` generator | Dynamic state, measurements |
-| **Post-Processing** | After simulation completes | Collected metrics |
+1. Wrong qlink model name
+    - Use `"heralded-double-click"`, not `"heralded_double_click"`.
+    - `"heralded"` is accepted by SquidASM and converted to `"heralded-double-click"`.
+2. Incomplete config dicts
+    - Depolarise links require `prob_success` and `t_cycle` (or `length` + `speed_of_light`).
+3. Ambiguous meaning of $\eta$
+    - If $\eta$ is “total detection efficiency”, decide whether it maps entirely to `detector_efficiency` (short links), or is split between fiber loss and detector efficiency (realistic links).
+4. Hidden defaults
+    - Heralded-double-click has many defaults; specify explicitly in tests to ensure determinism.
+5. Environment incompatibilities
+    - Some environments combine NetQASM 2.x with SquidASM versions that cannot execute the emitted instruction set (MOV, etc.). E2E tests must skip or pin versions accordingly.
 
 ---
 
-## 8. Module Organization
+## 6. Squid Package Dependencies
 
-### 8.1 Package Structure
+This section documents exact class signatures and file locations from the squid packages for NSM parameter injection.
 
-```
-caligo/
-├── simulation/
-│   ├── __init__.py
-│   ├── constants.py           # Literature values, thresholds
-│   ├── physical_model.py      # NSMParameters, ChannelParameters
-│   ├── noise_models.py        # ChannelNoiseProfile, wrappers
-│   ├── timing.py              # TimingBarrier
-│   ├── network_builder.py     # CaligoNetworkBuilder
-│   │
-│   ├── injection/             # Phase 2+ (NEW)
-│   │   ├── __init__.py
-│   │   ├── link_modules.py    # Custom QLinkModule implementations
-│   │   ├── noise_factory.py   # NoiseModelFactory
-│   │   └── pipeline_adapter.py # PipelineAdapter
-│   │
-│   └── validation/            # Phase 3 (NEW)
-│       ├── __init__.py
-│       ├── security_verifier.py
-│       ├── qber_validator.py
-│       └── compliance_reporter.py
-│
-├── analysis/                  # Phase 4 (NEW)
-│   ├── __init__.py
-│   ├── parameter_sweep.py
-│   └── visualization.py
-│
-└── protocol/
-    ├── base.py                # CaligoProgram (integrates TimingBarrier)
-    ├── alice.py
-    └── bob.py
+### 6.1 NetSquid Core (`netsquid`)
+
+**Package Path:** `netsquid/components/models/qerrormodels.py`
+
+#### 6.1.1 QuantumErrorModel (Base Class)
+
+```python
+class QuantumErrorModel(Model):
+    """
+    Base class for quantum error models.
+
+    File: netsquid/components/models/qerrormodels.py
+    """
+
+    def error_operation(
+        self,
+        qubits: List[Qubit],
+        delta_time: float = 0,
+        **kwargs,
+    ) -> None:
+        """
+        Apply error to qubits.
+
+        Parameters
+        ----------
+        qubits : List[Qubit]
+            Qubits to apply noise to.
+        delta_time : float
+            Time elapsed since last operation (ns).
+        """
+        ...
 ```
 
-### 8.2 Dependency Graph
+#### 6.1.2 DepolarNoiseModel
 
+```python
+class DepolarNoiseModel(QuantumErrorModel):
+    """
+    Depolarizing noise model for qubits.
+
+    File: netsquid/components/models/qerrormodels.py
+
+    Parameters
+    ----------
+    depolar_rate : float
+        Depolarization probability per time unit (or total if time_independent).
+    time_independent : bool
+        If True, depolar_rate is total probability regardless of time.
+    """
+
+    def __init__(
+        self,
+        depolar_rate: float = 0,
+        time_independent: bool = False,
+    ) -> None:
+        ...
+
+    @property
+    def depolar_rate(self) -> float:
+        """Depolarization rate."""
+        ...
 ```
-                    ┌─────────────────┐
-                    │    constants    │
-                    └────────┬────────┘
-                             │
-              ┌──────────────┼──────────────┐
-              ▼              ▼              ▼
-     ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
-     │physical_model│  │noise_models │  │   timing    │
-     └──────┬──────┘  └──────┬──────┘  └──────┬──────┘
-            │                │                │
-            └────────────────┼────────────────┘
-                             ▼
-                    ┌─────────────────┐
-                    │ network_builder │
-                    └────────┬────────┘
-                             │
-            ┌────────────────┼────────────────┐
-            ▼                ▼                ▼
-    ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
-    │ link_modules│  │noise_factory│  │pipeline_adap│
-    └─────────────┘  └─────────────┘  └──────┬──────┘
-                                             │
-                                             ▼
-                                    ┌─────────────────┐
-                                    │  protocol/base  │
-                                    └─────────────────┘
+
+**NSM Mapping:** `depolar_rate = 1 - r` (from Wehner et al. depolarizing channel definition)
+
+**Important clarification:** In the current Caligo/SquidASM architecture, this `DepolarNoiseModel` mapping is primarily used for *theoretical modeling* (e.g., storage bounds) and honest-device noise modeling. The adversary storage channel $\mathcal{N}_r$ is not instantiated as an in-simulator component.
+
+#### 6.1.3 T1T2NoiseModel
+
+```python
+class T1T2NoiseModel(QuantumErrorModel):
+    """
+    Combined T1 (amplitude damping) and T2 (dephasing) noise.
+
+    File: netsquid/components/models/qerrormodels.py
+
+    Parameters
+    ----------
+    T1 : float
+        Amplitude damping time constant (ns).
+    T2 : float
+        Dephasing time constant (ns). Must satisfy T2 ≤ T1.
+    """
+
+    def __init__(self, T1: float = 0, T2: float = 0) -> None:
+        ...
 ```
+
+### 6.2 netsquid_magic
+
+**Package Path:** `netsquid_magic/`
+
+#### 6.2.1 IModelParameters Base (Exact Signature)
+
+```python
+# File: netsquid_magic/model_parameters.py:8
+
+@dataclasses.dataclass
+class IModelParameters(metaclass=ABCMeta):
+    """Abstract base data class for the parameters of entanglement generation models."""
+    cycle_time: float = 0
+    """Duration [ns] of each round of entanglement distribution."""
+
+    @abstractmethod
+    def verify(self):
+        self.verify_not_negative_value("cycle_time")
+```
+
+#### 6.2.2 DepolariseModelParameters (Exact Signature)
+
+```python
+# File: netsquid_magic/model_parameters.py:63
+
+@dataclasses.dataclass
+class DepolariseModelParameters(IModelParameters):
+    """Data class for the parameters of the depolarising entanglement generation model."""
+    prob_max_mixed: float = 0
+    """Fraction of maximally mixed state in the EPR state generated."""
+    prob_success: float = 1
+    """Probability of successfully generating an EPR state per cycle."""
+    random_bell_state: bool = False
+    """Determines whether the Bell state is always phi+ or randomly chosen."""
+```
+
+**NSM Mapping:**
+- `prob_max_mixed = fidelity_to_prob_max_mixed(F) = \frac{4}{3}(1-F)` for depolarised Bell pairs
+- Maps to QBER via: $Q_{\text{source}} = \frac{\text{prob\_max\_mixed}}{2}$
+
+#### 6.2.3 DoubleClickModelParameters (Exact Signature)
+
+```python
+# File: netsquid_magic/model_parameters.py:202
+
+@dataclasses.dataclass
+class DoubleClickModelParameters(HeraldedModelParameters):
+    """Data class for the parameters of the double click entanglement generation model."""
+    detector_efficiency: float = 1
+    """Probability that the presence of a photon leads to a detection event."""
+    dark_count_probability: float = 0
+    """Dark-count probability per detection."""
+    visibility: float = 1
+    """Hong-Ou-Mandel visibility of photons being interfered."""
+    num_resolving: bool = False
+    """Whether photon-number-resolving detectors are used."""
+    num_multiplexing_modes: int = 1
+    """Number of modes used for multiplexing."""
+    emission_fidelity_A: float = 1
+    """Fidelity of state on A side to PHI_PLUS after emission."""
+    emission_fidelity_B: float = 1
+    """Fidelity of state on B side to PHI_PLUS after emission."""
+    coin_prob_ph_ph: float = 1
+    """Coincidence probability for two photons."""
+    coin_prob_ph_dc: float = 1
+    """Coincidence probability for photon and dark count."""
+    coin_prob_dc_dc: float = 1
+    """Coincidence probability for two dark counts."""
+```
+
+**NSM Parameter Mapping:**
+| NSM Parameter | DoubleClickModelParameters Field |
+|--------------|----------------------------------|
+| $\eta$ (detection efficiency) | `detector_efficiency` |
+| $P_{\text{dark}}$ (dark count) | `dark_count_probability` |
+| $F$ (fidelity) | `visibility` (via $V = 2F - 1$) |
+
+#### 6.2.4 StateDeliverySampler (Exact Signature)
+
+```python
+# File: netsquid_magic/state_delivery_sampler.py:17
+
+DeliverySample = namedtuple("DeliverySample", ["state", "delivery_duration", "label"])
+
+class StateDeliverySampler(StateSampler):
+    """Class for sampling both a quantum state and the time its generation took."""
+
+    def __init__(
+        self,
+        state_sampler: StateSampler,
+        cycle_time: float,
+        long_distance_interface: ILongDistanceInterface = None,
+    ) -> None:
+        ...
+
+    def sample(self, skip_rounds: bool = True) -> DeliverySample:
+        """
+        Samples quantum state and generation time.
+
+        Returns
+        -------
+        DeliverySample
+            Named tuple: (state, delivery_duration, label)
+        """
+        ...
+```
+
+### 6.3 netsquid_netbuilder
+
+**Package Path:** `netsquid_netbuilder/modules/`
+
+#### 6.3.1 GenericQDeviceConfig (via SquidASM)
+
+```python
+# File: squidasm/run/stack/config.py:13 (imports from netsquid_netbuilder)
+
+class GenericQDeviceConfig(netbuilder_qdevices.GenericQDeviceConfig):
+    """Configuration for generic quantum devices.
+    
+    Key attributes for NSM mapping:
+    - num_qubits: int - Number of qubit positions
+    - T1: float - Amplitude damping time (ns)
+    - T2: float - Dephasing time (ns), T2 ≤ T1
+    - single_qubit_gate_depolar_prob: float - Gate error rate
+    """
+    
+    @classmethod
+    def perfect_config(cls) -> "GenericQDeviceConfig":
+        """Create noise-free configuration."""
+        ...
+```
+
+### 6.4 SquidASM Configuration Classes
+
+**Package Path:** `squidasm/run/stack/config.py`
+
+#### 6.4.1 StackConfig (Exact Signature)
+
+```python
+# File: squidasm/run/stack/config.py:22
+
+class StackConfig(YamlLoadable):
+    """Configuration for a single stack (i.e. end node)."""
+
+    name: str
+    """Name of the stack."""
+    qdevice_typ: str
+    """Type of the quantum device."""
+    qdevice_cfg: Any = None
+    """Configuration of the quantum device, allowed configuration depends on type."""
+
+    @classmethod
+    def perfect_generic_config(cls, name: str) -> StackConfig:
+        """Create a configuration for a stack with a generic quantum device 
+        without any noise or errors."""
+        return StackConfig(
+            name=name,
+            qdevice_typ="generic",
+            qdevice_cfg=netbuilder_qdevices.GenericQDeviceConfig.perfect_config(),
+        )
+```
+
+#### 6.4.2 LinkConfig (Exact Signature)
+
+```python
+# File: squidasm/run/stack/config.py:57
+
+class LinkConfig(YamlLoadable):
+    """Configuration for a single link."""
+
+    stack1: str
+    """Name of the first stack being connected via link."""
+    stack2: str
+    """Name of the second stack being connected via link."""
+    typ: str
+    """Type of the link."""
+    cfg: Any = None
+    """Configuration of the link, allowed configuration depends on type."""
+
+    @classmethod
+    def perfect_config(cls, stack1: str, stack2: str) -> LinkConfig:
+        """Create a configuration for a link without any noise or errors."""
+        return LinkConfig(stack1=stack1, stack2=stack2, typ="perfect", cfg=None)
+```
+
+**Link Types and NSM Mapping:**
+| typ | Model | NSM Parameters Used |
+|-----|-------|---------------------|
+| `"perfect"` | No noise | None (baseline testing) |
+| `"depolarise"` | `DepolariseModelParameters` | `channel_fidelity` → `fidelity` |
+| `"heralded"` | Alias (SquidASM conversion) | Converted to `"heralded-double-click"` |
+| `"heralded-double-click"` | Double-click distributor model | Full: $\eta$, $P_{\text{dark}}$, visibility ($\approx 2F-1$) |
+
+#### 6.4.3 StackNetworkConfig (Exact Signature)
+
+```python
+# File: squidasm/run/stack/config.py:95
+
+class StackNetworkConfig(YamlLoadable):
+    """Full network configuration."""
+
+    stacks: List[StackConfig]
+    """List of all the stacks in the network."""
+    links: List[LinkConfig]
+    """List of all the links connecting the stacks in the network."""
+    clinks: Optional[List[CLinkConfig]] = None
+    """List of all the classical links connecting the stacks in the network."""
+
+    @classmethod
+    def from_file(cls, path: str) -> StackNetworkConfig:
+        return super().from_file(path)
+```
+
+#### 6.4.4 Configuration Conversion (Internal)
+
+```python
+# File: squidasm/run/stack/config.py:108
+
+def _convert_stack_network_config(
+    stack_network_config: StackNetworkConfig,
+) -> netbuilder_configs.NetworkConfig:
+    """Method to convert a StackNetworkConfig into a netsquid-netbuilder 
+    NetworkConfig object.
+    
+    Key transformations:
+    - link_typ "heralded" → "heralded-double-click"
+    - link_cfg None + typ "perfect" → PerfectQLinkConfig()
+    - Creates ProcessingNodeConfig from each StackConfig
+    - Creates QLinkConfig from each LinkConfig
+    """
+    ...
+```
+
+### 6.5 Injection Point Summary
+
+| Injection Level | Target Class | NSM Parameters | NetSquid Effect |
+|----------------|--------------|----------------|-----------------|
+| **Link** | `LinkConfig` | $F$, $\eta$, $P_{\text{dark}}$ | EPR state noise |
+| **Device** | `GenericQDeviceConfig` | T1, T2, $e_{\text{det}}$ | Memory/gate noise |
+| **Protocol** | `CaligoProgram` | $\Delta t$ | Timing enforcement |
 
 ---
 
-## 9. Integration Contracts
+## 7. Confrontation With Enforcement Spec
 
-### 9.1 NoiseModelFactory Protocol
+This section explicitly aligns (and, where needed, corrects) this implementation spec against [nsm_parameters_enforcement.md](nsm_parameters_enforcement.md). The enforcement document is treated as the “problem statement and gaps” source; this document is the “how we implement it” source.
 
-```
-protocol INoiseModelFactory:
-    """Factory for creating NetSquid noise models from Caligo parameters."""
-    
-    def create_depolar_model(params: NSMParameters) -> DepolarNoiseModel:
-        """Create depolarizing noise model for storage simulation."""
-        ...
-    
-    def create_t1t2_model(params: ChannelParameters) -> T1T2NoiseModel:
-        """Create T1T2 model for memory decoherence."""
-        ...
-    
-    def create_fibre_loss_model(params: ChannelParameters) -> FibreLossModel:
-        """Create fibre loss model for channel attenuation."""
-        ...
-```
+### 7.1 Shared Security Foundation (Both Documents)
 
-### 9.2 SimulationClock Protocol
+Both documents agree on the core NSM requirement:
 
-```
-protocol ISimulationClock:
-    """Abstraction over simulation time source."""
-    
-    def current_time_ns() -> float:
-        """Return current simulation time in nanoseconds."""
-        ...
-    
-    def wait(duration_ns: float) -> Generator[EventExpression, None, None]:
-        """Yield control for specified duration."""
-        ...
-```
+$$
+Q_{\text{channel}} < Q_{\text{storage}} = \frac{1-r}{2}\;\;\wedge\;\; C_{\mathcal{N}}\,\nu < \frac{1}{2}
+$$
 
-### 9.3 SecurityVerifier Protocol
+and on the key operational QBER thresholds:
 
-```
-protocol ISecurityVerifier:
-    """Verifies NSM security conditions at runtime."""
-    
-    def verify_nsm_condition(
-        measured_qber: float,
-        nsm_params: NSMParameters
-    ) -> bool:
-        """Check Q_channel < Q_storage."""
-        ...
-    
-    def verify_threshold(
-        measured_qber: float,
-        threshold: float
-    ) -> bool:
-        """Check QBER against arbitrary threshold."""
-        ...
-```
+- 11% (Schaffner et al. 2009) as a conservative threshold for the depolarising-storage analysis
+- 22% as an absolute hard limit (various references; encoded in Caligo constants)
 
-### 9.4 PipelineAdapter Protocol
+### 7.2 Gap Table → Concrete Implementation Decisions
 
-```
-protocol IPipelineAdapter:
-    """Adapts Caligo configuration to SquidASM structures."""
-    
-    def to_stack_network_config(
-        nsm_params: NSMParameters,
-        channel_params: ChannelParameters,
+The enforcement spec lists several “missing NSM-critical parameters” at the SquidASM level. The table below translates each gap into a concrete Caligo implementation decision, including *where it is enforced* (simulation vs analytic).
+
+| Enforcement Spec Gap | What it means | Where enforced | Concrete mechanism |
+|----------------------|---------------|----------------|-------------------|
+| $r$ not modeled | Adversary storage decoherence | Analytic | `NSMParameters.qber_storage`, `storage_capacity`, feasibility checks (`caligo/security/feasibility.py`) |
+| $\nu$ not modeled | Adversary can store fraction of qubits | Analytic | `NSMParameters.storage_security_satisfied` and preflight report; affects key-rate bounds |
+| $\Delta t$ not enforced | Alice might leak basis “too early” | Simulation | `TimingBarrier` integrated into `AliceProgram` and program base |
+| $\eta$ missing | Detection efficiency affects QBER and click rates | Simulation (preferred), analytic fallback | Inject `heralded-double-click` qlink config; if not available, incorporate via analytic QBER estimator |
+| $P_{\text{dark}}$ missing | Dark counts contribute to QBER | Simulation (preferred), analytic fallback | Inject `dark_count_probability` into heralded-double-click link; otherwise use Erven QBER formula |
+| Source quality only via fidelity | Multi-parameter source model is simplified | Both | Keep fidelity-based depolarising link as baseline; optionally add PDC-model based feasibility computations (Erven) |
+
+### 7.3 Explicit Corrections vs Enforcement Spec
+
+1. Depolarising-link payload completeness
+    - Enforcement spec examples show a minimal payload (`fidelity` only). In the actual netbuilder API, depolarising links require `prob_success` and a cycle time (`t_cycle`) or (`length`, `speed_of_light`).
+
+2. Model-name precision
+    - The canonical netbuilder model name is `"heralded-double-click"`.
+    - SquidASM additionally accepts `"heralded"` and converts it to `"heralded-double-click"` during config conversion.
+
+3. “Strictly less” interpretation
+    - The enforcement spec frames this as “noise on the channel strictly less than storage noise.” In implementation, Caligo evaluates it via feasibility checks using entropy/capacity bounds (see `caligo/security/feasibility.py`).
+
+### 7.4 What Must Be Measured in Simulation
+
+To validate the NSM assumption empirically (as demanded by the enforcement spec), the simulator must measure:
+
+- Channel QBER ($Q_{\text{channel}}$) from the sifting test sample
+- Detection/click statistics (optional but strongly recommended if using heralded link models)
+- Timing compliance (barrier state) to ensure $\Delta t$ was respected
+
+These quantities are then compared against the analytic storage bounds derived from $r$ and $\nu$.
+
+## 8. Implementation Contracts
+
+This section defines **implementation-facing contracts** that keep the system aligned with the actual SquidASM/netbuilder injection boundary.
+
+The critical rule is:
+
+> Caligo injects *configs* (StackNetworkConfig, LinkConfig, GenericQDeviceConfig), not raw NetSquid noise model instances.
+
+### 8.1 Link/QDevice Injection Contracts (Config-First)
+
+```python
+from typing import Any, Protocol
+
+
+class ILinkConfigProvider(Protocol):
+    """Create a SquidASM LinkConfig payload from Caligo parameters."""
+
+    def build_link_config(
+        self,
         alice_name: str,
         bob_name: str,
-    ) -> StackNetworkConfig:
-        """Create SquidASM network configuration."""
-        ...
-    
-    def to_protocol_parameters(
-        nsm_params: NSMParameters,
-        session_id: str,
-        num_pairs: int,
-    ) -> ProtocolParameters:
-        """Create protocol execution parameters."""
-        ...
+        nsm_params: "NSMParameters",
+        channel_params: "ChannelParameters",
+    ) -> Any:
+        """Return a SquidASM LinkConfig (typ + cfg) with complete payload."""
+
+
+class IQDeviceConfigProvider(Protocol):
+    """Create a GenericQDeviceConfig payload from Caligo parameters."""
+
+    def build_qdevice_config(
+        self,
+        num_qubits: int,
+        nsm_params: "NSMParameters",
+        channel_params: "ChannelParameters",
+    ) -> Any:
+        """Return a GenericQDeviceConfig (T1/T2 + gate depolarization)."""
+
+
+class INetworkConfigProvider(Protocol):
+    """Build a StackNetworkConfig suitable for squidasm.run()."""
+
+    def build_two_node_network(
+        self,
+        alice_name: str,
+        bob_name: str,
+        num_qubits: int,
+    ) -> Any:
+        """Return a StackNetworkConfig with stacks + links configured."""
 ```
+
+**Reference implementation:** `caligo/simulation/network_builder.py::CaligoNetworkBuilder`.
+
+### 8.2 Timing Contract (Δt Enforcement)
+
+**Requirement:** Alice’s program must enforce a wait of exactly $\Delta t$ between “quantum done” and “basis reveal”, implemented as a generator `yield` to NetSquid.
+
+Contractually, this means:
+
+- `TimingBarrier.mark_quantum_complete()` is called immediately after the quantum phase ends.
+- `yield from TimingBarrier.wait_delta_t()` occurs before any classical information that would break the NSM assumption is sent.
+
+### 8.3 Security/Feasibility Evaluation Contract (Analytic)
+
+Because the adversary is not simulated, security is validated via analytic checks that consume *measured simulation outputs*.
+
+```python
+from typing import Protocol
+
+
+class ISecurityEvaluator(Protocol):
+    """Evaluate measured simulation outputs against NSM bounds."""
+
+    def verify_capacity_bound(self, nsm_params: "NSMParameters") -> bool:
+        """Check C_N · ν < 1/2."""
+
+    def verify_channel_vs_storage(self, measured_qber: float, nsm_params: "NSMParameters") -> bool:
+        """Check Q_channel < (1-r)/2 using measured_qber from the run."""
+
+    def security_margin(self, measured_qber: float, nsm_params: "NSMParameters") -> float:
+        """Return (1-r)/2 - measured_qber; positive indicates margin."""
+```
+
+**Reference location:** feasibility checks belong in `caligo/security/feasibility.py` (and related bounds modules).
+
+---
+
+## 9. Package Structure (Final)
+
+This section finalizes the package/module structure **as it exists in the Caligo codebase today**, and specifies the *new or updated responsibilities* needed to fully realize the enforcement spec.
+
+### 9.1 Current Caligo Reality (Authoritative)
+
+The implementation lives under `qia-challenge-2025/caligo/caligo/` and already contains the correct high-level decomposition:
+
+- `simulation/`
+    - `constants.py` — literature constants (Erven Table I, 11%/22% thresholds)
+    - `physical_model.py` — NSM/channel parameter dataclasses + derived analytic quantities
+    - `noise_models.py` — QBER/entropy helpers and wrappers used as “theory → numbers” glue
+    - `timing.py` — `TimingBarrier` and NetSquid-compatible waiting semantics
+    - `network_builder.py` — runtime injection adapter producing SquidASM `StackNetworkConfig`
+
+- `protocol/`
+    - `base.py` — SquidASM `Program` integration + `TimingBarrier` ownership
+    - `alice.py` / `bob.py` — Phase E programs; Alice enforces the timing barrier before basis reveal
+    - `orchestrator.py` — runtime entrypoint calling `squidasm.run.stack.run.run`
+
+- `security/`
+    - `feasibility.py` — preflight security checks implementing “strictly less”, capacity bounds, QBER thresholds
+    - `bounds.py`, `finite_key.py`, … — rate/bounds and finite-size handling
+
+### 9.2 New / Updated Component Responsibilities (Spec-Driven)
+
+No new files are created by this document, but it specifies *implementation changes* (to be performed later) in terms of responsibilities and testable behavior:
+
+1. Updated: `caligo/simulation/network_builder.py`
+     - Add a “link model selection” mode beyond {perfect,depolarise}:
+         - Support `"heralded-double-click"` when NSM parameters include nontrivial $\eta$ and $P_{\text{dark}}$.
+     - Ensure the link config payload is complete (`prob_success`, `t_cycle` for depolarise; required fields for heralded-double-click).
+
+2. Updated: `caligo/simulation/physical_model.py`
+     - Make the fidelity→depolarisation relation explicit in documentation and (if needed) helper functions:
+         - $p_{\max\,mix}=\frac{4}{3}(1-F)$ for depolarised Bell states.
+     - Keep the distinction between analytic adversary parameters ($r$, $\nu$) and simulated channel parameters explicit.
+
+3. Updated: `caligo/security/feasibility.py`
+     - Treat feasibility as the authoritative place for:
+         - $C_{\mathcal{N}}\,\nu < 1/2$ capacity checks
+         - “Strictly less” comparisons between channel error and storage noise
+         - Minimum batch-size recommendations (finite-size effects)
+
+4. Updated: `caligo/protocol/orchestrator.py`
+     - Surface diagnostic outputs in raw results (optional):
+         - Chosen qlink model name and relevant injected parameters
+         - Timing compliance boolean
+         - Measured QBER and sample sizes
+
+## 10. Testing Strategy
+
+Testing must mirror the architecture split:
+
+- Analytic NSM constraints ($r$, $\nu$) are validated in pure-Python unit tests.
+- Runtime injection correctness (SquidASM/netbuilder integration) is validated in conditional tests that import SquidASM/NetSquid.
+
+### 10.1 Unit Tests (No SquidASM Required)
+
+These tests run in environments where SquidASM/NetSquid may not be installed.
+
+**Targets:**
+
+- `caligo/simulation/physical_model.py`
+    - Invariant enforcement in `NSMParameters.__post_init__`
+    - Derived properties: `qber_channel`, `qber_storage`, `storage_capacity`, `storage_security_satisfied`
+    - Regression tests for literature values (Erven Table I, thresholds)
+
+- `caligo/security/feasibility.py`
+    - `compute_expected_qber` matches the Erven decomposition:
+        - $Q_{\text{source}}=(1-F)/2$, $Q_{\text{det}}=e_{\text{det}}$, $Q_{\text{dark}}=(1-\eta)P_{\text{dark}}/2$
+    - “Strictly less” check behavior around boundary conditions
+
+- `caligo/simulation/timing.py`
+    - State machine transitions IDLE→WAITING→READY
+    - Non-NetSquid fallback path yields at least once
+
+**Placement:** extend existing `caligo/tests/test_simulation/` and `caligo/tests/test_security/` suites.
+
+### 10.2 Integration Unit Tests (SquidASM Optional)
+
+These tests verify that Caligo constructs *valid* SquidASM configs, but skip if SquidASM is absent.
+
+**Targets:**
+
+- `caligo/simulation/network_builder.py`
+    - If SquidASM is present: `build_two_node_network()` returns a `StackNetworkConfig` whose `links[0].typ` is a registered model name.
+    - Validate “payload completeness” by attempting to pass the config into SquidASM’s converter:
+        - `squidasm.run.stack.config._convert_stack_network_config(network_cfg)`
+
+This catches the most common runtime-injection failure (missing required qlink config fields) without needing a full end-to-end protocol run.
+
+### 10.3 End-to-End Tests (Phase E)
+
+These tests run the full protocol through SquidASM’s stack runner and validate outcome contracts.
+
+**Existing anchor:** `caligo/tests/e2e/test_phase_e_protocol.py`.
+
+**Required additions (spec-driven):**
+
+- Parameterized E2E runs over:
+    - depolarise link (fidelity-only)
+    - heralded-double-click link (η/dark counts enabled)
+- Assertions:
+    - Protocol succeeds and key length is positive for feasible regimes
+    - Measured QBER stays below thresholds when parameters are configured as such
+    - Timing barrier compliance is true
+
+**Environment guards:**
+
+E2E must skip if the NetQASM/SquidASM instruction set combination is incompatible (as already hinted in the existing E2E test file). This is not a Caligo logic issue but an environment dependency constraint.
 
 ---
 
 ## Appendix A: Configuration Examples
 
-### A.1 Minimal Configuration (Testing)
+### A.1 Erven et al. (2014) Experimental Configuration
 
-```yaml
-# caligo_config_minimal.yaml
-nsm:
-  storage_noise_r: 0.75
-  storage_rate_nu: 0.01
-  delta_t_ns: 1_000_000  # 1 ms
-  channel_fidelity: 0.95
+```python
+# Reproduce Erven et al. Table I parameters
+nsm_params = NSMParameters(
+    storage_noise_r=0.75,
+    storage_rate_nu=0.002,
+    delta_t_ns=1_000_000,  # 1 ms
+    channel_fidelity=1.0 - 3.145e-5,  # From μ
+    detection_eff_eta=0.0150,
+    detector_error=0.0093,
+    dark_count_prob=1.50e-8,
+)
 
-simulation:
-  num_pairs: 100
-  num_qubits: 10
+channel_params = ChannelParameters.from_erven_experimental()
+
+# Build network
+builder = CaligoNetworkBuilder(nsm_params, channel_params)
+network_config = builder.build_two_node_network()
 ```
 
-### A.2 Erven Experimental Configuration
+### A.2 Simplified Testing Configuration
 
-```yaml
-# caligo_config_erven.yaml
-nsm:
-  storage_noise_r: 0.75
-  storage_rate_nu: 0.002
-  delta_t_ns: 1_000_000
+```python
+# For unit tests with controllable noise
+nsm_params = NSMParameters.for_testing(
+    storage_noise_r=0.75,
+    channel_fidelity=0.95,
+    delta_t_ns=1_000_000,
+)
 
-channel:
-  source_fidelity: 0.99997  # 1 - μ
-  detector_efficiency: 0.0150
-  detector_error: 0.0093
-  dark_count_rate: 1.50e-8
-
-physical:
-  length_km: 0.0  # Table-top
-  t1_ns: 100_000_000
-  t2_ns: 10_000_000
-```
-
-### A.3 High-Noise Stress Test Configuration
-
-```yaml
-# caligo_config_stress.yaml
-nsm:
-  storage_noise_r: 0.60  # High adversary capability
-  storage_rate_nu: 0.05
-  delta_t_ns: 500_000  # 0.5 ms
-
-channel:
-  source_fidelity: 0.90  # Near threshold
-  detector_efficiency: 0.80
-  detector_error: 0.03
-  dark_count_rate: 1.0e-5
-
-# Expected: QBER near 0.11 threshold
+channel_params = ChannelParameters.for_testing()
+builder = CaligoNetworkBuilder(nsm_params, channel_params)
+network_config = builder.build_two_node_network()
 ```
 
 ---
 
-## Appendix B: Migration Path
+## Appendix B: Literature Reference Summary
 
-### B.1 From Current Implementation
-
-| Current | Target | Migration Step |
-|---------|--------|----------------|
-| Direct fidelity in LinkConfig | NoiseModelFactory | Wrap in factory method |
-| Hardcoded ns.sim_time() | ISimulationClock | Inject clock interface |
-| Inline QBER computation | ChannelNoiseProfile | Use dataclass property |
-| Manual timing checks | TimingBarrier | Use state machine |
-
-### B.2 Deprecation Timeline
-
-| Phase | Deprecated | Replacement | Removal |
-|-------|------------|-------------|---------|
-| Phase 2 | Direct LinkConfig creation | CaligoNetworkBuilder | Phase 3 |
-| Phase 3 | Manual security checks | NSMSecurityVerifier | Phase 4 |
-| Phase 4 | String-based link types | Type-safe enums | Future |
+| Reference | Key Contribution | Parameters Used |
+|-----------|-----------------|-----------------|
+| König et al. (2012) | NSM definition, capacity bounds | $C_{\mathcal{N}}$, $\nu$ |
+| Schaffner et al. (2009) | 11% QBER threshold, depolarizing analysis | $r$, QBER thresholds |
+| Wehner et al. (2010) | Practical implementation, detection model | $P_{B,\text{click}}^h$, $P_{B,\text{err}}^h$ |
+| Erven et al. (2014) | Experimental realization, Table I values | $\mu$, $\eta$, $e_{\text{det}}$, $P_{\text{dark}}$ |
 
 ---
 

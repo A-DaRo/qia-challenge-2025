@@ -14,7 +14,7 @@ References
 from __future__ import annotations
 
 from enum import Enum, auto
-from typing import Generator, Optional
+from typing import Any, Generator, Optional
 
 from caligo.types.exceptions import TimingViolationError
 from caligo.utils.logging import get_logger
@@ -168,6 +168,7 @@ class TimingBarrier:
         self._state = TimingBarrierState.IDLE
         self._quantum_complete_time: Optional[float] = None
         self._timing_compliant = True
+        self._timer_entity: Optional[Any] = None
 
     # =========================================================================
     # Properties
@@ -276,8 +277,34 @@ class TimingBarrier:
         remaining = self._delta_t_ns - elapsed
 
         if remaining > 0:
-            # Advance simulation time
-            _sim_run(remaining)
+            # In NetSquid/SquidASM we must yield an EventExpression to allow the
+            # discrete-event simulator to advance time.
+            try:
+                from pydynaa import Entity, EventExpression, EventType
+
+                if self._timer_entity is None:
+
+                    class _BarrierTimer(Entity):
+                        def __init__(self) -> None:
+                            self._event = EventType(
+                                "CALIGO_BARRIER_TIMER",
+                                "TimingBarrier scheduled wait event",
+                            )
+
+                        def wait(self, duration_ns: float) -> EventExpression:
+                            self._schedule_after(duration_ns, self._event)
+                            return EventExpression(
+                                source=self, event_type=self._event
+                            )
+
+                    self._timer_entity = _BarrierTimer()
+
+                yield self._timer_entity.wait(remaining)
+            except ImportError:
+                # Unit-test / non-simulation fallback.
+                _sim_run(remaining)
+                # Yield at least once to preserve generator semantics.
+                yield
 
         self._state = TimingBarrierState.READY
         logger.debug(
@@ -285,8 +312,7 @@ class TimingBarrier:
             f"Basis revelation permitted."
         )
 
-        # Generator must yield at least once
-        yield
+        return
 
     def can_reveal_basis(self) -> bool:
         """

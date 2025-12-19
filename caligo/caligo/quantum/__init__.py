@@ -16,16 +16,50 @@ MeasurementExecutor
 BatchingManager
     Memory-constrained batch processing for large key generation.
 
+Parallel Generation
+-------------------
+ParallelEPRConfig
+    Configuration for parallel EPR generation.
+ParallelEPROrchestrator
+    Orchestrates parallel EPR generation across worker processes.
+EPRGenerationFactory
+    Factory for creating EPR generation strategies.
+SequentialEPRStrategy
+    Sequential EPR generation (original behavior).
+ParallelEPRStrategy
+    Parallel EPR generation using multiprocessing.
+
 References
 ----------
 - Erven et al. (2014): Experimental implementation
 - Schaffner et al. (2009): Protocol definition
+- parallel_generation.md: Parallel EPR generation design document
 """
 
 from caligo.quantum.basis import BasisSelector
 from caligo.quantum.batching import BatchingManager, BatchConfig, BatchResult
 from caligo.quantum.epr import EPRGenerator, EPRGenerationConfig
 from caligo.quantum.measurement import MeasurementExecutor, MeasurementBuffer
+
+# Parallel generation modules
+from caligo.quantum.parallel import (
+    ParallelEPRConfig,
+    ParallelEPROrchestrator,
+    EPRWorkerResult,
+)
+from caligo.quantum.factory import (
+    EPRGenerationStrategy,
+    SequentialEPRStrategy,
+    ParallelEPRStrategy,
+    EPRGenerationFactory,
+    CaligoConfig,
+)
+from caligo.quantum.workers import (
+    MinimalAliceWorkerProgram,
+    MinimalBobWorkerProgram,
+    EPRWorkerTask,
+    generate_epr_batch_standalone,
+)
 
 __all__ = [
     # EPR generation
@@ -40,4 +74,20 @@ __all__ = [
     "BatchingManager",
     "BatchConfig",
     "BatchResult",
+    # Parallel generation - Config
+    "ParallelEPRConfig",
+    "CaligoConfig",
+    # Parallel generation - Orchestration
+    "ParallelEPROrchestrator",
+    "EPRWorkerResult",
+    # Parallel generation - Factory & Strategies
+    "EPRGenerationStrategy",
+    "EPRGenerationFactory",
+    "SequentialEPRStrategy",
+    "ParallelEPRStrategy",
+    # Parallel generation - Workers
+    "MinimalAliceWorkerProgram",
+    "MinimalBobWorkerProgram",
+    "EPRWorkerTask",
+    "generate_epr_batch_standalone",
 ]

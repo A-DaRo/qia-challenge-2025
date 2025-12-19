@@ -54,7 +54,8 @@ def test_phase_e_end_to_end_ot_agreement(choice_bit: int) -> None:
 
     # Needs to be large enough to overcome finite-size penalties in
     # `SecureKeyLengthCalculator` (epsilon=1e-10 => ~64 bits penalty).
-    params = _default_params(session_id=f"e2e-{choice_bit}", num_pairs=2000)
+    # Increased to 5000 to reduce QBER finite-size penalty below 0.11 threshold.
+    params = _default_params(session_id=f"e2e-{choice_bit}", num_pairs=5000)
 
     ot, _raw = run_protocol(params, bob_choice_bit=choice_bit)
 

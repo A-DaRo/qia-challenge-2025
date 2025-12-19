@@ -262,16 +262,13 @@ class MeasurementExecutor:
             Measurement outcome (0 or 1).
         """
         try:
-            from netqasm.sdk.classical_communication.message import StructuredMessage
-            from netqasm.sdk.qubit import QubitMeasureBasis
+            # NOTE: SquidASM 0.13.x does not support NetQASM's MEAS_BASIS
+            # instruction. To measure in X basis we manually rotate using
+            # a Hadamard gate and then do a standard Z-basis measurement.
+            if basis == BASIS_X:
+                qubit.H()
 
-            # Select measurement basis
-            measure_basis = (
-                QubitMeasureBasis.Z if basis == BASIS_Z else QubitMeasureBasis.X
-            )
-
-            # Perform measurement
-            result = qubit.measure(basis=measure_basis)
+            result = qubit.measure()
 
             # Flush to get result
             if context is not None:

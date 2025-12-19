@@ -141,21 +141,23 @@ class BobProgram(CaligoProgram):
         bases = basis_selector.select_batch(n)
         outcomes = np.zeros(n, dtype=np.uint8)
 
-        # NetQASM limits recv_keep batch size by max_qubits.
-        batch_size = max(1, int(self.params.num_qubits))
-        for start in range(0, n, batch_size):
-            count = min(batch_size, n - start)
-            qubits = epr_socket.recv_keep(number=count)
-            for j, q in enumerate(qubits):
-                round_id = start + j
-                outcomes[round_id] = yield from meas.measure_qubit(
-                    qubit=q,
-                    basis=int(bases[round_id]),
-                    round_id=round_id,
-                    context=context,
-                )
+        # Use the same pattern as SquidASM's QKD example:
+        # receive and measure one EPR pair per round to preserve ordering.
+        for round_id in range(n):
+            q = epr_socket.recv_keep(1)[0]
+            outcomes[round_id] = yield from meas.measure_qubit(
+                qubit=q,
+                basis=int(bases[round_id]),
+                round_id=round_id,
+                context=context,
+            )
 
         data_bytes = np.concatenate([outcomes, bases]).astype(np.uint8).tobytes()
         commit_res = self._commitment.commit(data_bytes)
 
-        return outcomes.astype(np.uint8), bases.astype(np.uint8), commit_res.nonce, commit_res.commitment
+        return (
+            outcomes.astype(np.uint8),
+            bases.astype(np.uint8),
+            commit_res.nonce,
+            commit_res.commitment,
+        )
