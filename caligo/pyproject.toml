@@ -50,6 +50,10 @@ python_files = "test_*.py"
 addopts = "-v --tb=short"
 markers = [
     "integration: multi-package integration tests (small integration; no E2E simulation)",
+    "e2e: end-to-end tests (may run full simulation)",
+    "slow: tests that are slow and can be skipped in fast CI",
+    "performance: lightweight performance/overhead checks",
+    "security: statistical sanity checks for security assumptions",
 ]
 
 [tool.mypy]

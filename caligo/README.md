@@ -88,6 +88,40 @@ pytest --cov=caligo
 pytest tests/test_types/test_keys.py -v
 ```
 
+## Parallel EPR Generation
+
+Caligo includes an optional parallel EPR generation layer intended to
+accelerate large Monte Carlo-style simulations of the quantum phase.
+
+- Sequential/parallel selection is controlled via `ParallelEPRConfig(enabled=...)`.
+- The implementation preserves i.i.d.-compatible statistics (ordering is not
+  physically meaningful for Phase I outcomes).
+
+**Programmatic usage**
+
+```python
+from caligo.quantum.factory import CaligoConfig, EPRGenerationFactory
+from caligo.quantum.parallel import ParallelEPRConfig
+
+cfg = CaligoConfig(
+    num_epr_pairs=10000,
+    parallel_config=ParallelEPRConfig(enabled=True, num_workers=4, pairs_per_batch=2500),
+    network_config={"noise": 0.05},
+)
+
+strategy = EPRGenerationFactory(cfg).create_strategy()
+try:
+    alice_out, alice_bases, bob_out, bob_bases = strategy.generate(cfg.num_epr_pairs)
+finally:
+    # Parallel strategies hold worker pools and should be shut down.
+    if hasattr(strategy, "shutdown"):
+        strategy.shutdown()
+```
+
+**YAML config example**
+
+See [configs/parallel.yaml](configs/parallel.yaml).
+
 ## References
 
 - Erven et al. (2014): "An Experimental Implementation of Oblivious Transfer in the Noisy Storage Model"
