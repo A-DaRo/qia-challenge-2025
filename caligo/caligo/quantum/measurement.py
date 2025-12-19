@@ -258,27 +258,49 @@ class MeasurementExecutor:
 
         Yields
         ------
+        None
+            Yielded when flushing the connection.
+
+        Returns
+        -------
         int
             Measurement outcome (0 or 1).
         """
+
+        # The unit-test suite expects a clean fallback path when NetQASM is
+        # unavailable (e.g., import blocked). In that case we must *not* touch
+        # the qubit object at all.
         try:
-            # NOTE: SquidASM 0.13.x does not support NetQASM's MEAS_BASIS
-            # instruction. To measure in X basis we manually rotate using
-            # a Hadamard gate and then do a standard Z-basis measurement.
-            if basis == BASIS_X:
-                qubit.H()
-
-            result = qubit.measure()
-
-            # Flush to get result
-            if context is not None:
-                yield from context.connection.flush()
-
-            outcome = int(result)
+            import netqasm  # noqa: F401
         except ImportError:
-            # Fallback for testing without NetQASM
-            outcome = np.random.randint(0, 2)
+            outcome = int(np.random.randint(0, 2))
+            self._measurement_count += 1
+            self._buffer.add_outcome(
+                outcome=outcome,
+                basis=basis,
+                round_id=round_id,
+                measurement_time=0.0,
+            )
 
+            # Preserve generator semantics for SquidASM code paths.
+            if False:  # pragma: no cover
+                yield None
+
+            return outcome
+
+        # NOTE: SquidASM 0.13.x does not support NetQASM's MEAS_BASIS
+        # instruction. To measure in X basis we manually rotate using
+        # a Hadamard gate and then do a standard Z-basis measurement.
+        if basis == BASIS_X:
+            qubit.H()
+
+        result = qubit.measure()
+
+        # Flush to get result
+        if context is not None:
+            yield from context.connection.flush()
+
+        outcome = int(result)
         self._measurement_count += 1
         measurement_time = 0.0
 

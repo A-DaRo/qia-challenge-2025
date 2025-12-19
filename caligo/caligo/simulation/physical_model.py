@@ -403,6 +403,28 @@ class NSMParameters:
         )
 
     @property
+    def qber_conditional(self) -> float:
+        """
+        QBER conditioned on a detection event (recommended LLR prior).
+
+        Returns
+        -------
+        float
+            Conditional QBER (bit error probability given a click).
+
+        Notes
+        -----
+        Blind reconciliation needs an LLR prior for the BSC crossover
+        probability. Using a conditional-on-detection estimate avoids
+        diluting the prior with no-click events.
+
+        This is currently implemented via the same detection-conditioned
+        calculation used by `qber_full_erven`.
+        """
+
+        return self.qber_full_erven
+
+    @property
     def qber_full_erven(self) -> float:
         """
         Complete QBER using exact Erven et al. PDC source model.

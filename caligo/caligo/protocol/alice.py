@@ -16,8 +16,12 @@ from caligo.amplification import (
 from caligo.connection.envelope import MessageType
 from caligo.protocol.base import CaligoProgram, ProtocolParameters
 from caligo.reconciliation import constants as recon_constants
+from caligo.reconciliation.ldpc_encoder import encode_block
 from caligo.reconciliation.matrix_manager import MatrixManager
-from caligo.reconciliation.orchestrator import ReconciliationOrchestrator, ReconciliationOrchestratorConfig
+from caligo.reconciliation.orchestrator import ReconciliationOrchestratorConfig
+from caligo.reconciliation.rate_selector import select_rate
+from caligo.reconciliation.hash_verifier import PolynomialHashVerifier
+from caligo.reconciliation.factory import ReconciliationType
 from caligo.sifting.commitment import SHA256Commitment
 from caligo.sifting.qber import QBEREstimator
 from caligo.sifting.sifter import Sifter
@@ -62,7 +66,7 @@ class AliceProgram(CaligoProgram):
         alice_outcomes, alice_bases = yield from self._phase1_quantum(context)
 
         # ------------------------------------------------------------------
-        # Phase II: Sifting + QBER using ordered messaging with timing barrier.
+        # Phase II: Sifting (+ optional QBER) using ordered messaging.
         # ------------------------------------------------------------------
         sifting_payload, timing_ok = yield from self._phase2_sifting(
             alice_outcomes=alice_outcomes,
@@ -70,24 +74,25 @@ class AliceProgram(CaligoProgram):
         )
 
         # ------------------------------------------------------------------
-        # Phase III: Reconciliation (centralized at Alice for now).
+        # Phase III: Reconciliation (message-based: Alice sends syndromes).
         # ------------------------------------------------------------------
-        reconciled_bits, total_syndrome_bits = self._phase3_reconcile(
+        reconciled_bits, total_syndrome_bits, verified_positions = yield from self._phase3_reconcile(
             alice_bits=sifting_payload["alice_bits"],
-            bob_bits=sifting_payload["bob_bits"],
+            qber_observed=float(sifting_payload["qber_estimate"]),
             qber_adjusted=float(sifting_payload["qber_adjusted"]),
         )
 
-        # Send reconciled material + indices to Bob for his amplification.
-        yield from self._ordered_socket.send(
-            MessageType.SYNDROME_RESPONSE,
-            {
-                "reconciled": bitarray_to_numpy(reconciled_bits).tobytes().hex(),
-                "matching_indices": sifting_payload["matching_indices"],
-                "i0_indices": sifting_payload["i0_indices"],
-                "i1_indices": sifting_payload["i1_indices"],
-            },
-        )
+        # Filter partition indices to only include verified positions.
+        # The reconciled_bits correspond to verified_positions in the original key.
+        verified_set = set(verified_positions.tolist())
+        original_matching = np.array(sifting_payload["matching_indices"], dtype=np.int64)
+        original_i0 = np.array(sifting_payload["i0_indices"], dtype=np.int64)
+        original_i1 = np.array(sifting_payload["i1_indices"], dtype=np.int64)
+
+        # Filter to keep only verified positions
+        verified_matching = np.array([i for i in original_matching if i in verified_set], dtype=np.int64)
+        verified_i0 = np.array([i for i in original_i0 if i in verified_set], dtype=np.int64)
+        verified_i1 = np.array([i for i in original_i1 if i in verified_set], dtype=np.int64)
 
         # ------------------------------------------------------------------
         # Phase IV: Amplification (Alice computes S0,S1 and sends seeds).
@@ -95,9 +100,9 @@ class AliceProgram(CaligoProgram):
         alice_key, key_length, entropy_consumed, entropy_rate, seeds = self._phase4_amplify(
             reconciled_bits=reconciled_bits,
             total_syndrome_bits=total_syndrome_bits,
-            matching_indices=np.array(sifting_payload["matching_indices"], dtype=np.int64),
-            i0_indices=np.array(sifting_payload["i0_indices"], dtype=np.int64),
-            i1_indices=np.array(sifting_payload["i1_indices"], dtype=np.int64),
+            matching_indices=verified_matching,
+            i0_indices=verified_i0,
+            i1_indices=verified_i1,
         )
 
         yield from self._ordered_socket.send(
@@ -125,6 +130,18 @@ class AliceProgram(CaligoProgram):
         self, context
     ) -> Generator[Any, None, Tuple[np.ndarray, np.ndarray]]:
         """Generate and measure EPR pairs (Alice side)."""
+
+        if self.params.precomputed_epr is not None:
+            n = int(self.params.num_pairs)
+            outcomes = np.asarray(self.params.precomputed_epr.alice_outcomes, dtype=np.uint8)
+            bases = np.asarray(self.params.precomputed_epr.alice_bases, dtype=np.uint8)
+            if len(outcomes) != n or len(bases) != n:
+                raise ValueError(
+                    "precomputed_epr length mismatch: "
+                    f"expected n={n}, got outcomes={len(outcomes)} bases={len(bases)}"
+                )
+            self._timing_barrier.mark_quantum_complete()
+            return outcomes, bases
 
         from caligo.quantum import BasisSelector, MeasurementExecutor
 
@@ -198,34 +215,48 @@ class AliceProgram(CaligoProgram):
             bob_outcomes=bob_outcomes,
         )
 
-        # Select test subset (original indices).
-        # Use larger test fraction for small simulations to reduce statistical fluctuation.
-        test_fraction = 0.1
-        if self.params.num_pairs < 10000:
-            test_fraction = 0.3
+        # Optional test subset + QBER estimation.
+        # Baseline reconciliation requires QBER; blind does not.
+        key_indices = alice_sift.matching_indices
+        test_indices = np.array([], dtype=np.int64)
+        if self.params.reconciliation.requires_qber_estimation:
+            # Use larger test fraction for small simulations to reduce statistical fluctuation.
+            test_fraction = 0.1
+            if self.params.num_pairs < 10000:
+                test_fraction = 0.3
 
-        test_indices, key_indices = self._sifter.select_test_subset(
-            matching_indices=alice_sift.matching_indices,
-            test_fraction=test_fraction,
-            min_test_size=1,
-        )
+            test_indices, key_indices = self._sifter.select_test_subset(
+                matching_indices=alice_sift.matching_indices,
+                test_fraction=test_fraction,
+                min_test_size=1,
+            )
 
-        yield from self._ordered_socket.send(
-            MessageType.INDEX_LISTS,
-            {"test_indices": test_indices.astype(int).tolist()},
-        )
+            yield from self._ordered_socket.send(
+                MessageType.INDEX_LISTS,
+                {"test_indices": test_indices.astype(int).tolist()},
+            )
 
-        test_outcomes_msg = yield from self._ordered_socket.recv(MessageType.TEST_OUTCOMES)
-        bob_test_bits = np.frombuffer(
-            bytes.fromhex(str(test_outcomes_msg["test_bits"])), dtype=np.uint8
-        )
-        alice_test_bits = alice_outcomes[test_indices]
+            test_outcomes_msg = yield from self._ordered_socket.recv(MessageType.TEST_OUTCOMES)
+            bob_test_bits = np.frombuffer(
+                bytes.fromhex(str(test_outcomes_msg["test_bits"])), dtype=np.uint8
+            )
+            alice_test_bits = alice_outcomes[test_indices]
 
-        qber = self._qber_estimator.estimate(
-            alice_test_bits=alice_test_bits,
-            bob_test_bits=bob_test_bits,
-            key_size=len(key_indices),
-        )
+            qber = self._qber_estimator.estimate(
+                alice_test_bits=alice_test_bits,
+                bob_test_bits=bob_test_bits,
+                key_size=len(key_indices),
+            )
+            qber_estimate = float(qber.observed_qber)
+            qber_adjusted = float(qber.adjusted_qber)
+            finite_size_penalty = float(qber.mu_penalty)
+            test_set_size = int(qber.num_test_bits)
+        else:
+            # Blind reconciliation: provide a prior from NSM parameters.
+            qber_estimate = float(self.params.nsm_params.qber_conditional)
+            qber_adjusted = qber_estimate
+            finite_size_penalty = 0.0
+            test_set_size = 0
 
         # Filter sifted keys down to key_indices only.
         # Build an index map from original index -> sifted position.
@@ -241,45 +272,205 @@ class AliceProgram(CaligoProgram):
         return (
             {
                 "alice_bits": alice_key_bits,
-                "bob_bits": bob_key_bits,
                 "matching_indices": key_indices.astype(int).tolist(),
                 "i0_indices": i0_indices.astype(int).tolist(),
                 "i1_indices": i1_indices.astype(int).tolist(),
                 "test_set_indices": test_indices.astype(int).tolist(),
-                "qber_estimate": float(qber.observed_qber),
-                "qber_adjusted": float(qber.adjusted_qber),
-                "finite_size_penalty": float(qber.mu_penalty),
-                "test_set_size": int(qber.num_test_bits),
+                "qber_estimate": float(qber_estimate),
+                "qber_adjusted": float(qber_adjusted),
+                "finite_size_penalty": float(finite_size_penalty),
+                "test_set_size": int(test_set_size),
             },
             timing_ok,
         )
 
     def _phase3_reconcile(
-        self, alice_bits: bitarray, bob_bits: bitarray, qber_adjusted: float
-    ) -> Tuple[bitarray, int]:
+        self, alice_bits: bitarray, qber_observed: float, qber_adjusted: float
+    ) -> Generator[Any, None, Tuple[bitarray, int]]:
+        """
+        Execute reconciliation (Phase III).
+
+        Parameters
+        ----------
+        alice_bits : bitarray
+            Alice's sifted key bits.
+        qber_observed : float
+            Measured QBER from test bits (for decoder LLR).
+        qber_adjusted : float
+            Conservative QBER with finite-size penalty (for rate selection).
+
+        Yields
+        ------
+        Messages to/from ordered socket.
+
+        Returns
+        -------
+        Tuple[bitarray, int, np.ndarray]
+            Reconciled key bits, total syndrome bits leaked, and verified bit indices.
+        """
+        assert self._ordered_socket is not None
+
         alice_arr = bitarray_to_numpy(alice_bits)
-        bob_arr = bitarray_to_numpy(bob_bits)
 
         matrix_manager = MatrixManager.from_directory(recon_constants.LDPC_MATRICES_PATH)
-        orchestrator = ReconciliationOrchestrator(
-            matrix_manager=matrix_manager,
-            config=ReconciliationOrchestratorConfig(frame_size=4096, max_retries=2),
-            safety_cap=10**12,
+        frame_size = int(self.params.reconciliation.frame_size)
+        max_retries = int(self.params.reconciliation.max_blind_rounds)
+        config = ReconciliationOrchestratorConfig(
+            frame_size=frame_size,
+            max_iterations=int(self.params.reconciliation.max_iterations),
+            max_retries=max_retries,
         )
 
-        block_result = orchestrator.reconcile_block(
-            alice_key=alice_arr,
-            bob_key=bob_arr,
-            qber_estimate=qber_adjusted,
-            block_id=0,
-        )
+        hash_verifier = PolynomialHashVerifier(hash_bits=config.hash_bits)
 
-        if not block_result.verified:
-            raise SecurityError("Reconciliation failed verification")
+        # Import for blind reconciliation
+        from caligo.reconciliation.ldpc_encoder import generate_padding
 
-        reconciled = bitarray_from_numpy(block_result.corrected_payload)
-        total_syndrome_bits = int(block_result.syndrome_length)
-        return reconciled, total_syndrome_bits
+        # Determine reconciliation strategy
+        is_blind = self.params.reconciliation.reconciliation_type == ReconciliationType.BLIND
+
+        # Baseline/Blind flow: Alice sends per-block syndrome + metadata; Bob decodes locally.
+        total_syndrome_bits = 0
+        reconciled_parts: list[np.ndarray] = []
+        verified_indices: list[int] = []  # Track which original bit positions are verified
+
+        for block_id, start in enumerate(range(0, len(alice_arr), frame_size)):
+            payload = alice_arr[start:start + frame_size]
+            end = start + len(payload)
+
+            # Rate selection uses conservative qber_adjusted
+            rate = select_rate(
+                qber_estimate=qber_adjusted,
+                available_rates=matrix_manager.rates,
+                f_crit=config.f_crit,
+            )
+            H = matrix_manager.get_matrix(rate)
+
+            n_shortened = max(0, int(frame_size) - int(len(payload)))
+            prng_seed = int(block_id + 12345)
+            syndrome_block = encode_block(payload, H, rate, n_shortened, prng_seed)
+
+            hash_seed = int(block_id)
+            hash_int = int(hash_verifier.compute_hash(payload, seed=hash_seed))
+
+            total_syndrome_bits += int(len(syndrome_block.syndrome))
+
+            if is_blind:
+                # Blind reconciliation: progressively reveal padding bits
+                n_padding = n_shortened
+                max_rounds = int(self.params.reconciliation.max_blind_rounds)
+
+                # Generate padding for disclosure
+                padding = generate_padding(n_padding, prng_seed) if n_padding > 0 else np.array([], dtype=np.uint8)
+
+                # Calculate reveal schedule: reveal some bits initially, then progressively more
+                # Initial reveal: shortened bits (high confidence known)
+                # Remaining bits revealed over max_rounds
+                modulation_fraction = 0.3  # Fraction of padding for modulation
+                modulation_bits = min(n_padding, int(modulation_fraction * frame_size))
+                n_shortened_initial = max(0, n_padding - modulation_bits)
+                n_punctured_initial = modulation_bits
+
+                initial_reveal = padding[:n_shortened_initial] if n_shortened_initial > 0 else np.array([], dtype=np.uint8)
+
+                delta = 0
+                if max_rounds > 0 and n_punctured_initial > 0:
+                    delta = max(1, int(np.ceil(n_punctured_initial / max_rounds)))
+
+                # Round 0: send syndrome + initial reveal
+                yield from self._ordered_socket.send(
+                    MessageType.SYNDROME,
+                    {
+                        "kind": "blind",
+                        "block_id": int(block_id),
+                        "round_id": 0,
+                        "payload_length": int(len(payload)),
+                        "frame_size": int(frame_size),
+                        "rate": float(rate),
+                        "n_padding": int(n_padding),
+                        "n_shortened": int(n_shortened_initial),
+                        "n_punctured": int(n_punctured_initial),
+                        "delta": int(delta),
+                        "syndrome": syndrome_block.syndrome.astype(np.uint8).tobytes().hex(),
+                        "reveal": initial_reveal.astype(np.uint8).tobytes().hex() if len(initial_reveal) > 0 else "",
+                        "qber_channel": float(qber_observed),
+                        "qber_prior": float(qber_adjusted),
+                        "hash_seed": int(hash_seed),
+                        "hash_int": int(hash_int),
+                    },
+                )
+
+                # Subsequent rounds: reveal more padding bits
+                revealed = int(n_shortened_initial)
+                for round_id in range(1, max_rounds + 1):
+                    if revealed >= n_padding:
+                        reveal_chunk = np.array([], dtype=np.uint8)
+                    else:
+                        next_reveal_end = min(n_padding, revealed + delta)
+                        reveal_chunk = padding[revealed:next_reveal_end]
+                        revealed = next_reveal_end
+
+                    yield from self._ordered_socket.send(
+                        MessageType.SYNDROME,
+                        {
+                            "kind": "blind",
+                            "block_id": int(block_id),
+                            "round_id": int(round_id),
+                            "payload_length": int(len(payload)),
+                            "frame_size": int(frame_size),
+                            "rate": float(rate),
+                            "n_padding": int(n_padding),
+                            "reveal": reveal_chunk.astype(np.uint8).tobytes().hex() if len(reveal_chunk) > 0 else "",
+                        },
+                    )
+            else:
+                # Baseline reconciliation: single syndrome exchange
+                yield from self._ordered_socket.send(
+                    MessageType.SYNDROME,
+                    {
+                        "kind": "baseline",
+                        "block_id": int(block_id),
+                        "payload_length": int(len(payload)),
+                        "frame_size": int(frame_size),
+                        "rate": float(rate),
+                        "n_shortened": int(n_shortened),
+                        "prng_seed": int(prng_seed),
+                        "syndrome": syndrome_block.syndrome.astype(np.uint8).tobytes().hex(),
+                        "qber_channel": float(qber_observed),
+                        "qber_prior": float(qber_adjusted),
+                        "hash_seed": int(hash_seed),
+                        "hash_int": int(hash_int),
+                    },
+                )
+
+            resp = yield from self._ordered_socket.recv(MessageType.SYNDROME_RESPONSE)
+            if int(resp.get("block_id", -1)) != int(block_id):
+                raise SecurityError("Reconciliation block_id mismatch")
+
+            verified = bool(resp.get("verified", False))
+            if not verified:
+                # Log warning but continue with other blocks
+                # Failed blocks are excluded from the final key
+                from caligo.utils.logging import get_logger
+                _logger = get_logger(__name__)
+                _logger.warning(
+                    f"Block {block_id} failed verification - excluding from final key"
+                )
+                continue  # Skip this block, try remaining blocks
+
+            corrected_payload = np.frombuffer(
+                bytes.fromhex(str(resp["corrected_payload"])), dtype=np.uint8
+            )
+            reconciled_parts.append(corrected_payload)
+            # Track the original bit positions that are now verified
+            verified_indices.extend(range(start, end))
+
+        # Check if we have enough reconciled bits
+        if len(reconciled_parts) == 0:
+            raise SecurityError("All reconciliation blocks failed verification")
+        
+        reconciled_np = np.concatenate(reconciled_parts).astype(np.uint8) if reconciled_parts else np.array([], dtype=np.uint8)
+        return bitarray_from_numpy(reconciled_np), int(total_syndrome_bits), np.array(verified_indices, dtype=np.int64)
 
     def _phase4_amplify(
         self,

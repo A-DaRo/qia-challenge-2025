@@ -229,6 +229,154 @@ class SiftingPhaseResult:
 
 
 # =============================================================================
+# Key Material + Optional Channel Estimate
+# =============================================================================
+
+
+@dataclass
+class SiftedKeyMaterial:
+    """
+    Contract: Phase II → Phase III key material (Option A).
+
+    This contract intentionally excludes any channel estimate so that
+    blind reconciliation can run without test-bit sacrifice.
+
+    Parameters
+    ----------
+    sifted_key_alice : bitarray
+        Alice's sifted key bits after removing any test subset.
+    sifted_key_bob : bitarray
+        Bob's sifted key bits after removing any test subset.
+    matching_indices : np.ndarray
+        Original round indices used to form the sifted key (post-test removal).
+    i0_indices : np.ndarray
+        Original indices for the I₀ partition (post-test removal).
+    i1_indices : np.ndarray
+        Original indices for the I₁ partition (post-test removal).
+    test_set_indices : np.ndarray
+        Original round indices sacrificed for testing (may be empty).
+    timing_compliant : bool
+        True if Δt was enforced before basis revelation.
+
+    Raises
+    ------
+    ContractViolation
+        If any post-condition is violated.
+
+    Notes
+    -----
+    Post-conditions:
+    - POST-SKM-001: len(sifted_key_alice) == len(sifted_key_bob)
+    """
+
+    sifted_key_alice: bitarray
+    sifted_key_bob: bitarray
+    matching_indices: np.ndarray
+    i0_indices: np.ndarray
+    i1_indices: np.ndarray
+    test_set_indices: np.ndarray
+    timing_compliant: bool = True
+
+    def __post_init__(self) -> None:
+        if len(self.sifted_key_alice) != len(self.sifted_key_bob):
+            raise ContractViolation(
+                f"POST-SKM-001: len(sifted_key_alice)={len(self.sifted_key_alice)} "
+                f"!= len(sifted_key_bob)={len(self.sifted_key_bob)}"
+            )
+
+
+@dataclass
+class ChannelEstimate:
+    """
+    Optional channel estimate produced during Phase II.
+
+    Parameters
+    ----------
+    qber_estimate : float
+        Observed QBER on test set.
+    qber_adjusted : float
+        QBER with finite-size penalty.
+    finite_size_penalty : float
+        Statistical penalty μ.
+    test_set_size : int
+        Number of tested bits.
+
+    Raises
+    ------
+    ContractViolation
+        If any post-condition is violated.
+
+    Notes
+    -----
+    Post-conditions:
+    - POST-CE-001: qber_adjusted ≈ qber_estimate + finite_size_penalty
+    - POST-CE-002: qber_adjusted ≤ QBER_HARD_LIMIT
+    """
+
+    qber_estimate: float
+    qber_adjusted: float
+    finite_size_penalty: float
+    test_set_size: int
+
+    def __post_init__(self) -> None:
+        expected_adjusted = self.qber_estimate + self.finite_size_penalty
+        if abs(self.qber_adjusted - expected_adjusted) > 1e-10:
+            raise ContractViolation(
+                f"POST-CE-001: qber_adjusted={self.qber_adjusted} != "
+                f"qber_estimate + finite_size_penalty={expected_adjusted}"
+            )
+        if self.qber_adjusted > QBER_HARD_LIMIT:
+            raise ContractViolation(
+                f"POST-CE-002: qber_adjusted={self.qber_adjusted} > "
+                f"QBER_HARD_LIMIT={QBER_HARD_LIMIT}"
+            )
+
+
+@dataclass
+class PhaseIIResult:
+    """
+    Contract: Phase II → Phase III (Option A) bundle.
+
+    Parameters
+    ----------
+    key_material : SiftedKeyMaterial
+        Sifted key bits and index metadata.
+    channel_estimate : ChannelEstimate, optional
+        Present for baseline reconciliation; omitted for blind.
+    """
+
+    key_material: SiftedKeyMaterial
+    channel_estimate: Optional[ChannelEstimate] = None
+
+    @property
+    def has_channel_estimate(self) -> bool:
+        """Whether a QBER/channel estimate is present."""
+
+        return self.channel_estimate is not None
+
+    @classmethod
+    def from_sifting_phase_result(cls, dto: SiftingPhaseResult) -> "PhaseIIResult":
+        """Convert legacy SiftingPhaseResult into Option-A bundle."""
+
+        key_material = SiftedKeyMaterial(
+            sifted_key_alice=dto.sifted_key_alice,
+            sifted_key_bob=dto.sifted_key_bob,
+            matching_indices=dto.matching_indices,
+            i0_indices=dto.i0_indices,
+            i1_indices=dto.i1_indices,
+            test_set_indices=dto.test_set_indices,
+            timing_compliant=dto.timing_compliant,
+        )
+        channel_estimate = ChannelEstimate(
+            qber_estimate=float(dto.qber_estimate),
+            qber_adjusted=float(dto.qber_adjusted),
+            finite_size_penalty=float(dto.finite_size_penalty),
+            test_set_size=int(dto.test_set_size),
+        )
+        return cls(key_material=key_material, channel_estimate=channel_estimate)
+
+
+# =============================================================================
 # Phase III Contract: Reconciliation Phase Result
 # =============================================================================
 

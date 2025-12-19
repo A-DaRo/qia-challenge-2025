@@ -10,14 +10,16 @@ existing Caligo primitives (quantum/sifting/reconciliation/amplification).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Any, Dict, Generator, Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, Generator, List, Optional
 
 from caligo.connection import OrderedSocket
 from caligo.simulation.timing import TimingBarrier
 from caligo.simulation.physical_model import NSMParameters
 from caligo.types.exceptions import SecurityError
 from caligo.utils.logging import get_logger
+
+from caligo.reconciliation.factory import ReconciliationConfig
 
 logger = get_logger(__name__)
 
@@ -35,6 +37,33 @@ except Exception:  # pragma: no cover
 
 
 @dataclass(frozen=True)
+class PrecomputedEPRData:
+    """Precomputed EPR measurement data for both parties.
+
+    This is an optional acceleration hook for tests and benchmarking.
+    When provided via `ProtocolParameters.precomputed_epr`, Phase E programs
+    will skip interacting with SquidASM EPR sockets and instead consume this
+    dataset.
+
+    Parameters
+    ----------
+    alice_outcomes : List[int]
+        Alice measurement outcomes (0/1).
+    alice_bases : List[int]
+        Alice measurement bases (0=Z, 1=X).
+    bob_outcomes : List[int]
+        Bob measurement outcomes (0/1).
+    bob_bases : List[int]
+        Bob measurement bases (0=Z, 1=X).
+    """
+
+    alice_outcomes: List[int]
+    alice_bases: List[int]
+    bob_outcomes: List[int]
+    bob_bases: List[int]
+
+
+@dataclass(frozen=True)
 class ProtocolParameters:
     """Parameters for a Caligo protocol run.
 
@@ -48,12 +77,19 @@ class ProtocolParameters:
         Number of EPR pairs to generate/measure.
     num_qubits : int
         Maximum number of qubits used on the stack.
+    precomputed_epr : Optional[PrecomputedEPRData]
+        Optional precomputed EPR measurement data. When set, the Phase E
+        quantum phase will use this dataset instead of EPR socket operations.
+    reconciliation : ReconciliationConfig
+        Reconciliation configuration (baseline vs blind) and LDPC parameters.
     """
 
     session_id: str
     nsm_params: NSMParameters
     num_pairs: int
     num_qubits: int = 10
+    precomputed_epr: Optional[PrecomputedEPRData] = None
+    reconciliation: ReconciliationConfig = field(default_factory=ReconciliationConfig)
 
 
 class CaligoProgram(Program, ABC):

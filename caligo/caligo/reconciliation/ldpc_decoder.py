@@ -284,6 +284,7 @@ def build_channel_llr(
     bob_bits: np.ndarray,
     qber: float,
     n_shortened: int = 0,
+    known_bits: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
     Construct initial LLRs from BSC channel model.
@@ -310,16 +311,25 @@ def build_channel_llr(
     Sign convention: bit=0 → positive LLR, bit=1 → negative LLR.
     Shortened bits have LLR = ±100.0 (infinite confidence).
     """
-    n = len(bob_bits) + n_shortened
+    if known_bits is not None:
+        # known_bits takes precedence over n_shortened.
+        n_shortened = int(len(known_bits))
+
+    n = len(bob_bits) + int(n_shortened)
     qber_clamped = np.clip(qber, 1e-6, 0.5 - 1e-6)
     channel_llr = np.log((1 - qber_clamped) / qber_clamped)
 
     llr = np.zeros(n, dtype=np.float64)
     # Payload: sign based on received bit (0→positive, 1→negative)
     llr[:len(bob_bits)] = channel_llr * (1 - 2 * bob_bits.astype(np.float64))
-    # Shortened: high confidence (assuming zeros)
+    # Shortened/known bits: high confidence with correct sign.
     if n_shortened > 0:
-        llr[len(bob_bits):] = constants.LDPC_LLR_SHORTENED
+        if known_bits is None:
+            # Backward-compatible default: assume known bits are zeros.
+            llr[len(bob_bits):] = constants.LDPC_LLR_SHORTENED
+        else:
+            known_u8 = known_bits.astype(np.uint8, copy=False)
+            llr[len(bob_bits):] = constants.LDPC_LLR_SHORTENED * (1 - 2 * known_u8.astype(np.float64))
 
     return llr
 

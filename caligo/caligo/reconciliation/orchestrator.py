@@ -31,6 +31,7 @@ from caligo.reconciliation.ldpc_decoder import (
 from caligo.reconciliation.ldpc_encoder import (
     SyndromeBlock,
     encode_block,
+    generate_padding,
     prepare_frame,
 )
 from caligo.reconciliation.compiled_matrix import CompiledParityCheckMatrix
@@ -201,7 +202,9 @@ class ReconciliationOrchestrator:
         )
 
         rate = rate_params.rate
-        n_shortened = rate_params.n_shortened
+        # In baseline coset decoding, shortened bits are the padding needed
+        # to embed the payload into a fixed-length LDPC frame.
+        n_shortened = max(0, frame_size - payload_len)
         prng_seed = block_id + 12345  # Deterministic seed
 
         # Get parity-check matrix
@@ -228,7 +231,7 @@ class ReconciliationOrchestrator:
         )
 
         # Extract corrected payload
-        corrected_payload = decode_result.corrected[:payload_len]
+        corrected_payload = decode_result.corrected_bits[:payload_len]
         error_count = int(np.sum(bob_key != corrected_payload))
 
         # Verify with hash
@@ -257,6 +260,56 @@ class ReconciliationOrchestrator:
             error_count=error_count,
             syndrome_length=len(syndrome_block.syndrome),
         )
+
+    def reconcile_key(
+        self,
+        alice_key: np.ndarray,
+        bob_key: np.ndarray,
+        qber_estimate: float,
+    ) -> Tuple[np.ndarray, List[BlockResult]]:
+        """
+        Reconcile an arbitrarily long key by partitioning into LDPC blocks.
+
+        Parameters
+        ----------
+        alice_key : np.ndarray
+            Alice's payload bits.
+        bob_key : np.ndarray
+            Bob's payload bits.
+        qber_estimate : float
+            QBER for rate selection / LLR construction.
+
+        Returns
+        -------
+        Tuple[np.ndarray, List[BlockResult]]
+            (reconciled_payload, per_block_results). Failed blocks are dropped
+            from the returned reconciled_payload.
+        """
+        if len(alice_key) != len(bob_key):
+            raise ValueError("alice_key and bob_key must have same length")
+
+        block_size = int(self.config.frame_size)
+        alice_blocks = partition_key(alice_key, block_size)
+        bob_blocks = partition_key(bob_key, block_size)
+
+        corrected_parts: List[np.ndarray] = []
+        results: List[BlockResult] = []
+
+        for block_id, (a_blk, b_blk) in enumerate(zip(alice_blocks, bob_blocks)):
+            res = self.reconcile_block(
+                alice_key=a_blk,
+                bob_key=b_blk,
+                qber_estimate=qber_estimate,
+                block_id=block_id,
+            )
+            results.append(res)
+            if res.verified:
+                corrected_parts.append(res.corrected_payload)
+
+        if len(corrected_parts) == 0:
+            return np.array([], dtype=np.uint8), results
+
+        return np.concatenate(corrected_parts).astype(np.uint8), results
 
     def _decode_with_retry(
         self,
@@ -299,9 +352,11 @@ class ReconciliationOrchestrator:
             prng_seed=prng_seed,
         )
 
-        # Decoder target is the error syndrome: s_err = s_alice XOR s_bob
+        # Coset decoding target is Alice's syndrome H·x_A.
+        target_syndrome = syndrome.astype(np.uint8, copy=False)
         local_syndrome = H.compute_syndrome(bob_frame)
-        target_syndrome = syndrome.astype(np.uint8, copy=False) ^ local_syndrome
+
+        known_padding = generate_padding(n_shortened, prng_seed)
 
         best_result = None
 
@@ -309,8 +364,9 @@ class ReconciliationOrchestrator:
             # LLR damping for retries
             llr_damping = 1.0 - attempt * 0.15
 
-            # Build channel LLRs
-            llr = build_channel_llr(bob_key, qber_estimate, n_shortened)
+            # Build channel LLRs for Alice's bits, using Bob's received bits as
+            # the channel observation and treating padding as known bits.
+            llr = build_channel_llr(bob_key, qber_estimate, known_bits=known_padding)
             llr[:payload_len] *= llr_damping
 
             # Apply syndrome-guided refinement
@@ -327,17 +383,9 @@ class ReconciliationOrchestrator:
                 max_iterations=int(self.config.max_iterations * iter_scale),
             )
 
-            # Apply correction to get corrected frame
-            corrected_frame = bob_frame ^ result.corrected_bits.astype(np.uint8)
-            error_count = int(np.sum(bob_key != corrected_frame[:payload_len]))
-            
-            # Create updated result with corrected frame
-            result = DecodeResult(
-                corrected_bits=corrected_frame,
-                converged=result.converged,
-                iterations=result.iterations,
-                syndrome_errors=result.syndrome_errors,
-            )
+            # For coset decoding, `result.corrected_bits` is the decoded estimate
+            # of Alice's full frame.
+            error_count = int(np.sum(bob_key != result.corrected_bits[:payload_len]))
 
             if result.converged:
                 return result

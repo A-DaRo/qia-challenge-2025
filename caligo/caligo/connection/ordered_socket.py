@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Generator, Optional
+from typing import Generator, Optional, List, Tuple
 
 from caligo.connection.envelope import AckPayload, MessageEnvelope, MessageType
 from caligo.types.exceptions import (
@@ -69,6 +69,10 @@ class OrderedSocket:
 
         self._state: SocketState = SocketState.IDLE
         self._pending: Optional[_PendingSend] = None
+
+        # Buffer for application messages received while waiting for an ACK.
+        # Items are (msg_type, payload) in receive order.
+        self._recv_buffer: List[Tuple[MessageType, dict]] = []
 
     @property
     def session_id(self) -> str:
@@ -173,6 +177,15 @@ class OrderedSocket:
             If sequence numbers are inconsistent.
         """
 
+        # Drain buffered messages first.
+        if len(self._recv_buffer) > 0:
+            msg_type, payload = self._recv_buffer.pop(0)
+            if msg_type != expected_type:
+                raise OutOfOrderError(
+                    f"Expected msg_type={expected_type}, got {msg_type} from buffer"
+                )
+            return payload
+
         while True:
             raw = yield from self._sock.recv()
             env = MessageEnvelope.from_json(raw)
@@ -226,9 +239,10 @@ class OrderedSocket:
         violation to avoid subtle causal ordering bugs.
         """
 
-        _ = self._consume_application_message(env)
+        payload = self._consume_application_message(env)
+        self._recv_buffer.append((env.msg_type, payload))
         logger.debug(
-            "Received application message %s seq=%s while waiting for ACK; acked and dropped",
+            "Received application message %s seq=%s while waiting for ACK; acked and buffered",
             env.msg_type,
             env.seq,
         )

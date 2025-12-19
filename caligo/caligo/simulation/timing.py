@@ -89,6 +89,30 @@ def _sim_run(duration: float) -> None:
         pass
 
 
+def _has_active_simulation_engine() -> bool:
+    """Return True if a NetSquid event engine appears to be active.
+
+    Notes
+    -----
+    Unit tests may run in environments where NetSquid/PyDynAA are installed but
+    no discrete-event simulation is actually running. In that case we should
+    avoid yielding EventExpressions that will never be processed.
+    """
+    try:
+        import netsquid as ns
+
+        # Heuristic: a running/initialized simulation should have handlers,
+        # instants, or events registered. In plain unit tests these are
+        # typically all zero.
+        return (
+            ns.sim_count_handlers() > 0
+            or ns.sim_count_instants() > 0
+            or ns.sim_count_events() > 0
+        )
+    except Exception:
+        return False
+
+
 # =============================================================================
 # TimingBarrier Class
 # =============================================================================
@@ -277,6 +301,14 @@ class TimingBarrier:
         remaining = self._delta_t_ns - elapsed
 
         if remaining > 0:
+            # If no simulation engine is active (e.g., unit tests), model the
+            # wait as completing immediately after a single generator step.
+            if not _has_active_simulation_engine():
+                _sim_run(remaining)
+                self._state = TimingBarrierState.READY
+                yield
+                return
+
             # In NetSquid/SquidASM we must yield an EventExpression to allow the
             # discrete-event simulator to advance time.
             try:
@@ -302,9 +334,14 @@ class TimingBarrier:
                 yield self._timer_entity.wait(remaining)
             except ImportError:
                 # Unit-test / non-simulation fallback.
+                # There is no discrete-event engine to advance time here.
+                # For unit tests we model the wait as completing immediately
+                # after a single generator step.
                 _sim_run(remaining)
-                # Yield at least once to preserve generator semantics.
+                self._state = TimingBarrierState.READY
+                # Yield exactly once to preserve generator semantics.
                 yield
+                return
 
         self._state = TimingBarrierState.READY
         logger.debug(
