@@ -1,0 +1,108 @@
+# NSM Parameter Sweep Configuration
+#
+# This configuration template demonstrates how to set up parameter sweeps
+# for robustness analysis. Use this as a starting point for exploring
+# the security-performance tradeoffs in the NSM protocol.
+#
+# Reference: nsm_parameters_enforcement.md Section 8
+
+# Baseline NSM Parameters
+# These are the default values; sweep scripts should override specific params
+nsm_parameters:
+  storage_noise_r: 0.75
+  storage_rate_nu: 0.002
+  delta_t_ns: 1_000_000
+  channel_fidelity: 0.95
+  detection_eff_eta: 0.90
+  detector_error: 0.01
+  dark_count_prob: 1.0e-5
+
+# Model Selection
+model_selection:
+  # Use auto to let the system choose based on parameters
+  link_model: "auto"
+  eta_semantics: "detector_only"
+
+# Channel Parameters
+channel_parameters:
+  length_km: 0.0
+  attenuation_db_per_km: 0.2
+  speed_of_light_km_s: 200_000.0
+  t1_ns: 10_000_000
+  t2_ns: 1_000_000
+  cycle_time_ns: 10_000
+
+# Network Configuration
+network:
+  alice_name: "Alice"
+  bob_name: "Bob"
+  num_qubits: 10
+  with_device_noise: true
+
+# =============================================================================
+# Parameter Sweep Definitions
+# =============================================================================
+# Use these ranges for systematic exploration of the security space
+
+sweeps:
+  # Fidelity sweep: Explore impact of source quality
+  fidelity_sweep:
+    parameter: "nsm_parameters.channel_fidelity"
+    values: [0.80, 0.85, 0.90, 0.92, 0.95, 0.97, 0.99]
+    description: "EPR pair fidelity impact on QBER"
+    
+  # Detection efficiency sweep: Explore η impact
+  eta_sweep:
+    parameter: "nsm_parameters.detection_eff_eta"
+    values: [0.50, 0.70, 0.80, 0.90, 0.95, 0.99]
+    description: "Detection efficiency impact on QBER"
+    
+  # Storage noise sweep: Explore adversary advantage
+  storage_noise_sweep:
+    parameter: "nsm_parameters.storage_noise_r"
+    values: [0.50, 0.60, 0.70, 0.75, 0.80, 0.85, 0.90]
+    description: "Storage noise vs security margin"
+    
+  # Dark count sweep: Explore spurious detection impact
+  dark_count_sweep:
+    parameter: "nsm_parameters.dark_count_prob"
+    values: [0.0, 1.0e-8, 1.0e-7, 1.0e-6, 1.0e-5, 1.0e-4]
+    description: "Dark count rate impact on QBER"
+    
+  # Detector error sweep: Explore measurement quality
+  detector_error_sweep:
+    parameter: "nsm_parameters.detector_error"
+    values: [0.0, 0.005, 0.01, 0.02, 0.03, 0.05]
+    description: "Detector error impact on QBER"
+
+# =============================================================================
+# Metrics to Track
+# =============================================================================
+
+metrics:
+  - name: "measured_qber"
+    description: "Empirically measured QBER"
+  - name: "expected_qber"
+    description: "Theoretical QBER from parameters"
+  - name: "security_margin"
+    description: "Q_storage - Q_channel"
+  - name: "is_secure"
+    description: "Whether NSM security condition is satisfied"
+  - name: "sifted_key_rate"
+    description: "Rate of sifted bits per EPR attempt"
+  - name: "secret_key_rate"
+    description: "Rate of secret bits after reconciliation"
+
+# =============================================================================
+# Security Boundaries
+# =============================================================================
+
+boundaries:
+  # Hard limit from König et al. (2012)
+  qber_hard_limit: 0.22
+  
+  # Conservative limit from Schaffner et al. (2009)
+  qber_conservative_limit: 0.11
+  
+  # Storage capacity constraint: C_N * ν < 0.5
+  storage_capacity_limit: 0.5

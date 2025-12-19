@@ -1,0 +1,69 @@
+# NSM Parameter Enforcement Example Configuration: Depolarising Link Model
+# 
+# This configuration uses the depolarising link model which models EPR pair
+# generation with only fidelity-based noise. Use this when:
+# - Detection efficiency η = 1.0 (ideal detectors)
+# - Dark count probability P_dark = 0 (no spurious clicks)
+# - You only care about Bell state fidelity degradation
+#
+# Reference: nsm_parameters_enforcement.md Section 8.4.2
+
+# NSM Parameters
+# These define the adversary's storage model for security analysis
+nsm_parameters:
+  # Storage noise parameter r ∈ [0, 1]
+  # r=0: Complete depolarization (best security)
+  # r=1: Perfect storage (no security)
+  storage_noise_r: 0.75
+  
+  # Storage rate ν ∈ [0, 1]  
+  # Fraction of qubits the adversary can store
+  storage_rate_nu: 0.002
+  
+  # Wait time Δt in nanoseconds
+  # Time for adversary's storage to decohere
+  delta_t_ns: 1_000_000  # 1 ms
+  
+  # Channel fidelity F ∈ (0.5, 1]
+  # EPR pair fidelity (Bell state fidelity)
+  channel_fidelity: 0.92
+  
+  # Detection efficiency η ∈ (0, 1]
+  # Set to 1.0 for depolarise model (ignored)
+  detection_eff_eta: 1.0
+  
+  # Detector error rate e_det ∈ [0, 0.5]
+  detector_error: 0.0
+  
+  # Dark count probability per detection window
+  dark_count_prob: 0.0
+
+# Channel Model Selection
+model_selection:
+  # Link model: "auto" | "perfect" | "depolarise" | "heralded-double-click"
+  # "depolarise" explicitly forces this model
+  link_model: "depolarise"
+  
+  # Eta semantics (not used for depolarise model)
+  eta_semantics: "detector_only"
+
+# Channel Parameters (physical link characteristics)
+channel_parameters:
+  length_km: 0.0
+  attenuation_db_per_km: 0.2
+  speed_of_light_km_s: 200_000.0
+  t1_ns: 10_000_000   # 10 ms
+  t2_ns: 1_000_000    # 1 ms
+  cycle_time_ns: 1_000_000  # 1 ms per EPR attempt
+
+# Network Configuration
+network:
+  alice_name: "Alice"
+  bob_name: "Bob"
+  num_qubits: 10
+  with_device_noise: false
+
+# Expected QBER for this configuration
+# Q_simple = (1 - F) / 2 = (1 - 0.92) / 2 = 0.04
+# This should be < Q_storage = (1 - r) / 2 = (1 - 0.75) / 2 = 0.125
+# Security margin: 0.125 - 0.04 = 0.085

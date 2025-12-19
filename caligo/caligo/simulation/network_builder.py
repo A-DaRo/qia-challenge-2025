@@ -4,10 +4,28 @@ SquidASM network configuration builder for E-HOK protocol.
 This module provides factory functions and a builder class for creating
 SquidASM network configurations that incorporate NSM-specific parameters.
 
+NSM Parameter Enforcement
+-------------------------
+This module implements the physical enforcement of NSM parameters via:
+
+1. **Link Model Selection**: Automatic selection of quantum link model
+   (perfect, depolarise, or heralded-double-click) based on parameters.
+
+2. **Detection Efficiency Modeling**: Maps η to detector_efficiency in
+   heralded model or includes it implicitly in depolarise model.
+
+3. **Dark Count Injection**: Uses heralded-double-click model's built-in
+   dark_count_probability parameter.
+
+4. **Device Noise Mapping**: Maps detector_error to gate depolarization
+   and T1/T2 to memory noise in GenericQDeviceConfig.
+
 References
 ----------
 - squidasm/run/stack/config.py: StackNetworkConfig, LinkConfig
+- netsquid_netbuilder/modules/qlinks/: Link model implementations
 - netsquid_magic/model_parameters.py: Parameter classes
+- nsm_parameters_enforcement.md: Full specification
 - Erven et al. (2014): Experimental setup parameters
 """
 
@@ -17,6 +35,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from caligo.simulation.physical_model import (
+    ChannelModelSelection,
     ChannelParameters,
     NSMParameters,
     QBER_CONSERVATIVE_LIMIT,
@@ -129,6 +148,162 @@ def validate_network_config(config: Any) -> None:
 
 
 # =============================================================================
+# Link Configuration Factory Functions (NSM Parameter Enforcement)
+# =============================================================================
+
+
+def _make_depolarise_link_cfg(
+    nsm_params: NSMParameters,
+    channel_params: ChannelParameters,
+) -> Any:
+    """
+    Create depolarising link configuration from NSM parameters.
+
+    Uses netbuilder's DepolariseQLinkConfig which maps fidelity to
+    prob_max_mixed internally via fidelity_to_prob_max_mixed().
+
+    Parameters
+    ----------
+    nsm_params : NSMParameters
+        NSM configuration with channel_fidelity.
+    channel_params : ChannelParameters
+        Channel configuration with cycle_time_ns.
+
+    Returns
+    -------
+    DepolariseLinkConfig
+        Configured depolarising link.
+
+    Notes
+    -----
+    This link model does NOT simulate detection efficiency or dark counts.
+    Use heralded-double-click model for those parameters.
+
+    References
+    ----------
+    - netsquid_netbuilder/modules/qlinks/depolarise.py
+    - netsquid_netbuilder/util/fidelity.py: fidelity_to_prob_max_mixed
+    """
+    try:
+        from squidasm.run.stack.config import DepolariseLinkConfig
+
+        return DepolariseLinkConfig(
+            fidelity=float(nsm_params.channel_fidelity),
+            prob_success=1.0,
+            t_cycle=float(channel_params.cycle_time_ns),
+            random_bell_state=False,
+        )
+    except ImportError as e:
+        raise NetworkConfigError(
+            "SquidASM is required for link configuration."
+        ) from e
+
+
+def _make_heralded_double_click_cfg(
+    nsm_params: NSMParameters,
+    channel_params: ChannelParameters,
+    eta_semantics: str = "detector_only",
+) -> Any:
+    """
+    Create heralded-double-click link configuration from NSM parameters.
+
+    This model includes detection efficiency and dark count probability,
+    enabling full NSM channel parameter enforcement.
+
+    Parameters
+    ----------
+    nsm_params : NSMParameters
+        NSM configuration with channel_fidelity, detection_eff_eta,
+        dark_count_prob.
+    channel_params : ChannelParameters
+        Channel configuration with length_km, attenuation_db_per_km,
+        speed_of_light_km_s.
+    eta_semantics : str
+        Interpretation of detection efficiency:
+        - "detector_only": Map η directly to detector_efficiency
+        - "end_to_end": Distribute η across channel loss and detector
+
+    Returns
+    -------
+    HeraldedLinkConfig
+        Configured heralded-double-click link.
+
+    Notes
+    -----
+    The heralded model supports per-side parameters (_A, _B) but we use
+    symmetric "global" parameters for simplicity.
+
+    References
+    ----------
+    - netsquid_netbuilder/modules/qlinks/heralded_double_click.py
+    - netsquid_magic/model_parameters.py: DoubleClickModelParameters
+    """
+    try:
+        from squidasm.run.stack.config import HeraldedLinkConfig
+
+        if eta_semantics == "detector_only":
+            # Map η directly to detector_efficiency, no physical loss
+            length_km = 0.0
+            p_loss_length = 0.0
+            p_loss_init = 0.0
+            detector_efficiency = float(nsm_params.detection_eff_eta)
+        else:  # end_to_end
+            # Distribute η across channel loss and keep detector ideal
+            length_km = float(channel_params.length_km)
+            p_loss_length = float(channel_params.attenuation_db_per_km)
+            detector_efficiency = 1.0
+            # Model remaining loss as initial loss
+            p_loss_init = 1.0 - float(nsm_params.detection_eff_eta)
+
+        return HeraldedLinkConfig(
+            length=length_km,
+            p_loss_length=p_loss_length,
+            p_loss_init=p_loss_init,
+            speed_of_light=float(channel_params.speed_of_light_km_s),
+            detector_efficiency=detector_efficiency,
+            dark_count_probability=float(nsm_params.dark_count_prob),
+            visibility=1.0,
+            emission_fidelity=float(nsm_params.channel_fidelity),
+            emission_duration=0.0,
+            collection_efficiency=1.0,
+            num_multiplexing_modes=1,
+        )
+    except ImportError as e:
+        raise NetworkConfigError(
+            "SquidASM is required for link configuration."
+        ) from e
+
+
+def _map_detector_error_to_gate_depolar(detector_error: float) -> float:
+    """
+    Map detector error rate to gate depolarization probability.
+
+    Provides a heuristic mapping from e_det (intrinsic detector error)
+    to the gate depolarization probability used in GenericQDeviceConfig.
+
+    Parameters
+    ----------
+    detector_error : float
+        Intrinsic detector error rate ∈ [0, 0.5].
+
+    Returns
+    -------
+    float
+        Gate depolarization probability ∈ [0, 1].
+
+    Notes
+    -----
+    The mapping uses a factor of 2 to account for the difference between
+    bit error probability and depolarization probability. This is a
+    heuristic that should be validated empirically.
+
+    Validation requirement: demonstrate that higher detector_error
+    produces higher observed QBER in simulation.
+    """
+    return min(1.0, max(0.0, 2.0 * float(detector_error)))
+
+
+# =============================================================================
 # Network Builder
 # =============================================================================
 
@@ -147,6 +322,8 @@ class CaligoNetworkBuilder:
         NSM security parameters.
     channel_params : ChannelParameters
         Physical channel parameters.
+    model_selection : ChannelModelSelection, optional
+        Link model selection configuration. If None, uses auto-selection.
 
     Examples
     --------
@@ -157,12 +334,14 @@ class CaligoNetworkBuilder:
     ----------
     - squidasm/run/stack/config.py: StackNetworkConfig
     - squidasm/run/stack/build.py: create_stack_network_builder
+    - nsm_parameters_enforcement.md: NSM physical enforcement specification
     """
 
     def __init__(
         self,
         nsm_params: NSMParameters,
         channel_params: Optional[ChannelParameters] = None,
+        model_selection: Optional[ChannelModelSelection] = None,
     ) -> None:
         """
         Initialize the network builder.
@@ -173,9 +352,12 @@ class CaligoNetworkBuilder:
             NSM security parameters.
         channel_params : ChannelParameters, optional
             Physical channel parameters. If None, uses defaults.
+        model_selection : ChannelModelSelection, optional
+            Link model selection. If None, uses auto-selection.
         """
         self._nsm_params = nsm_params
         self._channel_params = channel_params or ChannelParameters.for_testing()
+        self._model_selection = model_selection or ChannelModelSelection()
 
     @property
     def nsm_params(self) -> NSMParameters:
@@ -187,11 +369,17 @@ class CaligoNetworkBuilder:
         """Get channel parameters."""
         return self._channel_params
 
+    @property
+    def model_selection(self) -> ChannelModelSelection:
+        """Get model selection configuration."""
+        return self._model_selection
+
     def build_two_node_network(
         self,
         alice_name: str = "Alice",
         bob_name: str = "Bob",
         num_qubits: int = 10,
+        with_device_noise: bool = False,
     ) -> Any:
         """
         Create a two-node network configuration for E-HOK.
@@ -204,6 +392,9 @@ class CaligoNetworkBuilder:
             Name for Bob's node. Default: "Bob".
         num_qubits : int
             Number of qubit positions per node. Default: 10.
+        with_device_noise : bool
+            If True, apply device noise (T1/T2, gate depolarization).
+            Default: False.
 
         Returns
         -------
@@ -222,9 +413,12 @@ class CaligoNetworkBuilder:
         - One LinkConfig with appropriate noise model
         - Instant classical links (no propagation delay)
 
-        The quantum link noise model is selected based on NSM parameters:
-        - If channel_fidelity == 1.0: "perfect" quantum link
-        - Otherwise: "depolarise" quantum link with fidelity = channel_fidelity
+        The quantum link noise model is selected based on NSM parameters
+        and the model_selection configuration:
+        - "perfect": No noise (requires F=1.0, η=1.0, P_dark=0)
+        - "depolarise": Depolarizing EPR pairs (fidelity only)
+        - "heralded-double-click": Full model with detector efficiency
+          and dark counts
         """
         try:
             from squidasm.run.stack.config import (
@@ -239,37 +433,53 @@ class CaligoNetworkBuilder:
                 "Install with: pip install squidasm"
             ) from e
 
-        # Determine noise model based on fidelity.
-        #
-        # SquidASM's stack runner expects LinkConfig.typ to be a lowercase
-        # registered netbuilder model name (e.g. "perfect", "depolarise").
-        fidelity_param = float(self._nsm_params.channel_fidelity)
-        if fidelity_param == 1.0:
+        # Resolve link model based on parameters
+        resolved_model = self._model_selection.resolve_link_model(
+            channel_fidelity=self._nsm_params.channel_fidelity,
+            detection_eff_eta=self._nsm_params.detection_eff_eta,
+            dark_count_prob=self._nsm_params.dark_count_prob,
+            detector_error=self._nsm_params.detector_error,
+            length_km=self._channel_params.length_km,
+        )
+
+        # Create link configuration based on resolved model
+        if resolved_model == "perfect":
             link_noise_type = "perfect"
             link_cfg_payload = None
-        else:
+        elif resolved_model == "depolarise":
             link_noise_type = "depolarise"
-            # DepolariseQLinkConfig requires prob_success and t_cycle
-            link_cfg_payload = {
-                "fidelity": fidelity_param,
-                "prob_success": 1.0,  # Assume deterministic generation for now
-                "t_cycle": 1000.0,    # 1 microsecond cycle
-            }
+            link_cfg_payload = _make_depolarise_link_cfg(
+                self._nsm_params, self._channel_params
+            )
+        else:  # heralded-double-click
+            link_noise_type = "heralded"
+            link_cfg_payload = _make_heralded_double_click_cfg(
+                self._nsm_params,
+                self._channel_params,
+                eta_semantics=self._model_selection.eta_semantics,
+            )
 
         # Create node configurations
+        alice_qdevice_cfg = self._create_qdevice_config(
+            num_qubits=num_qubits,
+            with_noise=with_device_noise,
+        )
+        bob_qdevice_cfg = self._create_qdevice_config(
+            num_qubits=num_qubits,
+            with_noise=with_device_noise,
+        )
+
         alice_config = StackConfig(
             name=alice_name,
             qdevice_typ="generic",
-            qdevice_cfg=GenericQDeviceConfig.perfect_config(),
+            qdevice_cfg=alice_qdevice_cfg,
         )
-        alice_config.qdevice_cfg.num_qubits = num_qubits
 
         bob_config = StackConfig(
             name=bob_name,
             qdevice_typ="generic",
-            qdevice_cfg=GenericQDeviceConfig.perfect_config(),
+            qdevice_cfg=bob_qdevice_cfg,
         )
-        bob_config.qdevice_cfg.num_qubits = num_qubits
 
         # Create link configuration
         link_cfg = LinkConfig(
@@ -287,10 +497,60 @@ class CaligoNetworkBuilder:
 
         logger.info(
             f"Created two-node network: {alice_name} <-> {bob_name}, "
-            f"fidelity={fidelity_param:.4f}, qubits={num_qubits}"
+            f"model={resolved_model}, fidelity={self._nsm_params.channel_fidelity:.4f}, "
+            f"qubits={num_qubits}, device_noise={with_device_noise}"
         )
 
         return network_config
+
+    def _create_qdevice_config(
+        self,
+        num_qubits: int = 10,
+        with_noise: bool = False,
+    ) -> Any:
+        """
+        Create GenericQDeviceConfig with optional noise.
+
+        Parameters
+        ----------
+        num_qubits : int
+            Number of qubit positions.
+        with_noise : bool
+            If True, apply T1/T2 and gate depolarization noise.
+
+        Returns
+        -------
+        GenericQDeviceConfig
+            Configured device settings.
+        """
+        try:
+            from squidasm.run.stack.config import GenericQDeviceConfig
+        except ImportError as e:
+            raise NetworkConfigError(
+                "SquidASM is required for device configuration."
+            ) from e
+
+        if with_noise:
+            qdevice_cfg = GenericQDeviceConfig()
+            qdevice_cfg.num_qubits = num_qubits
+            qdevice_cfg.num_comm_qubits = num_qubits
+
+            # Memory noise from channel parameters
+            qdevice_cfg.T1 = self._channel_params.t1_ns
+            qdevice_cfg.T2 = self._channel_params.t2_ns
+
+            # Gate noise from detector error
+            gate_depolar = _map_detector_error_to_gate_depolar(
+                self._nsm_params.detector_error
+            )
+            qdevice_cfg.single_qubit_gate_depolar_prob = gate_depolar
+            qdevice_cfg.two_qubit_gate_depolar_prob = min(1.0, gate_depolar * 1.5)
+        else:
+            qdevice_cfg = GenericQDeviceConfig.perfect_config()
+            qdevice_cfg.num_qubits = num_qubits
+            qdevice_cfg.num_comm_qubits = num_qubits
+
+        return qdevice_cfg
 
     def build_stack_config(
         self,

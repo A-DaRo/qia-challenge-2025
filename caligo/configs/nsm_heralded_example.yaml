@@ -1,0 +1,78 @@
+# NSM Parameter Enforcement Example Configuration: Heralded Double-Click Link Model
+#
+# This configuration uses the heralded-double-click link model which provides
+# realistic physical modeling including:
+# - Detection efficiency η < 1.0
+# - Dark count probability P_dark > 0
+# - Fiber loss and propagation delays
+# - Emission fidelity degradation
+#
+# Use this for:
+# - Realistic experimental simulations
+# - NSM security analysis with full channel parameters
+# - Validation of QBER calculations against Erven et al. formula
+#
+# Reference: nsm_parameters_enforcement.md Section 8.4.3
+
+# NSM Parameters
+nsm_parameters:
+  # Storage noise parameter r
+  storage_noise_r: 0.75
+  
+  # Storage rate ν
+  storage_rate_nu: 0.002
+  
+  # Wait time Δt (1 ms)
+  delta_t_ns: 1_000_000
+  
+  # Channel fidelity (maps to emission_fidelity)
+  channel_fidelity: 0.95
+  
+  # Detection efficiency η (maps to detector_efficiency)
+  # This is now meaningful and will affect simulation
+  detection_eff_eta: 0.90
+  
+  # Detector error rate e_det (maps to gate depolarization)
+  detector_error: 0.01
+  
+  # Dark count probability (maps to dark_count_probability)
+  dark_count_prob: 1.0e-5
+
+# Channel Model Selection
+model_selection:
+  # Force heralded-double-click model
+  link_model: "heralded-double-click"
+  
+  # Eta interpretation:
+  # - "detector_only": η maps directly to detector_efficiency, no physical loss
+  # - "end_to_end": η distributed across channel loss and detector
+  eta_semantics: "detector_only"
+
+# Channel Parameters
+channel_parameters:
+  length_km: 0.0  # No fiber loss in detector_only mode
+  attenuation_db_per_km: 0.2
+  speed_of_light_km_s: 200_000.0
+  t1_ns: 10_000_000   # 10 ms memory coherence
+  t2_ns: 1_000_000    # 1 ms dephasing time
+  cycle_time_ns: 10_000  # 10 μs per EPR attempt (faster with heralding)
+
+# Network Configuration
+network:
+  alice_name: "Alice"
+  bob_name: "Bob"
+  num_qubits: 10
+  with_device_noise: true  # Enable device noise (T1/T2, gate depolar)
+
+# Expected QBER Analysis (Erven et al. formula)
+#
+# Q_source = (1 - F) / 2 = (1 - 0.95) / 2 = 0.025
+# Q_det = e_det = 0.01
+# Q_dark = (1 - η) × P_dark × 0.5 = (1 - 0.90) × 1e-5 × 0.5 ≈ 5e-7 (negligible)
+#
+# Q_total ≈ Q_source + Q_det + Q_dark ≈ 0.025 + 0.01 ≈ 0.035
+#
+# Security check:
+# Q_storage = (1 - r) / 2 = (1 - 0.75) / 2 = 0.125
+# Q_channel (0.035) < Q_storage (0.125) ✓
+# Q_channel (0.035) < 0.11 (conservative) ✓

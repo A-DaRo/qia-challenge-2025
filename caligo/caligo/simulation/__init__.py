@@ -49,6 +49,7 @@ References
 from caligo.simulation.physical_model import (
     NSMParameters,
     ChannelParameters,
+    ChannelModelSelection,
     create_depolar_noise_model,
     create_t1t2_noise_model,
 )
@@ -75,10 +76,20 @@ from caligo.simulation.network_builder import (
     BLOCKED_QDEVICE_TYPES,
 )
 
+from caligo.simulation.verifier import (
+    NSMVerificationResult,
+    verify_nsm_security_condition,
+    validate_qber_measurement,
+    validate_timing_compliance,
+    preflight_security_check,
+    postflight_security_check,
+)
+
 __all__ = [
     # Physical model
     "NSMParameters",
     "ChannelParameters",
+    "ChannelModelSelection",
     "create_depolar_noise_model",
     "create_t1t2_noise_model",
     # Timing
@@ -98,4 +109,11 @@ __all__ = [
     "validate_network_config",
     "SUPPORTED_QDEVICE_TYPE",
     "BLOCKED_QDEVICE_TYPES",
+    # Security verifier
+    "NSMVerificationResult",
+    "verify_nsm_security_condition",
+    "validate_qber_measurement",
+    "validate_timing_compliance",
+    "preflight_security_check",
+    "postflight_security_check",
 ]

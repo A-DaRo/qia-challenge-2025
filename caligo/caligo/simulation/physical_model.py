@@ -63,6 +63,119 @@ from caligo.simulation.constants import (
 
 
 # =============================================================================
+# Channel Model Selection (NSM Parameter Enforcement)
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class ChannelModelSelection:
+    """
+    Configuration for selecting the physical link model in the simulator.
+
+    This dataclass provides explicit control over which entanglement
+    generation model is used in the SquidASM/NetSquid stack, ensuring
+    that NSM parameters have physical consequences at the simulation level.
+
+    Parameters
+    ----------
+    link_model : str
+        Link model selector: "auto", "perfect", "depolarise", or
+        "heralded-double-click". Default: "auto".
+        - "auto": Automatically select based on parameters (recommended)
+        - "perfect": No noise (F=1.0, η=1.0, P_dark=0)
+        - "depolarise": Depolarizing noise only (ignores η, P_dark)
+        - "heralded-double-click": Full heralded model with detection
+          efficiency and dark counts
+    eta_semantics : str
+        How to interpret detection efficiency η:
+        - "detector_only": Map η to detector_efficiency directly, no physical loss
+        - "end_to_end": Distribute η across channel loss and detector
+
+    Notes
+    -----
+    The link_model="auto" rule is:
+    - "perfect" if F=1.0 AND η=1.0 AND P_dark=0 AND e_det=0
+    - "depolarise" if η=1.0 AND P_dark=0 (only fidelity matters)
+    - "heralded-double-click" if η<1.0 OR P_dark>0 OR length>0
+
+    References
+    ----------
+    - nsm_parameters_enforcement.md Section 8.4.2: Link model selection rules
+    - netsquid_netbuilder: DepolariseQLinkConfig, HeraldedDoubleClickQLinkConfig
+    """
+
+    link_model: str = "auto"
+    eta_semantics: str = "detector_only"
+
+    def __post_init__(self) -> None:
+        """Validate parameters after initialization."""
+        valid_models = {"auto", "perfect", "depolarise", "heralded-double-click"}
+        if self.link_model not in valid_models:
+            raise InvalidParameterError(
+                f"link_model='{self.link_model}' must be one of {valid_models}"
+            )
+        valid_semantics = {"detector_only", "end_to_end"}
+        if self.eta_semantics not in valid_semantics:
+            raise InvalidParameterError(
+                f"eta_semantics='{self.eta_semantics}' must be one of {valid_semantics}"
+            )
+
+    def resolve_link_model(
+        self,
+        channel_fidelity: float,
+        detection_eff_eta: float,
+        dark_count_prob: float,
+        detector_error: float,
+        length_km: float = 0.0,
+    ) -> str:
+        """
+        Resolve "auto" to a concrete link model based on parameters.
+
+        Parameters
+        ----------
+        channel_fidelity : float
+            EPR pair fidelity F ∈ (0.5, 1].
+        detection_eff_eta : float
+            Detection efficiency η ∈ (0, 1].
+        dark_count_prob : float
+            Dark count probability per detection window.
+        detector_error : float
+            Intrinsic detector error rate.
+        length_km : float
+            Physical link length in km.
+
+        Returns
+        -------
+        str
+            Resolved link model name.
+        """
+        if self.link_model != "auto":
+            return self.link_model
+
+        # Auto-selection logic
+        is_perfect = (
+            channel_fidelity == 1.0
+            and detection_eff_eta == 1.0
+            and dark_count_prob == 0.0
+            and detector_error == 0.0
+        )
+        if is_perfect:
+            return "perfect"
+
+        # Use heralded if detection parameters are non-ideal
+        needs_heralded = (
+            detection_eff_eta < 1.0
+            or dark_count_prob > 0.0
+            or length_km > 0.0
+        )
+        if needs_heralded:
+            return "heralded-double-click"
+
+        # Default: depolarise (only fidelity matters)
+        return "depolarise"
+
+
+# =============================================================================
 # PDC Source Probability Functions (Erven et al. Eq. 9-11)
 # =============================================================================
 

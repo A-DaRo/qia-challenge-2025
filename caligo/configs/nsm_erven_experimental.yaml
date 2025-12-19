@@ -1,0 +1,78 @@
+# NSM Parameter Enforcement: Erven et al. (2014) Experimental Configuration
+#
+# This configuration matches the experimental parameters from:
+# Erven, C., et al. (2014). "An experimental implementation of oblivious
+# transfer in the noisy storage model." Nature Communications, 5, 3418.
+#
+# WARNING: This configuration has very low detection efficiency (η = 0.0150)
+# which requires many rounds for meaningful key generation. Use for
+# validation against published results only.
+#
+# Reference: Erven et al. (2014) Table I
+
+# NSM Parameters from Erven et al. Table I
+nsm_parameters:
+  # r: Storage noise parameter
+  # Value from experimental fit
+  storage_noise_r: 0.75
+  
+  # ν: Storage rate (fraction of qubits storable)
+  storage_rate_nu: 0.002
+  
+  # Δt: Wait time for storage decoherence (typical experimental)
+  delta_t_ns: 1_000_000
+  
+  # F: Channel fidelity derived from μ (mean photon number)
+  # μ = 3.145 × 10^{-5}, so F ≈ 1 - μ
+  channel_fidelity: 0.9999685  # 1 - 3.145e-5
+  
+  # η: Total transmittance (combined source + channel + detector)
+  # This is the key experimental constraint
+  detection_eff_eta: 0.0150
+  
+  # e_det: Intrinsic detector error rate
+  detector_error: 0.0093
+  
+  # P_dark: Dark count probability per detection window
+  dark_count_prob: 1.50e-8
+
+# Channel Model Selection
+model_selection:
+  # Auto-select heralded model due to low η
+  link_model: "auto"
+  eta_semantics: "detector_only"
+
+# Channel Parameters (table-top experiment)
+channel_parameters:
+  length_km: 0.0  # Table-top, no fiber
+  attenuation_db_per_km: 0.2
+  speed_of_light_km_s: 200_000.0
+  t1_ns: 100_000_000  # 100 ms (typical NV centers)
+  t2_ns: 10_000_000   # 10 ms
+  cycle_time_ns: 1_000_000  # 1 ms per EPR attempt
+
+# Network Configuration
+network:
+  alice_name: "Alice"
+  bob_name: "Bob"
+  num_qubits: 10
+  with_device_noise: true
+
+# Expected QBER Analysis (Erven et al. Table I)
+#
+# Q_source = (1 - F) / 2 ≈ 1.57 × 10^{-5} (negligible)
+# Q_det = e_det = 0.0093
+# Q_dark contribution negligible at this η and P_dark
+#
+# Q_total ≈ 0.0093 (dominated by detector error)
+#
+# Security Analysis:
+# Q_storage = (1 - r) / 2 = (1 - 0.75) / 2 = 0.125
+# Q_channel (0.0093) < Q_storage (0.125) ✓ (Large margin!)
+# Q_channel (0.0093) < 0.11 (conservative) ✓
+#
+# Storage capacity constraint:
+# C_N * ν < 0.5 where C_N = 1 - h(depolar_prob)
+# For r = 0.75: depolar_prob = 0.25, h(0.25) ≈ 0.811
+# C_N ≈ 1 - 0.811 = 0.189
+# C_N * ν = 0.189 × 0.002 = 0.000378 << 0.5 ✓

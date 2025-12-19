@@ -14,7 +14,7 @@
 2. [Problem Statement](#2-problem-statement)
 3. [Squid Stack Noise Model Architecture](#3-squid-stack-noise-model-architecture)
 4. [NSM Parameter to Physical Model Mapping](#4-nsm-parameter-to-physical-model-mapping)
-5. [Custom Noise Model Implementation](#5-custom-noise-model-implementation)
+5. [Caligo Simulation Layer Architecture](#5-caligo-simulation-layer-architecture)
 6. [Integration Architecture](#6-integration-architecture)
 7. [Validation Strategy](#7-validation-strategy)
 8. [Implementation Roadmap](#8-implementation-roadmap)
@@ -31,7 +31,7 @@ This document specifies how Noisy Storage Model (NSM) parameters must be transla
 
 This specification covers:
 1. Translation of NSM theoretical parameters to NetSquid noise models
-2. Injection points for custom noise models in the Squid stack
+2. Injection points for noise model configuration in the Squid stack
 3. Caligo integration architecture for NSM enforcement
 4. Validation methodology for parameter correctness
 
@@ -40,9 +40,10 @@ This specification covers:
 | Layer | Noise Injection Point | Configurable Parameters |
 |-------|----------------------|------------------------|
 | **NetSquid Core** | `QuantumErrorModel` subclasses | `depolar_rate`, `T1`, `T2`, `p_loss_*` |
-| **netsquid_magic** | `MagicDistributor` + `IModelParameters` | `prob_max_mixed`, `fidelity`, detection params |
-| **netsquid_netbuilder** | `IQLinkConfig`, `IQDeviceConfig` | Link fidelity, gate noise, memory T1/T2 |
-| **SquidASM** | `NetSquidNetwork._create_link_distributor()` | Linear interpolation via `prob_max_mixed` |
+| **netsquid_magic** | `MagicDistributor` + `IModelParameters` | Depolarising/Heralded model params incl. detector/dark-count knobs |
+| **netsquid_netbuilder** | `IQLinkConfig`, `IQDeviceConfig` | Link configs (`depolarise`, `heralded-double-click`), device configs (T1/T2, gate depolar) |
+| **SquidASM (stack runner)** | `StackNetworkConfig` → netbuilder conversion | Typed link/device configs via `squidasm.run.stack.config` |
+| **SquidASM (NetQASM-interface, out-of-scope)** | `NetSquidNetwork._create_link_distributor()` | Simplified link fidelity→noise mapping |
 
 ---
 
@@ -64,7 +65,12 @@ Where:
 
 ### 2.2 Current Gap Analysis
 
-The current SquidASM default configuration provides only **simplified** noise modeling:
+There are **two** relevant simulation configuration paths in the SquidASM ecosystem:
+
+1. **Stack runner path (Caligo uses this):** Caligo builds `StackNetworkConfig` and relies on `netsquid_netbuilder` link/device configs.
+2. **NetQASM-interface path (not used by Caligo):** SquidASM can also run a `netqasm.runtime.interface.config.NetworkConfig` through `NetSquidNetwork`.
+
+The NetQASM-interface path provides only **simplified** link noise modeling:
 
 ```python
 # From squidasm/sim/network/network.py - Current approach
@@ -73,6 +79,8 @@ model_params = LinearDepolariseModelParameters(
     cycle_time=state_delay, prob_success=1, prob_max_mixed=noise
 )
 ```
+
+**Caligo-specific gap:** although the stack runner path supports realistic modeling (notably heralded double-click with detector efficiency and dark counts), Caligo’s current network builder configuration only uses a depolarising link configured via a single `channel_fidelity` value and does not yet plumb $\eta$, $P_{\text{dark}}$, or $e_{\text{det}}$ into the link/device configs.
 
 **Missing NSM-Critical Parameters:**
 
@@ -108,7 +116,8 @@ Without proper NSM parameter enforcement:
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │                        SquidASM (Application)                       │    │
 │  │  • StackNetworkConfig (YAML)                                        │    │
-│  │  • NetSquidNetwork._create_link_distributor()                       │    │
+│  │  • Stack runner: StackNetworkConfig → netsquid-netbuilder configs   │    │
+│  │  • NetQASM-interface path exists but is out-of-scope for Caligo     │    │
 │  │  • QDevice (memory_noise_models, phys_instructions)                 │    │
 │  └────────────────────────────┬────────────────────────────────────────┘    │
 │                               │                                             │
@@ -127,7 +136,7 @@ Without proper NSM parameter enforcement:
 │  │  • IModelParameters subclasses:                                     │    │
 │  │    - DepolariseModelParameters (prob_max_mixed, prob_success)       │    │
 │  │    - DoubleClickModelParameters (detector_eff, dark_count, ...)     │    │
-│  │  • StateDeliverySamplerFactory → StateSampler                       │    │
+│  │  • State delivery samplers are internal (configured via netbuilder) │    │
 │  └────────────────────────────┬────────────────────────────────────────┘    │
 │                               │                                             │
 │                               ▼                                             │
@@ -149,23 +158,16 @@ Without proper NSM parameter enforcement:
 
 #### 3.2.1 EPR Pair Generation (Channel Noise)
 
-**Location:** `netsquid_magic/magic_distributor.py` + custom sampler factories
+**Location (Caligo path):** `netsquid_netbuilder` qlink modules construct a `netsquid_magic.MagicDistributor` based on a selected `IQLinkConfig`.
 
-**Mechanism:** The `MagicDistributor` uses a `StateDeliverySamplerFactory` to create noisy EPR states:
+**Mechanism:** Caligo controls EPR generation noise by selecting the qlink type and fields in `StackNetworkConfig.links[*]`:
 
-```python
-# From netsquid_magic/state_delivery_sampler.py
-class DepolariseStateSamplerFactory(HeraldedStateDeliverySamplerFactory):
-    @staticmethod
-    def _delivery_func(model_params: DepolariseModelParameters, **kwargs):
-        # Creates (1-p)|Φ+⟩⟨Φ+| + p·I/4 mixed state
-        ...
-```
+- `typ="depolarise"` with `DepolariseQLinkConfig` fields (fidelity→depolarising mixture internally)
+- `typ="heralded"` (alias for `"heralded-double-click"`) with `HeraldedDoubleClickQLinkConfig` fields including `detector_efficiency` and `dark_count_probability`
 
-**NSM Relevance:** This models the **channel noise** $Q_{\text{channel}}$ but needs extension for:
-- Detection efficiency impact on measured QBER
-- Dark count contributions
-- Loss-induced heralding failures
+Internally, `netsquid_magic` uses state delivery samplers to realize the configured model parameters; Caligo should treat those internals as implementation details and configure behavior via the netbuilder/stack-runner config surface.
+
+**NSM Relevance:** This is where $Q_{\text{channel}}$ is realized in the simulation. For NSM parameter enforcement in Caligo, the design is to use the existing netbuilder heralded model rather than adding custom sampler factories in Caligo.
 
 #### 3.2.2 Quantum Memory (Honest Party Storage)
 
@@ -310,10 +312,10 @@ The total effective error rate for honest parties includes:
 | $r$ | Storage noise parameter | NOT SIMULATED | Security bound calculation |
 | $\nu$ | Storage rate | NOT SIMULATED | Security bound calculation |
 | $\Delta t$ | Wait time | `ns.sim_time()` | TimingBarrier class |
-| $\mu$ (source) | EPR fidelity contribution | `prob_max_mixed` | StateDeliverySampler |
-| $\eta$ | Detection efficiency | Loss model | Custom FibreLossModel |
+| $\mu$ (source) | Source quality knob | Link-level effective parameters | Represented indirectly via `channel_fidelity` / `emission_fidelity` (no separate WCP model in Caligo) |
+| $\eta$ | Detection efficiency | Heralded link model parameters | `HeraldedDoubleClickQLinkConfig.detector_efficiency` and/or loss fields (`p_loss_init`, `p_loss_length`, `length`) |
 | $e_{\text{det}}$ | Intrinsic error | Gate noise | DepolarNoiseModel |
-| $P_{\text{dark}}$ | Dark count rate | State sampler | Custom dark count injection |
+| $P_{\text{dark}}$ | Dark count probability | Heralded link model parameters | `HeraldedDoubleClickQLinkConfig.dark_count_probability` |
 | QBER | Total error rate | Composite | All above combined |
 
 ### 4.5 The "Strictly Less" Condition
@@ -548,29 +550,37 @@ To fully implement NSM parameter enforcement, the following enhancements are nee
 
 **Current:** Detection efficiency $\eta$ is implicit in fidelity mapping.
 
-**Required:** Explicit loss model for photon loss before measurement.
+**Required (Caligo path):** Use the existing `netsquid_netbuilder` heralded double-click link model via the stack runner link config.
 
 ```python
-# Proposed extension
-def build_link_config_with_loss(
-    self, 
+# Proposed extension (stack runner path)
+from squidasm.run.stack.config import HeraldedLinkConfig
+
+def build_heralded_link_config(
     detection_efficiency: float,
     dark_count_prob: float,
-) -> LinkConfig:
-    """
-    Create link configuration with explicit detection model.
-    
-    Uses DoubleClickModelParameters for realistic heralded entanglement.
-    """
-    from netsquid_magic.model_parameters import DoubleClickModelParameters
-    
-    model_params = DoubleClickModelParameters(
-        detector_efficiency=detection_efficiency,
-        dark_count_probability=dark_count_prob,
-        visibility=1.0,  # Perfect source visibility
-        # ... other parameters
+    channel_fidelity: float,
+    *,
+    length_km: float = 0.0,
+    p_loss_length: float = 0.0,
+    p_loss_init: float = 0.0,
+    speed_of_light_km_s: float = 200_000.0,
+) -> HeraldedLinkConfig:
+    """Create heralded-double-click link config (no custom registration required)."""
+
+    return HeraldedLinkConfig(
+        length=float(length_km),
+        p_loss_length=float(p_loss_length),
+        p_loss_init=float(p_loss_init),
+        speed_of_light=float(speed_of_light_km_s),
+        detector_efficiency=float(detection_efficiency),
+        dark_count_probability=float(dark_count_prob),
+        visibility=1.0,
+        emission_fidelity=float(channel_fidelity),
+        emission_duration=0.0,
+        collection_efficiency=1.0,
+        num_multiplexing_modes=1,
     )
-    # Register custom model type with netbuilder
 ```
 
 #### 6.3.2 Dark Count Injection
@@ -579,7 +589,7 @@ def build_link_config_with_loss(
 
 **Required:** Probabilistic insertion of spurious detection events.
 
-**Approach:** Extend the `ChannelNoiseProfile` to generate "dark count" measurement outcomes that flip bits with probability $P_{\text{dark}} \cdot (1 - \eta)$.
+**Approach (Caligo path):** Model dark counts by selecting the heralded-double-click link model and setting `dark_count_probability`. Avoid injecting synthetic “dark count outcomes” in Caligo, because it risks double-counting and bypasses the dependency’s intended semantics.
 
 #### 6.3.3 Measurement Error Modeling
 
@@ -591,24 +601,16 @@ def build_link_config_with_loss(
 qdevice_cfg.single_qubit_gate_depolar_prob = detector_error * 2  # Approximate
 ```
 
-### 6.4 NetSquid Model Factory Functions
+### 6.4 Netbuilder Device Config Factory Functions
 
-The `physical_model.py` module provides factory functions for NetSquid models:
+For the stack runner path, prefer constructing `netsquid_netbuilder`/SquidASM device config objects rather than building NetSquid noise models directly in Caligo.
 
-```python
-def create_depolar_noise_model(params: NSMParameters) -> DepolarNoiseModel:
-    """Create NetSquid DepolarNoiseModel from NSM parameters."""
-    return DepolarNoiseModel(
-        depolar_rate=params.depolar_prob,  # = 1 - r
-        time_independent=True,
-    )
+The primary knobs are:
 
-def create_t1t2_noise_model(params: ChannelParameters) -> T1T2NoiseModel:
-    """Create NetSquid T1T2NoiseModel for memory decoherence."""
-    return T1T2NoiseModel(T1=params.t1_ns, T2=params.t2_ns)
-```
+- memory decoherence: `GenericQDeviceConfig.T1` / `GenericQDeviceConfig.T2`
+- gate noise: `GenericQDeviceConfig.single_qubit_gate_depolar_prob` (and optionally `two_qubit_gate_depolar_prob`)
 
-**Note:** These are for honest party memory, NOT adversary storage simulation.
+**Note:** Adversary storage noise parameters $(r, \nu)$ remain analytical and should not be mapped to honest-party device configs.
 
 ---
 
@@ -713,46 +715,661 @@ if actual_wait < expected_wait * 0.99:  # 1% tolerance for simulation precision
 
 ---
 
+### 7.5 Integration Testing (SquidASM + NetSquid Required)
+
+This section specifies **integration tests** that validate NSM parameter enforcement by initializing the simulation *exactly as production does* via SquidASM’s **stack runner path** and then inspecting the **generated netbuilder configuration** and the **instantiated link/device noise models**.
+
+This is intentionally **not** done by directly constructing a NetSquid `DepolarNoiseModel`, `T1T2NoiseModel`, etc. in isolation. Those unit-level tests are useful, but they do not prove that Caligo’s configuration successfully flows through:
+
+1. `caligo.simulation.network_builder` → `squidasm.run.stack.config.StackNetworkConfig`
+2. `squidasm.run.stack.config._convert_stack_network_config` → `netsquid_netbuilder.network_config.NetworkConfig`
+3. `squidasm.run.stack.build.create_stack_network_builder().build(...)` → instantiated `MagicLinkLayerProtocolWithSignaling`, `MagicDistributor`, and `QuantumProcessor` objects
+
+#### 7.5.1 Current Test Suite: What Exists and What’s Missing
+
+Caligo already has good unit tests for simulation-adjacent logic:
+
+- `caligo/tests/test_simulation/test_network_builder.py` verifies that `CaligoNetworkBuilder` can build a `StackNetworkConfig` (or raises a clean error if SquidASM is missing).
+- `caligo/tests/test_simulation/test_timing.py` exercises `TimingBarrier` and correctly distinguishes “no NetSquid engine” vs. real simulation time.
+- `caligo/tests/e2e/test_parallel_simulation.py` and `caligo/tests/integration/test_parallel_protocol.py` validate end-to-end data shape and QBER trends.
+
+However, these do **not** yet verify that the simulation pipeline is initialized with:
+
+- the correct *link model type* (e.g., `depolarise` vs `heralded-double-click`),
+- the correct *model parameters* (e.g., `dark_count_probability`, `detector_efficiency`, `prob_max_mixed`), and
+- the correct *device noise hooks* (gate depolarization and memory T1/T2) *as installed into the instantiated NetSquid components*.
+
+That missing coverage is critical for NSM enforcement, because otherwise it is possible for Caligo to compute analytical QBER/security values while the underlying Squid stack silently runs with a different physical model.
+
+#### 7.5.2 Integration Test Invariants (What We Must Assert)
+
+For each supported link/device configuration, integration tests must assert **all** of the following:
+
+1. **Translation invariant (config → netbuilder config):** the `StackNetworkConfig` produced by Caligo converts to a `netsquid_netbuilder.network_config.NetworkConfig` whose:
+   - `qlinks[*].typ` matches the expected netbuilder model name, and
+   - `qlinks[*].cfg` contains the expected fields (and types), not silently dropped/renamed values.
+
+2. **Instantiation invariant (netbuilder config → built network):** building the network via `create_stack_network_builder().build(...)` produces:
+   - a `MagicLinkLayerProtocolWithSignaling` for the link,
+   - a `MagicDistributor` with the expected distributor subclass,
+   - a `MagicDistributor` model-parameter object of the expected type with expected values.
+
+3. **Device invariant:** the node qdevices built by netbuilder contain:
+   - `T1T2NoiseModel(T1=..., T2=...)` installed as memory noise,
+   - `DepolarNoiseModel(depolar_rate=...)` installed on the relevant physical instructions.
+
+The objective is to validate “**the right model is installed**” rather than only validating “a value was computed somewhere”.
+
+#### 7.5.3 Recommended Harness Pattern (Production-Equivalent Initialization)
+
+The stack runner uses this production path:
+
+- `squidasm.run.stack.run.run(config=StackNetworkConfig, ...)` which internally calls:
+  - `squidasm.run.stack.config._convert_stack_network_config`, then
+  - `squidasm.run.stack.build.create_stack_network_builder().build(...)`, then
+  - NetSquid reset + protocol wiring.
+
+For *configuration/noise-model introspection*, integration tests should avoid running full protocol programs and instead:
+
+1. create a `StackNetworkConfig` (preferably using Caligo’s builder),
+2. convert it with `_convert_stack_network_config`,
+3. build the network with `create_stack_network_builder().build(...)`, and
+4. inspect:
+   - `network.qlinks[("Alice", "Bob")]` to access the link protocol,
+   - `network.end_nodes["Alice"].qmemory` to access the NetSquid `QuantumProcessor`.
+
+This gives you production-equivalent initialization without adding NetQASM instruction-set fragility.
+
+**Pytest gating:** these integration tests must require SquidASM and NetSquid:
+
+```python
+import pytest
+
+pytest.importorskip("squidasm")
+pytest.importorskip("netsquid")
+```
+
+If a test also runs programs via `squidasm.run.stack.run.run`, add a defensive guard for NetQASM 2.x incompatibility (mirroring the note in `caligo/tests/e2e/test_phase_e_protocol.py`).
+
+#### 7.5.4 Concrete Test Cases (PR-ready)
+
+Below are concrete tests that should be added under `caligo/tests/integration/` (or similar). They are written as **skeletons** but reference the *actual* SquidASM/netbuilder objects and fields.
+
+##### Test A: Depolarise link config survives stack-runner conversion
+
+Goal: verify Caligo’s `StackNetworkConfig` produces the expected netbuilder `QLinkConfig` with the correct type and cfg fields.
+
+```python
+import math
+import pytest
+
+pytest.importorskip("squidasm")
+pytest.importorskip("netsquid")
+
+from squidasm.run.stack.config import _convert_stack_network_config
+
+from caligo.simulation.network_builder import CaligoNetworkBuilder
+from caligo.simulation.physical_model import NSMParameters
+
+
+def test_stackrunner_conversion_depolarise_preserves_fields() -> None:
+    nsm = NSMParameters(
+        storage_noise_r=0.75,
+        storage_rate_nu=0.01,
+        delta_t_ns=1_000_000,
+        channel_fidelity=0.92,
+    )
+    stack_cfg = CaligoNetworkBuilder(nsm).build_two_node_network(
+        alice_name="Alice",
+        bob_name="Bob",
+        num_qubits=4,
+    )
+
+    netbuilder_cfg = _convert_stack_network_config(stack_cfg)
+
+    assert len(netbuilder_cfg.qlinks) == 1
+    qlink = netbuilder_cfg.qlinks[0]
+    assert qlink.typ == "depolarise"
+
+    # cfg may be a dict or a DepolariseQLinkConfig instance; accept both.
+    cfg = qlink.cfg
+    fidelity = cfg["fidelity"] if isinstance(cfg, dict) else cfg.fidelity
+    prob_success = cfg["prob_success"] if isinstance(cfg, dict) else cfg.prob_success
+    t_cycle = cfg["t_cycle"] if isinstance(cfg, dict) else cfg.t_cycle
+
+    assert math.isclose(float(fidelity), 0.92)
+    assert math.isclose(float(prob_success), 1.0)
+    assert float(t_cycle) > 0
+```
+
+##### Test B: Depolarise link builds a distributor with correct model parameters
+
+Goal: verify that building the network produces the expected `MagicDistributor` subclass and that the *model parameters in the instantiated distributor* match the requested fidelity mapping.
+
+```python
+import math
+import pytest
+
+pytest.importorskip("squidasm")
+pytest.importorskip("netsquid")
+
+from netsquid_netbuilder.util.fidelity import fidelity_to_prob_max_mixed
+from netsquid_magic.magic_distributor import DepolariseWithFailureMagicDistributor
+
+from squidasm.run.stack.build import create_stack_network_builder
+from squidasm.run.stack.config import _convert_stack_network_config
+
+from caligo.simulation.network_builder import CaligoNetworkBuilder
+from caligo.simulation.physical_model import NSMParameters
+
+
+def test_stackrunner_build_depolarise_installs_expected_magic_model_params() -> None:
+    nsm = NSMParameters(
+        storage_noise_r=0.75,
+        storage_rate_nu=0.01,
+        delta_t_ns=1_000_000,
+        channel_fidelity=0.92,
+    )
+    stack_cfg = CaligoNetworkBuilder(nsm).build_two_node_network(num_qubits=2)
+    netbuilder_cfg = _convert_stack_network_config(stack_cfg)
+
+    builder = create_stack_network_builder()
+    network = builder.build(netbuilder_cfg)
+
+    link = network.qlinks[("Alice", "Bob")]
+    dist = link.magic_distributor
+    assert isinstance(dist, DepolariseWithFailureMagicDistributor)
+
+    # netsquid_magic stores model params internally (list per merged distributor).
+    model = dist._model_parameters[0]
+
+    assert math.isclose(float(model.prob_success), 1.0)
+    assert math.isclose(float(model.prob_max_mixed), float(fidelity_to_prob_max_mixed(0.92)))
+```
+
+##### Test C: Heralded-double-click link installs dark counts and detector efficiency
+
+Goal: verify that selecting the heralded link path installs a `DoubleClickMagicDistributor` whose model params include the requested `dark_count_probability` and `detector_efficiency`.
+
+```python
+import math
+import pytest
+
+pytest.importorskip("squidasm")
+pytest.importorskip("netsquid")
+
+from netsquid_magic.magic_distributor import DoubleClickMagicDistributor
+from squidasm.run.stack.build import create_stack_network_builder
+from squidasm.run.stack.config import (
+    StackNetworkConfig,
+    StackConfig,
+    LinkConfig,
+    GenericQDeviceConfig,
+    HeraldedLinkConfig,
+    _convert_stack_network_config,
+)
+
+
+def test_stackrunner_build_heralded_double_click_installs_detector_and_dark_counts() -> None:
+    alice = StackConfig(
+        name="Alice",
+        qdevice_typ="generic",
+        qdevice_cfg=GenericQDeviceConfig.perfect_config(num_qubits=2),
+    )
+    bob = StackConfig(
+        name="Bob",
+        qdevice_typ="generic",
+        qdevice_cfg=GenericQDeviceConfig.perfect_config(num_qubits=2),
+    )
+
+    heralded_cfg = HeraldedLinkConfig(
+        length=10.0,
+        p_loss_length=0.2,
+        p_loss_init=0.0,
+        speed_of_light=200_000.0,
+        detector_efficiency=0.015,
+        dark_count_probability=1.5e-8,
+        visibility=1.0,
+        emission_fidelity=0.99,
+        emission_duration=0.0,
+        collection_efficiency=1.0,
+        num_multiplexing_modes=1,
+    )
+
+    link = LinkConfig(stack1="Alice", stack2="Bob", typ="heralded", cfg=heralded_cfg)
+    stack_cfg = StackNetworkConfig(stacks=[alice, bob], links=[link])
+    netbuilder_cfg = _convert_stack_network_config(stack_cfg)
+
+    builder = create_stack_network_builder()
+    network = builder.build(netbuilder_cfg)
+
+    link = network.qlinks[("Alice", "Bob")]
+    dist = link.magic_distributor
+    assert isinstance(dist, DoubleClickMagicDistributor)
+
+    model = dist._model_parameters[0]
+    assert math.isclose(float(model.detector_efficiency), 0.015)
+    assert math.isclose(float(model.dark_count_probability), 1.5e-8)
+```
+
+Notes:
+
+- The heralded model expands “global” length/loss parameters into side-specific fields (`*_A`, `*_B`) during preprocessing; tests should assert on stable fields like `detector_efficiency`/`dark_count_probability` and (optionally) check `length_A == length_B == length/2`.
+- Keep `collection_efficiency=1.0` in tests to avoid the model’s internal absorption step altering `p_loss_init`.
+
+##### Test D: Device noise is installed into NetSquid `QuantumProcessor`
+
+Goal: verify that gate depolarization and memory T1/T2 are applied to the built device (not merely present in a config object).
+
+```python
+import pytest
+
+pytest.importorskip("squidasm")
+pytest.importorskip("netsquid")
+
+from netsquid.components.models.qerrormodels import DepolarNoiseModel, T1T2NoiseModel
+
+from squidasm.run.stack.build import create_stack_network_builder
+from squidasm.run.stack.config import (
+    StackNetworkConfig,
+    StackConfig,
+    LinkConfig,
+    DepolariseLinkConfig,
+    GenericQDeviceConfig,
+    _convert_stack_network_config,
+)
+
+
+def test_stackrunner_build_installs_qdevice_gate_and_memory_noise() -> None:
+    qdev = GenericQDeviceConfig.perfect_config(num_qubits=3)
+    qdev.T1 = 20_000_000
+    qdev.T2 = 2_000_000
+    qdev.single_qubit_gate_depolar_prob = 0.02
+    qdev.two_qubit_gate_depolar_prob = 0.03
+
+    alice = StackConfig(name="Alice", qdevice_typ="generic", qdevice_cfg=qdev)
+    bob = StackConfig(name="Bob", qdevice_typ="generic", qdevice_cfg=qdev)
+    link = LinkConfig(
+        stack1="Alice",
+        stack2="Bob",
+        typ="depolarise",
+        cfg=DepolariseLinkConfig(fidelity=0.99, prob_success=1.0, t_cycle=1000.0),
+    )
+    stack_cfg = StackNetworkConfig(stacks=[alice, bob], links=[link])
+    netbuilder_cfg = _convert_stack_network_config(stack_cfg)
+
+    builder = create_stack_network_builder()
+    network = builder.build(netbuilder_cfg)
+
+    qproc = network.end_nodes["Alice"].qmemory
+    assert qproc is not None
+
+    # Memory noise: list of T1T2NoiseModel
+    mem_noise_models = getattr(qproc, "mem_noise_models", None)
+    assert mem_noise_models is not None
+    assert isinstance(mem_noise_models[0], T1T2NoiseModel)
+
+    # Gate noise: DepolarNoiseModel installed on physical instructions
+    phys_instr = getattr(qproc, "phys_instructions", None) or getattr(qproc, "physical_instructions", None)
+    assert phys_instr is not None
+    depolar_models = [pi.quantum_noise_model for pi in phys_instr if hasattr(pi, "quantum_noise_model")]
+    depolar_models = [m for m in depolar_models if isinstance(m, DepolarNoiseModel)]
+    assert len(depolar_models) > 0
+    assert any(abs(float(m.depolar_rate) - 0.02) < 1e-12 for m in depolar_models)
+```
+
+#### 7.5.5 Where These Tests Fit (Repository Layout)
+
+Recommended placement:
+
+- new tests that require SquidASM/NetSquid and perform stack-runner initialization should live under `caligo/tests/integration/` and be marked with `@pytest.mark.integration` (and optionally `@pytest.mark.slow` if they build larger networks).
+
+This keeps unit tests fast and deterministic while providing a dedicated suite that validates “noise model wiring correctness”.
+
+---
+
 ## 8. Implementation Roadmap
 
-### Phase 1: Foundation (Current State ✓)
+This section replaces the high-level roadmap with a **PR-ready design document** based on an implementation-level audit of:
 
-| Component | Status | Location |
-|-----------|--------|----------|
-| NSMParameters dataclass | ✓ Complete | `physical_model.py` |
-| ChannelNoiseProfile dataclass | ✓ Complete | `noise_models.py` |
-| ChannelParameters dataclass | ✓ Complete | `physical_model.py` |
-| TimingBarrier class | ✓ Complete | `timing.py` |
-| QBER computation (Erven) | ✓ Complete | `utils/math.py` |
-| CaligoNetworkBuilder | ✓ Complete | `network_builder.py` |
-| Protocol base class integration | ✓ Complete | `protocol/base.py` |
+- Caligo simulation layer (network builder, timing barrier, QBER computation)
+- SquidASM stack runner configuration layer (`StackNetworkConfig` → netsquid-netbuilder)
+- `netsquid_netbuilder` link and device config schemas
+- `netsquid_magic` entanglement generation model parameter classes
+- The separate SquidASM NetQASM-interface simulation path (`NetSquidNetwork._create_link_distributor`)
 
-### Phase 2: Enhanced Noise Modeling (Planned)
+The goal is to make NSM parameters have **physical consequences** in the simulation in a way that is:
 
-| Component | Status | Description |
-|-----------|--------|-------------|
-| Detection efficiency model | 🔲 Planned | Extend `build_link_config` with $\eta$ |
-| Dark count injection | 🔲 Planned | Add to state delivery sampler |
-| DoubleClick model integration | 🔲 Planned | Use netsquid_magic `DoubleClickModelParameters` |
-| Measurement error mapping | 🔲 Planned | $e_{\text{det}} \rightarrow$ gate noise |
+1. aligned with the *actual* dependency APIs,
+2. testable and reproducible, and
+3. explicitly clear about which NSM parameters are simulated vs. analytically enforced.
 
-### Phase 3: Validation Framework (Planned)
+---
 
-| Component | Status | Description |
-|-----------|--------|-------------|
-| NSM condition verifier | 🔲 Planned | Runtime Q_channel < Q_storage check |
-| QBER measurement validator | 🔲 Planned | Empirical vs theoretical comparison |
-| Timing compliance reporter | ⚠️ Partial | TimingBarrier tracks compliance |
-| Integration test suite | 🔲 Planned | End-to-end NSM parameter sweeps |
+### 8.1 Scope, Assumptions, and Non-Goals
 
-### Phase 4: Advanced Features (Future)
+#### 8.1.1 In Scope (this PR series)
 
-| Component | Status | Description |
-|-----------|--------|-------------|
-| Custom StateSampler factory | 🔲 Future | Full control over EPR state generation |
-| Configurable heralding model | 🔲 Future | Beyond depolarise/double-click |
-| Parameter sweep automation | 🔲 Future | Systematic $(r, \nu, \Delta t)$ exploration |
-| Security margin visualization | 🔲 Future | Plot QBER vs storage noise bounds |
+1. **Δt timing enforcement** (already implemented) and its validation.
+2. **Trusted channel physical modeling** for $(F, \eta, P_{\text{dark}}, e_{\text{det}})$ by configuring:
+   - quantum link type and parameters, and
+   - honest-party device gate/memory noise.
+3. **Runtime safety checks** ensuring NSM conditions are met:
+   - $Q_{\text{channel}} < Q_{\text{storage}} = \frac{1-r}{2}$
+   - optional measured-vs-expected QBER consistency check.
+
+#### 8.1.2 Explicit Non-Goals (do not implement in this PR)
+
+1. Simulating an explicit adversary with quantum storage. Under NSM, adversary storage is a **security assumption**; Caligo correctly treats it analytically.
+2. Replacing SquidASM or rewriting link-layer protocols.
+3. Implementing brand-new custom NetSquid `QuantumErrorModel` classes unless strictly required.
+4. Parameter sweep orchestration tooling (future work).
+
+---
+
+### 8.2 Architectural Decision: Which Squid Stack Path Caligo Uses
+
+Caligo currently builds **StackNetworkConfig** objects in `caligo/simulation/network_builder.py` and feeds them to SquidASM’s **stack runner**, which converts them to a `netsquid_netbuilder.network_config.NetworkConfig`.
+
+This is distinct from SquidASM’s NetQASM-interface simulation path (the `NetSquidNetwork` in `squidasm/sim/network/network.py`) which consumes `netqasm.runtime.interface.config.NetworkConfig` and uses `Link.noise_type` + `Link.fidelity` to construct a `MagicDistributor` directly.
+
+**PR decision:** implement all NSM physical enforcement via the **stack runner + netsquid-netbuilder** path, because:
+
+- It already supports realistic heralded models (single/double click) with detector and dark-count parameters.
+- It validates config schema via netbuilder config objects.
+- It is the path Caligo already uses.
+
+We will keep the NetQASM-interface path out-of-scope for Caligo, but we will document the semantic differences (see 8.3.2).
+
+---
+
+### 8.3 Correctness Notes from Dependency Audit (Critical)
+
+#### 8.3.1 Depolarising “fidelity → mixture” mapping differs by path
+
+There are two common conversions from a target Bell-state fidelity $F$ to a “maximally mixed fraction” $p$:
+
+- **netsquid-netbuilder depolarise link** uses:
+  $$p = \frac{4}{3}(1-F)$$
+  implemented in `netsquid_netbuilder.util.fidelity.fidelity_to_prob_max_mixed`.
+
+- The **SquidASM NetQASM-interface path** contains a simplified mapping in `squidasm/sim/network/network.py`:
+  ```python
+  noise = 1 - link.fidelity
+  model_params = LinearDepolariseModelParameters(prob_max_mixed=noise, ...)
+  ```
+  This is a different contract and should not be mixed into the stack runner path.
+
+**Design implication:** in Caligo, treat `NSMParameters.channel_fidelity` as “EPR pair fidelity” and rely on netbuilder’s conversion for `typ="depolarise"`.
+
+#### 8.3.2 “Use DoubleClickModelParameters directly” is not the stack injection mechanism
+
+In the stack runner path, the configuration object is `HeraldedDoubleClickQLinkConfig` (wrapped as `HeraldedLinkConfig` in `squidasm.run.stack.config`). Netbuilder converts that config into a `netsquid_magic.model_parameters.DoubleClickModelParameters` internally.
+
+Therefore the correct injection is:
+
+- `LinkConfig.typ = "heralded"` (alias for `"heralded-double-click"`) and
+- `LinkConfig.cfg = HeraldedLinkConfig(...)` or a dict with the same fields.
+
+Not: constructing `DoubleClickModelParameters` and “registering” a custom model.
+
+---
+
+### 8.4 PR-ready Design: NSM Parameter Physical Enforcement
+
+#### 8.4.1 Public configuration surface
+
+The existing dataclasses already provide the parameters we need:
+
+- `NSMParameters`: `channel_fidelity`, `detection_eff_eta`, `detector_error`, `dark_count_prob`, plus analytical `storage_noise_r`, `storage_rate_nu`, and timing `delta_t_ns`.
+- `ChannelParameters`: `length_km`, `attenuation_db_per_km`, `speed_of_light_km_s`, and honest memory `t1_ns/t2_ns`.
+
+We will add **one explicit selector** that prevents ambiguous interpretation:
+
+```python
+@dataclass(frozen=True)
+class ChannelModelSelection:
+    """Select which physical link model to use in the simulator."""
+
+    link_model: str = "auto"  # one of: auto | depolarise | heralded-double-click
+    eta_semantics: str = "detector_only"  # one of: detector_only | end_to_end
+```
+
+Rationale:
+
+- `link_model="auto"` keeps backward compatibility while enabling realistic modeling when needed.
+- `eta_semantics` forces us to be explicit whether $\eta$ is mapped to `detector_efficiency` alone or to an end-to-end loss model.
+
+#### 8.4.2 Link model selection rules (deterministic and documented)
+
+Given `NSMParameters` and `ChannelParameters`:
+
+1. If `link_model == "depolarise"`:
+   - Use `typ="depolarise"`.
+   - Configure fidelity via `DepolariseQLinkConfig.fidelity`.
+   - **Do not** attempt to simulate dark counts or loss; those are outside this link model’s semantics.
+
+2. If `link_model == "heralded-double-click"`:
+   - Use `typ="heralded"` (alias to double-click).
+   - Configure `detector_efficiency` and `dark_count_probability`.
+   - Configure loss via `length` and `p_loss_length` (and optional `p_loss_init`).
+
+3. If `link_model == "auto"` (recommended default):
+   - Choose `"perfect"` if all are ideal (fidelity=1, eta=1, dark=0, detector_error=0, and optionally length=0).
+   - Choose `"depolarise"` if $(\eta=1)$ and $(P_{\text{dark}}=0)$ and user only targets a Bell fidelity.
+   - Choose `"heralded"` if $\eta<1$ or $P_{\text{dark}}>0$ or if a nontrivial physical link (length/loss) is requested.
+
+This yields consistent and testable behavior.
+
+#### 8.4.3 Concrete dependency-correct configuration (code skeleton)
+
+Below is the skeleton to implement inside `caligo/simulation/network_builder.py`.
+
+**A) Depolarise link config (netbuilder schema):**
+
+```python
+from squidasm.run.stack.config import DepolariseLinkConfig
+
+def _make_depolarise_link_cfg(nsm_params: NSMParameters, channel_params: ChannelParameters) -> DepolariseLinkConfig:
+    return DepolariseLinkConfig(
+        fidelity=float(nsm_params.channel_fidelity),
+        prob_success=1.0,
+        t_cycle=float(channel_params.cycle_time_ns),
+        random_bell_state=False,
+    )
+```
+
+This matches netbuilder’s `DepolariseQLinkConfig` fields (fidelity/prob_success/t_cycle).
+
+**B) Heralded double-click link config (netbuilder schema):**
+
+```python
+from squidasm.run.stack.config import HeraldedLinkConfig
+
+def _make_heralded_double_click_cfg(
+    nsm_params: NSMParameters,
+    channel_params: ChannelParameters,
+    eta_semantics: str,
+) -> HeraldedLinkConfig:
+    # Interpretation choice:
+    # - detector_only: map eta directly to detector_efficiency and use zero physical loss
+    # - end_to_end: encode loss via length/p_loss_length/p_loss_init; optionally keep detector_efficiency fixed
+
+    if eta_semantics == "detector_only":
+        length_km = 0.0
+        p_loss_length = float(channel_params.attenuation_db_per_km)
+        detector_efficiency = float(nsm_params.detection_eff_eta)
+        p_loss_init = 0.0
+    else:
+        # simplest “end-to-end” interpretation: put loss into p_loss_init and keep detector ideal.
+        # A more physical mapping can distribute loss across length and detector; that mapping should be documented.
+        length_km = float(channel_params.length_km)
+        p_loss_length = float(channel_params.attenuation_db_per_km)
+        detector_efficiency = 1.0
+        p_loss_init = 1.0 - float(nsm_params.detection_eff_eta)
+
+    return HeraldedLinkConfig(
+        length=length_km,
+        p_loss_length=p_loss_length,
+        p_loss_init=p_loss_init,
+        speed_of_light=float(channel_params.speed_of_light_km_s),
+
+        detector_efficiency=detector_efficiency,
+        dark_count_probability=float(nsm_params.dark_count_prob),
+        visibility=1.0,
+
+        # The heralded model produces a fidelity that depends on multiple parameters.
+        # We use emission_fidelity as the closest “source quality” knob.
+        emission_fidelity=float(nsm_params.channel_fidelity),
+        emission_duration=0.0,
+        collection_efficiency=1.0,
+        num_multiplexing_modes=1,
+    )
+```
+
+This matches `HeraldedDoubleClickQLinkConfig` and ultimately `DoubleClickModelParameters` field names.
+
+**C) Honest device noise mapping ($e_{\text{det}} \rightarrow$ gate depolar):**
+
+`netsquid_netbuilder.modules.qdevices.generic.GenericQDeviceConfig` includes:
+
+- `single_qubit_gate_depolar_prob`
+- `two_qubit_gate_depolar_prob`
+
+which are passed to NetSquid `DepolarNoiseModel(depolar_rate=...)` per instruction.
+
+We will implement a deliberately conservative mapping:
+
+```python
+def _map_detector_error_to_gate_depolar(detector_error: float) -> float:
+    # Heuristic mapping: treat e_det as a “bit flip” likelihood and map to depolar.
+    # Must be validated empirically; kept simple to avoid overfitting.
+    return min(1.0, max(0.0, 2.0 * float(detector_error)))
+```
+
+**Validation requirement:** demonstrate monotonicity (higher `detector_error` produces higher observed QBER) and tune factor if needed.
+
+---
+
+### 8.5 Validation Framework (PR-ready)
+
+This section turns the prior “planned” items into concrete acceptance criteria and test hooks.
+
+#### 8.5.1 Runtime security checks
+
+Add a small verifier that is invoked after QBER is estimated (post-sifting, pre-reconciliation):
+
+```python
+def verify_nsm_security_condition(measured_qber: float, nsm_params: NSMParameters) -> None:
+    q_storage = (1.0 - float(nsm_params.storage_noise_r)) / 2.0
+    if measured_qber >= q_storage:
+        raise SecurityError(
+            f"NSM security violated: Q_channel={measured_qber:.4f} >= Q_storage={q_storage:.4f}"
+        )
+```
+
+Acceptance criteria:
+
+- A run with parameters satisfying $Q_{\text{channel}} < \frac{1-r}{2}$ does not abort.
+- A run with parameters violating the inequality aborts deterministically.
+
+#### 8.5.2 QBER prediction vs measurement
+
+Caligo already computes an analytical QBER estimate (Erven-style) via `ChannelNoiseProfile.total_qber`.
+
+Add a validator:
+
+```python
+def validate_qber_measurement(measured_qber: float, expected_qber: float, tolerance: float = 0.01) -> bool:
+    return abs(measured_qber - expected_qber) <= tolerance
+```
+
+Acceptance criteria:
+
+- Under `link_model="depolarise"` with ideal detector (eta=1, dark=0, detector_error=0), measured QBER tracks approximately $(1-F)/2$.
+- Under `link_model="heralded-double-click"`, increasing `dark_count_prob` increases measured QBER (directional correctness).
+
+#### 8.5.3 TimingBarrier reporting
+
+TimingBarrier already tracks compliance. Extend (or expose) a single metric:
+
+- `actual_wait_duration_ns`
+
+Acceptance criteria:
+
+- When the protocol waits via `yield from wait_delta_t()`, the actual wait is $\ge 0.99 \Delta t$.
+
+---
+
+### 8.6 Implementation Plan (Work Items and PR Breakdown)
+
+#### PR-1: Network builder physical link selection
+
+Changes:
+
+1. Extend `caligo/simulation/network_builder.py`:
+   - Accept a `ChannelModelSelection` (or equivalent) input.
+   - Implement deterministic link model selection rules.
+   - Construct typed link config objects (`DepolariseLinkConfig`, `HeraldedLinkConfig`) instead of dict payloads.
+
+Acceptance tests:
+
+- Unit test constructing configs for all three modes: perfect, depolarise, heralded.
+- Smoke test that the resulting `StackNetworkConfig` passes validation and can be consumed by SquidASM stack runner.
+
+#### PR-2: Honest device noise mapping
+
+Changes:
+
+1. Update `CaligoNetworkBuilder.build_stack_config(..., with_memory_noise=True)` to also map:
+   - `nsm_params.detector_error` → `single_qubit_gate_depolar_prob` (and two-qubit) via `_map_detector_error_to_gate_depolar`.
+
+Acceptance tests:
+
+- Monotonicity test: QBER increases as detector_error increases (small statistical tolerance).
+
+#### PR-3: Runtime NSM security verifier
+
+Changes:
+
+1. Add verifier function and call site post-QBER estimation (sifting-to-reconciliation boundary).
+
+Acceptance tests:
+
+- Run aborts when $Q_{\text{channel}} \ge \frac{1-r}{2}$.
+
+#### PR-4: QBER validation and documentation
+
+Changes:
+
+1. Add measured-vs-expected QBER validator (warning-level by default).
+2. Document the difference between:
+   - `depolarise` fidelity semantics, and
+   - heralded model calibration limitations.
+
+---
+
+### 8.7 Risks and Mitigations
+
+1. **Ambiguous meaning of $\eta$ (detector-only vs end-to-end).**
+   - Mitigation: explicit `eta_semantics` switch and documentation; do not silently reinterpret.
+
+2. **Heralded model “fidelity” is multi-parameter and not directly equal to `channel_fidelity`.**
+   - Mitigation: treat `channel_fidelity` as `emission_fidelity` knob; validate empirically and optionally add a calibration step later.
+
+3. **Statistical noise in short simulations.**
+   - Mitigation: tests focus on monotonic trends and use relaxed tolerances for small N.
+
+---
+
+### 8.8 Definition of Done
+
+This roadmap is complete when:
+
+1. Caligo can run with `link_model="depolarise"` and `link_model="heralded-double-click"` using dependency-correct config objects.
+2. $\Delta t$ is enforced and measurable in simulation time.
+3. NSM inequality aborts runs that violate $Q_{\text{channel}} < \frac{1-r}{2}$.
+4. QBER validations are in place (warning or strict mode) and backed by tests.
 
 ---
 
