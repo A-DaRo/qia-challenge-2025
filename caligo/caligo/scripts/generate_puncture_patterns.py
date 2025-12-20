@@ -51,7 +51,7 @@ from caligo.reconciliation.compiled_matrix import (
     CompiledParityCheckMatrix,
     compile_parity_check_matrix,
 )
-from caligo.reconciliation.matrix_manager import MatrixManager
+from caligo.reconciliation.matrix_manager import MotherCodeManager
 from caligo.utils.logging import setup_script_logging
 
 
@@ -268,11 +268,8 @@ class UntaintedPuncturingGenerator:
         """
         Count how many check nodes would become "dead" if v is punctured.
 
-        A check node is dead if all its variable neighbors are punctured
-        (no chance for recovery in belief propagation).
-
-        Parameters
-        ----------
+                mother_mgr = MotherCodeManager.from_config(code_type="ace_peg", base_dir=matrix_dir)
+                compiled = mother_mgr.get_compiled_mother_code()
         v : int
             Candidate variable node.
         punctured : Set[int]
@@ -478,23 +475,30 @@ def generate_all_patterns(
     Dict[float, PuncturingPattern]
         Generated patterns keyed by target rate.
     """
-    # Allow caller to override matrices directory
+    # Allow caller to override matrices base directory.
+    # In RC mode we load via MotherCodeManager (single mother code + patterns).
     matrix_dir = matrix_dir if matrix_dir is not None else constants.LDPC_MATRICES_DIR
-    logger.info("Loading mother code matrix (rate=%.2f) from %s", mother_rate, matrix_dir)
-    manager = MatrixManager.from_directory(
-        directory=matrix_dir,
-        frame_size=frame_size,
-        rates=(mother_rate,),
-    )
+    logger.info("Loading mother code (expected rate=%.2f) from %s", mother_rate, matrix_dir)
 
-    mother_matrix = manager.get_matrix(mother_rate)
-    compiled = compile_parity_check_matrix(mother_matrix)
+    manager = MotherCodeManager.from_config(
+        code_type="ace_peg",
+        base_dir=matrix_dir,
+        frame_size=frame_size,
+    )
+    compiled = manager.get_compiled_mother_code()
+
+    if abs(float(manager.mother_rate) - float(mother_rate)) > 1e-3:
+        logger.warning(
+            "Configured mother_rate=%.3f differs from loaded mother code rate=%.3f",
+            float(mother_rate),
+            float(manager.mother_rate),
+        )
 
     logger.info(
         "Mother code: n=%d, m=%d, rate=%.2f, edges=%d",
         compiled.n,
         compiled.m,
-        mother_rate,
+        float(manager.mother_rate),
         compiled.edge_count,
     )
 

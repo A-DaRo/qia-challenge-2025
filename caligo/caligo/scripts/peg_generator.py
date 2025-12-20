@@ -28,6 +28,7 @@ import numpy as np
 import scipy.sparse as sp
 
 from caligo.reconciliation import constants
+from caligo.scripts import numba_kernels
 from caligo.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -52,11 +53,11 @@ class DegreeDistribution:
         invalid values, or probabilities do not sum to a positive value.
     """
 
-    degrees: Sequence[int]
-    probabilities: Sequence[float]
+    """PEG-based LDPC parity-check matrix generator.
 
-    def __post_init__(self) -> None:
-        """Validate and normalize probability distribution."""
+    This is an offline utility used to generate a mother parity-check matrix that is
+    later loaded by :class:`caligo.reconciliation.mother_code_manager.MotherCodeManager`.
+    """
         if len(self.degrees) != len(self.probabilities):
             raise ValueError("degrees and probabilities must have same length")
         if any(d < 1 for d in self.degrees):
@@ -138,9 +139,8 @@ class PEGMatrixGenerator:
         self.lambda_dist = lambda_dist
         self.rho_dist = rho_dist
         self.max_tree_depth = max_tree_depth
-        self.random = random.Random(
-            seed if seed is not None else constants.PEG_DEFAULT_SEED
-        )
+        self._seed = seed if seed is not None else constants.PEG_DEFAULT_SEED
+        self.random = random.Random(self._seed)
 
         # Compute number of checks (rows)
         self.m = int(round(self.n * (1.0 - rate)))
@@ -176,6 +176,37 @@ class PEGMatrixGenerator:
             np.mean(cn_target_degrees),
         )
 
+        if numba_kernels.numba_available():
+            H = self._generate_numba(vn_degrees, cn_target_degrees, total_edges)
+        else:
+            H = self._generate_python(vn_degrees, cn_target_degrees, total_edges)
+
+        elapsed = time.perf_counter() - start_time
+        density = H.nnz / (self.m * self.n)
+
+        logger.info(
+            "PEG: Generated matrix n=%d, m=%d, rate=%.2f, nnz=%d, density=%.4f "
+            "in %.2fs",
+            self.n,
+            self.m,
+            self.rate,
+            H.nnz,
+            density,
+            elapsed,
+        )
+
+        return H
+
+    def _generate_python(
+        self,
+        vn_degrees: List[int],
+        cn_target_degrees: List[int],
+        total_edges: int,
+    ) -> sp.csr_matrix:
+        """Original PEG implementation using Python sets.
+
+        Kept as a correctness fallback if Numba is unavailable.
+        """
         check_adjacency: List[set] = [set() for _ in range(self.m)]
         var_adjacency: List[set] = [set() for _ in range(self.n)]
         current_cn_degrees = [0 for _ in range(self.m)]
@@ -237,27 +268,81 @@ class PEGMatrixGenerator:
                 data.append(1)
 
         H = sp.csr_matrix((data, (rows, cols)), shape=(self.m, self.n), dtype=np.uint8)
-
-        elapsed = time.perf_counter() - start_time
-        density = H.nnz / (self.m * self.n)
-
-        logger.info(
-            "PEG: Generated matrix n=%d, m=%d, rate=%.2f, nnz=%d, density=%.4f "
-            "in %.2fs",
-            self.n,
-            self.m,
-            self.rate,
-            H.nnz,
-            density,
-            elapsed,
-        )
         logger.debug(
             "PEG: Actual CN degrees: min=%d, max=%d, avg=%.2f",
             min(current_cn_degrees),
             max(current_cn_degrees),
             np.mean(current_cn_degrees),
         )
+        return H
 
+    def _generate_numba(
+        self,
+        vn_degrees: List[int],
+        cn_target_degrees: List[int],
+        total_edges: int,
+    ) -> sp.csr_matrix:
+        """Fast PEG implementation using fixed-width adjacency arrays + Numba."""
+        logger.debug("PEG: Using Numba-accelerated graph builder")
+
+        vn_target = np.asarray(vn_degrees, dtype=np.int32)
+        cn_target = np.asarray(cn_target_degrees, dtype=np.int32)
+        order = np.argsort(vn_target).astype(np.int32)
+
+        max_vn_degree = int(vn_target.max(initial=0))
+        # Check degrees can exceed target degrees due to PEG fallback when all
+        # candidates are reachable; allocate headroom to avoid overflow.
+        max_cn_degree = max(
+            int(cn_target.max(initial=0)) * 2,
+            int(np.ceil(total_edges / max(1, self.m))) * 3,
+            8,
+        )
+
+        vn_adj = np.full((self.n, max_vn_degree), -1, dtype=np.int32)
+        cn_adj = np.full((self.m, max_cn_degree), -1, dtype=np.int32)
+        vn_deg = np.zeros(self.n, dtype=np.int32)
+        cn_deg = np.zeros(self.m, dtype=np.int32)
+
+        # BFS workspaces
+        visited_vars = np.zeros(self.n, dtype=np.int32)
+        visited_checks = np.zeros(self.m, dtype=np.int32)
+        frontier_vars = np.empty(self.n, dtype=np.int32)
+        next_frontier_vars = np.empty(self.n, dtype=np.int32)
+        frontier_checks = np.empty(self.m, dtype=np.int32)
+        next_frontier_checks = np.empty(self.m, dtype=np.int32)
+
+        rng_state = np.uint64(self._seed if self._seed is not None else 1)
+        numba_kernels.build_peg_graph(
+            order=order,
+            vn_target_deg=vn_target,
+            cn_target_deg=cn_target,
+            vn_adj=vn_adj,
+            cn_adj=cn_adj,
+            vn_deg=vn_deg,
+            cn_deg=cn_deg,
+            max_tree_depth=np.int32(self.max_tree_depth),
+            visited_vars=visited_vars,
+            visited_checks=visited_checks,
+            frontier_vars=frontier_vars,
+            frontier_checks=frontier_checks,
+            next_frontier_vars=next_frontier_vars,
+            next_frontier_checks=next_frontier_checks,
+            rng_state=rng_state,
+        )
+
+        # Build COO arrays in Numba, then CSR
+        rows = np.empty(total_edges, dtype=np.int32)
+        cols = np.empty(total_edges, dtype=np.int32)
+        numba_kernels.fill_edges_from_cn_adj(cn_adj=cn_adj, cn_deg=cn_deg, rows=rows, cols=cols)
+        data = np.ones(total_edges, dtype=np.uint8)
+        H = sp.csr_matrix((data, (rows, cols)), shape=(self.m, self.n), dtype=np.uint8)
+
+        logger.debug(
+            "PEG: Actual CN degrees: min=%d, max=%d, avg=%.2f",
+            int(cn_deg.min(initial=0)),
+            int(cn_deg.max(initial=0)),
+            float(cn_deg.mean()) if cn_deg.size else 0.0,
+        )
         return H
 
     def _assign_node_degrees(self) -> Tuple[List[int], List[int]]:

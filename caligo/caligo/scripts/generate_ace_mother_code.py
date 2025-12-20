@@ -33,6 +33,7 @@ import scipy.sparse as sp
 import yaml
 
 from caligo.scripts.peg_generator import DegreeDistribution, PEGMatrixGenerator
+from caligo.scripts import numba_kernels
 from caligo.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -173,22 +174,80 @@ class ACEPEGGenerator(PEGMatrixGenerator):
             max(cn_target_degrees),
             np.mean(cn_target_degrees),
         )
-        
-        # Initialize adjacency lists
+
+        if numba_kernels.numba_available():
+            H, cn_deg, ace_checks_performed, ace_fallbacks, vn_adj, cn_adj, vn_deg = (
+                self._generate_numba(vn_degrees, cn_target_degrees, total_edges)
+            )
+            # Validate ACE properties (sample-based)
+            self._validate_ace_properties_numba(
+                H=H,
+                vn_adj=vn_adj,
+                cn_adj=cn_adj,
+                vn_deg=vn_deg,
+                cn_deg=cn_deg,
+            )
+        else:
+            (
+                H,
+                var_adjacency,
+                check_adjacency,
+                current_cn_degrees,
+                ace_checks_performed,
+                ace_fallbacks,
+            ) = self._generate_python(vn_degrees, cn_target_degrees, total_edges)
+            self._validate_ace_properties(H, var_adjacency, check_adjacency)
+
+        elapsed = time.perf_counter() - start_time
+        density = H.nnz / (self.m * self.n)
+        logger.info(
+            "ACE-PEG: Matrix generation complete in %.2fs "
+            "(n=%d, m=%d, nnz=%d, density=%.4f)",
+            elapsed,
+            self.n,
+            self.m,
+            H.nnz,
+            density,
+        )
+
+        logger.info(
+            "ACE-PEG: ACE checks performed: %d, fallbacks: %d (%.2f%%)",
+            ace_checks_performed,
+            ace_fallbacks,
+            100.0 * ace_fallbacks / max(1, ace_checks_performed),
+        )
+
+        return H
+
+    def _generate_python(
+        self,
+        vn_degrees: List[int],
+        cn_target_degrees: List[int],
+        total_edges: int,
+    ) -> Tuple[
+        sp.csr_matrix,
+        List[Set[int]],
+        List[Set[int]],
+        List[int],
+        int,
+        int,
+    ]:
+        """Original ACE-PEG implementation using Python sets.
+
+        Returned values include adjacency lists for validation.
+        """
         check_adjacency: List[Set[int]] = [set() for _ in range(self.m)]
         var_adjacency: List[Set[int]] = [set() for _ in range(self.n)]
         current_cn_degrees = [0 for _ in range(self.m)]
-        
-        # Process variable nodes in increasing degree order
+
         logger.debug("ACE-PEG: Sorting variable nodes by degree")
         order = np.argsort(vn_degrees)
-        
-        # Track progress and ACE statistics
+
         edges_placed = 0
         ace_checks_performed = 0
         ace_fallbacks = 0
-        progress_interval = max(1, total_edges // 20)  # Report every 5%
-        
+        progress_interval = max(1, total_edges // 20)
+
         logger.info("ACE-PEG: Placing edges with ACE conditioning...")
         for v in order:
             deg_v = vn_degrees[v]
@@ -202,19 +261,16 @@ class ACEPEGGenerator(PEGMatrixGenerator):
                     target_cn_degrees=cn_target_degrees,
                     ace_config=self.ace_config,
                 )
-                
-                # Finalize edge
+
                 check_adjacency[c].add(v)
                 var_adjacency[v].add(c)
                 current_cn_degrees[c] += 1
                 edges_placed += 1
-                
-                # Track ACE statistics
+
                 current_degree = len(var_adjacency[v])
                 if current_degree < self.ace_config.bypass_threshold:
                     ace_checks_performed += 1
-                
-                # Progress logging
+
                 if edges_placed % progress_interval == 0:
                     progress_pct = (edges_placed / total_edges) * 100
                     logger.info(
@@ -225,17 +281,7 @@ class ACEPEGGenerator(PEGMatrixGenerator):
                         progress_pct,
                         ace_checks_performed,
                     )
-        
-        logger.info(
-            "ACE-PEG: All %d edges placed. ACE checks performed: %d, "
-            "fallbacks: %d (%.2f%%)",
-            edges_placed,
-            ace_checks_performed,
-            ace_fallbacks,
-            100.0 * ace_fallbacks / max(1, ace_checks_performed),
-        )
-        
-        # Build sparse matrix
+
         logger.debug("ACE-PEG: Building sparse CSR matrix...")
         rows = []
         cols = []
@@ -245,34 +291,196 @@ class ACEPEGGenerator(PEGMatrixGenerator):
                 rows.append(c_idx)
                 cols.append(v)
                 data.append(1)
-        
-        H = sp.csr_matrix(
-            (data, (rows, cols)), shape=(self.m, self.n), dtype=np.uint8
-        )
-        
-        elapsed = time.perf_counter() - start_time
-        density = H.nnz / (self.m * self.n)
-        
-        logger.info(
-            "ACE-PEG: Matrix generation complete in %.2fs "
-            "(n=%d, m=%d, nnz=%d, density=%.4f)",
-            elapsed,
-            self.n,
-            self.m,
-            H.nnz,
-            density,
-        )
+
+        H = sp.csr_matrix((data, (rows, cols)), shape=(self.m, self.n), dtype=np.uint8)
         logger.debug(
             "ACE-PEG: Actual CN degrees: min=%d, max=%d, avg=%.2f",
             min(current_cn_degrees),
             max(current_cn_degrees),
             np.mean(current_cn_degrees),
         )
-        
-        # Validate ACE properties (sample-based for large codes)
-        self._validate_ace_properties(H, var_adjacency, check_adjacency)
-        
-        return H
+        return (
+            H,
+            var_adjacency,
+            check_adjacency,
+            current_cn_degrees,
+            ace_checks_performed,
+            ace_fallbacks,
+        )
+
+    def _generate_numba(
+        self,
+        vn_degrees: List[int],
+        cn_target_degrees: List[int],
+        total_edges: int,
+    ) -> Tuple[sp.csr_matrix, np.ndarray, int, int, np.ndarray, np.ndarray, np.ndarray]:
+        """Fast ACE-PEG implementation using fixed-width adjacency arrays + Numba."""
+        logger.info("ACE-PEG: Using Numba-accelerated graph builder")
+
+        vn_target = np.asarray(vn_degrees, dtype=np.int32)
+        cn_target = np.asarray(cn_target_degrees, dtype=np.int32)
+        order = np.argsort(vn_target).astype(np.int32)
+
+        max_vn_degree = int(vn_target.max(initial=0))
+        # Check degrees can exceed their targets (esp. when reachable set covers
+        # all checks); allocate headroom and let kernels skip full checks.
+        max_cn_degree = max(
+            int(cn_target.max(initial=0)) * 2,
+            int(np.ceil(total_edges / max(1, self.m))) * 3,
+            8,
+        )
+
+        vn_adj = np.full((self.n, max_vn_degree), -1, dtype=np.int32)
+        cn_adj = np.full((self.m, max_cn_degree), -1, dtype=np.int32)
+        vn_deg = np.zeros(self.n, dtype=np.int32)
+        cn_deg = np.zeros(self.m, dtype=np.int32)
+
+        # BFS workspaces
+        visited_vars = np.zeros(self.n, dtype=np.int32)
+        visited_checks = np.zeros(self.m, dtype=np.int32)
+        frontier_vars = np.empty(self.n, dtype=np.int32)
+        next_frontier_vars = np.empty(self.n, dtype=np.int32)
+        frontier_checks = np.empty(self.m, dtype=np.int32)
+        next_frontier_checks = np.empty(self.m, dtype=np.int32)
+
+        # ACE workspaces
+        p_var = np.empty(self.n, dtype=np.int32)
+        p_check = np.empty(self.m, dtype=np.int32)
+        pvar_seen = np.zeros(self.n, dtype=np.int32)
+        pcheck_seen = np.zeros(self.m, dtype=np.int32)
+        active_vars = np.empty(self.n, dtype=np.int32)
+        next_active_vars = np.empty(self.n, dtype=np.int32)
+        active_checks = np.empty(self.m, dtype=np.int32)
+        next_active_checks = np.empty(self.m, dtype=np.int32)
+
+        seed = getattr(self, "_seed", 1)
+        rng_state = np.uint64(seed if seed is not None else 1)
+
+        (
+            _rng_state,
+            ace_checks_performed,
+            ace_fallbacks,
+        ) = numba_kernels.build_ace_peg_graph(
+            order=order,
+            vn_target_deg=vn_target,
+            cn_target_deg=cn_target,
+            vn_adj=vn_adj,
+            cn_adj=cn_adj,
+            vn_deg=vn_deg,
+            cn_deg=cn_deg,
+            max_tree_depth=np.int32(self.max_tree_depth),
+            d_ace=np.int32(self.ace_config.d_ACE),
+            eta=np.int32(self.ace_config.eta),
+            bypass_threshold=np.int32(self.ace_config.bypass_threshold),
+            visited_vars=visited_vars,
+            visited_checks=visited_checks,
+            frontier_vars=frontier_vars,
+            frontier_checks=frontier_checks,
+            next_frontier_vars=next_frontier_vars,
+            next_frontier_checks=next_frontier_checks,
+            p_var=p_var,
+            p_check=p_check,
+            pvar_seen=pvar_seen,
+            pcheck_seen=pcheck_seen,
+            active_vars=active_vars,
+            active_checks=active_checks,
+            next_active_vars=next_active_vars,
+            next_active_checks=next_active_checks,
+            rng_state=rng_state,
+        )
+
+        rows = np.empty(total_edges, dtype=np.int32)
+        cols = np.empty(total_edges, dtype=np.int32)
+        numba_kernels.fill_edges_from_cn_adj(cn_adj=cn_adj, cn_deg=cn_deg, rows=rows, cols=cols)
+        data = np.ones(total_edges, dtype=np.uint8)
+        H = sp.csr_matrix((data, (rows, cols)), shape=(self.m, self.n), dtype=np.uint8)
+
+        logger.debug(
+            "ACE-PEG: Actual CN degrees: min=%d, max=%d, avg=%.2f",
+            int(cn_deg.min(initial=0)),
+            int(cn_deg.max(initial=0)),
+            float(cn_deg.mean()) if cn_deg.size else 0.0,
+        )
+
+        return (
+            H,
+            cn_deg,
+            int(ace_checks_performed),
+            int(ace_fallbacks),
+            vn_adj,
+            cn_adj,
+            vn_deg,
+        )
+
+    def _validate_ace_properties_numba(
+        self,
+        H: sp.csr_matrix,
+        vn_adj: np.ndarray,
+        cn_adj: np.ndarray,
+        vn_deg: np.ndarray,
+        cn_deg: np.ndarray,
+    ) -> None:
+        """Validate ACE constraints using Numba workspaces (sample-based)."""
+        logger.info("ACE-PEG: Validating ACE properties (sample-based, numba)...")
+        sample_size = min(100, max(10, self.n // 10))
+        sampled_vars = self.random.sample(range(self.n), sample_size)
+
+        # ACE workspaces
+        p_var = np.empty(self.n, dtype=np.int32)
+        p_check = np.empty(self.m, dtype=np.int32)
+        pvar_seen = np.zeros(self.n, dtype=np.int32)
+        pcheck_seen = np.zeros(self.m, dtype=np.int32)
+        active_vars = np.empty(self.n, dtype=np.int32)
+        next_active_vars = np.empty(self.n, dtype=np.int32)
+        active_checks = np.empty(self.m, dtype=np.int32)
+        next_active_checks = np.empty(self.m, dtype=np.int32)
+
+        visit_token = np.int32(1)
+        violations = 0
+
+        for v in sampled_vars:
+            visit_token = np.int32(visit_token + 1)
+            passes = numba_kernels.ace_detection_viterbi(
+                np.int32(v),
+                vn_adj,
+                cn_adj,
+                vn_deg,
+                cn_deg,
+                np.int32(self.ace_config.d_ACE),
+                np.int32(self.ace_config.eta),
+                p_var,
+                p_check,
+                pvar_seen,
+                pcheck_seen,
+                active_vars,
+                active_checks,
+                next_active_vars,
+                next_active_checks,
+                visit_token,
+            )
+            if passes == 0:
+                violations += 1
+                logger.warning(
+                    "ACE-PEG: Variable %d violates ACE constraint (numba check)",
+                    v,
+                )
+
+        compliance_rate = (
+            100.0 * (sample_size - violations) / sample_size if sample_size > 0 else 0.0
+        )
+        logger.info(
+            "ACE-PEG: ACE compliance: %.1f%% (%d/%d sampled variables pass)",
+            compliance_rate,
+            sample_size - violations,
+            sample_size,
+        )
+
+        if violations > sample_size * 0.05:
+            logger.warning(
+                "ACE-PEG: High ACE violation rate (%.1f%%). "
+                "Matrix may have suboptimal error floor.",
+                100.0 * violations / sample_size,
+            )
     
     def _compute_ace(
         self,
