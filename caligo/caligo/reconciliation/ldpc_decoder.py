@@ -121,6 +121,11 @@ class BeliefPropagationDecoder:
         self.max_iterations = max_iterations
         self.threshold = threshold
         self._compiled_cache: Dict[int, CompiledParityCheckMatrix] = {}
+        self._r_buf: Optional[np.ndarray] = None
+        self._q_buf: Optional[np.ndarray] = None
+        self._decoded_buf: Optional[np.ndarray] = None
+        self._var_edge_var_idx_cache: Dict[int, np.ndarray] = {}
+        self._r_by_var_edge_buf: Optional[np.ndarray] = None
 
     def _get_compiled(
         self,
@@ -180,7 +185,8 @@ class BeliefPropagationDecoder:
 
         compiled = self._get_compiled(H)
         m, n = compiled.m, compiled.n
-        llr = llr.astype(np.float64)
+        if llr.dtype != np.float64:
+            llr = llr.astype(np.float64)
 
         max_iters = int(self.max_iterations if max_iterations is None else max_iterations)
         if max_iters < 1:
@@ -196,32 +202,46 @@ class BeliefPropagationDecoder:
             raise ValueError("Parity-check matrix has no edges")
 
         # Message arrays: r = check→var, q = var→check
-        r = np.zeros(edge_count, dtype=np.float64)
-        q = np.zeros(edge_count, dtype=np.float64)
+        if self._r_buf is None or int(self._r_buf.shape[0]) != int(edge_count):
+            self._r_buf = np.zeros(edge_count, dtype=np.float64)
+            self._q_buf = np.zeros(edge_count, dtype=np.float64)
+        assert self._r_buf is not None
+        assert self._q_buf is not None
+        r = self._r_buf
+        q = self._q_buf
+        r.fill(0.0)
+        q.fill(0.0)
 
-        # Initialize var→check messages with channel LLR
-        for v in range(n):
-            start = int(compiled.var_ptr[v])
-            end = int(compiled.var_ptr[v + 1])
-            if start == end:
-                continue
-            edges = compiled.var_edges[start:end]
-            q[edges] = llr[v]
+        if self._decoded_buf is None or int(self._decoded_buf.shape[0]) != int(n):
+            self._decoded_buf = np.zeros(n, dtype=np.uint8)
+        assert self._decoded_buf is not None
+        decoded = self._decoded_buf
+
+        # Precompute var-index per entry in var_edges (cached per compiled matrix)
+        compiled_id = id(compiled)
+        var_idx_for_var_edge = self._var_edge_var_idx_cache.get(compiled_id)
+        if var_idx_for_var_edge is None or int(var_idx_for_var_edge.shape[0]) != int(edge_count):
+            degrees = np.diff(compiled.var_ptr).astype(np.int64, copy=False)
+            var_idx_for_var_edge = np.repeat(np.arange(n, dtype=np.int64), degrees)
+            self._var_edge_var_idx_cache[compiled_id] = var_idx_for_var_edge
+
+        # Initialize var→check messages with channel LLR (vectorized)
+        q[compiled.var_edges] = llr[var_idx_for_var_edge]
 
         converged = False
-        decoded = np.zeros(n, dtype=np.uint8)
         iteration = 0
+
+        target_u8 = target_syndrome.astype(np.uint8, copy=False)
 
         for iteration in range(1, max_iters + 1):
             # Check node update (horizontal step)
-            target_u8 = target_syndrome.astype(np.uint8, copy=False)
             for c in range(m):
                 start = int(compiled.check_ptr[c])
                 end = int(compiled.check_ptr[c + 1])
                 if start == end:
                     continue
 
-                tanh_vals = np.tanh(q[start:end] / 2.0)
+                tanh_vals = np.tanh(q[start:end] * 0.5)
                 zero_mask = tanh_vals == 0.0
                 zero_count = int(np.count_nonzero(zero_mask))
 
@@ -240,17 +260,21 @@ class BeliefPropagationDecoder:
                 prod_excl = np.clip(sign * prod_excl, -0.999999, 0.999999)
                 r[start:end] = 2.0 * np.arctanh(prod_excl)
 
-            # Variable node update (vertical step) and hard decision
-            for v in range(n):
-                start = int(compiled.var_ptr[v])
-                end = int(compiled.var_ptr[v + 1])
-                if start == end:
-                    total = llr[v]
-                else:
-                    edges = compiled.var_edges[start:end]
-                    total = llr[v] + float(np.sum(r[edges]))
-                    q[edges] = total - r[edges]
-                decoded[v] = 1 if total < 0 else 0
+            # Variable node update (vertical step) and hard decision (vectorized)
+            if self._r_by_var_edge_buf is None or int(self._r_by_var_edge_buf.shape[0]) != int(edge_count):
+                self._r_by_var_edge_buf = np.empty(edge_count, dtype=np.float64)
+            assert self._r_by_var_edge_buf is not None
+            # Gather r in var-edge order into a reusable buffer
+            np.take(r, compiled.var_edges, out=self._r_by_var_edge_buf)
+            # Sum of incoming check messages per variable in var order
+            sum_r_per_var = np.add.reduceat(
+                self._r_by_var_edge_buf,
+                compiled.var_ptr[:-1].astype(np.int64, copy=False),
+            )
+            total_llr = llr + sum_r_per_var
+            decoded[:] = (total_llr < 0.0).astype(np.uint8)
+            # Scatter updated q back to edge order
+            q[compiled.var_edges] = total_llr[var_idx_for_var_edge] - self._r_by_var_edge_buf
 
             # Check convergence: syndrome matches target
             syndrome_errors = compiled.count_syndrome_errors(decoded, target_u8)
@@ -264,11 +288,10 @@ class BeliefPropagationDecoder:
                 break
         else:
             # Compute final syndrome errors if didn't break
-            target_u8 = target_syndrome.astype(np.uint8, copy=False)
             syndrome_errors = compiled.count_syndrome_errors(decoded, target_u8)
 
         return DecodeResult(
-            corrected_bits=decoded,
+            corrected_bits=decoded.copy(),
             converged=converged,
             iterations=iteration,
             syndrome_errors=int(syndrome_errors if not converged else 0),
@@ -283,11 +306,10 @@ class BeliefPropagationDecoder:
 def build_channel_llr(
     bob_bits: np.ndarray,
     qber: float,
-    n_shortened: int = 0,
-    known_bits: Optional[np.ndarray] = None,
+    punctured_mask: np.ndarray,
 ) -> np.ndarray:
     """
-    Construct initial LLRs from BSC channel model.
+    Construct initial LLRs from BSC channel model with untainted puncturing.
 
     Parameters
     ----------
@@ -295,13 +317,14 @@ def build_channel_llr(
         Bob's received bits (payload only), dtype int8 or uint8.
     qber : float
         Estimated quantum bit error rate.
-    n_shortened : int, optional
-        Number of shortened (padding) bits. Default 0.
+    punctured_mask : np.ndarray
+        Binary mask where punctured_mask[i]=1 indicates punctured position.
+        Punctured bits get LLR=0 (neutral, infinite uncertainty).
 
     Returns
     -------
     np.ndarray
-        LLR array for full frame [payload | shortened].
+        LLR array for full frame.
 
     Notes
     -----
@@ -309,27 +332,37 @@ def build_channel_llr(
         LLR = log((1-p)/p) × (-1)^bit
 
     Sign convention: bit=0 → positive LLR, bit=1 → negative LLR.
-    Shortened bits have LLR = ±100.0 (infinite confidence).
-    """
-    if known_bits is not None:
-        # known_bits takes precedence over n_shortened.
-        n_shortened = int(len(known_bits))
 
-    n = len(bob_bits) + int(n_shortened)
+    **Punctured bits receive neutral LLR=0** (infinite uncertainty).
+    This aligns with Elkouss et al. definition where punctured variable nodes
+    contribute no initial information to belief propagation.
+    """
+    n = int(punctured_mask.shape[0])
     qber_clamped = np.clip(qber, 1e-6, 0.5 - 1e-6)
     channel_llr = np.log((1 - qber_clamped) / qber_clamped)
 
-    llr = np.zeros(n, dtype=np.float64)
-    # Payload: sign based on received bit (0→positive, 1→negative)
-    llr[:len(bob_bits)] = channel_llr * (1 - 2 * bob_bits.astype(np.float64))
-    # Shortened/known bits: high confidence with correct sign.
-    if n_shortened > 0:
-        if known_bits is None:
-            # Backward-compatible default: assume known bits are zeros.
-            llr[len(bob_bits):] = constants.LDPC_LLR_SHORTENED
-        else:
-            known_u8 = known_bits.astype(np.uint8, copy=False)
-            llr[len(bob_bits):] = constants.LDPC_LLR_SHORTENED * (1 - 2 * known_u8.astype(np.float64))
+    llr = np.empty(n, dtype=np.float64)
+
+    # Extract non-punctured positions and fill with Bob's bits
+    non_punctured_indices = np.where(punctured_mask == 0)[0]
+    if len(non_punctured_indices) != len(bob_bits):
+        raise ValueError(
+            f"Number of non-punctured positions ({len(non_punctured_indices)}) "
+            f"!= bob_bits length ({len(bob_bits)})"
+        )
+
+    bob_full = np.zeros(n, dtype=np.uint8)
+    bob_full[non_punctured_indices] = bob_bits.astype(np.uint8, copy=False)
+
+    # Compute LLRs for all positions
+    llr[:] = bob_full.astype(np.float64)
+    llr *= -2.0
+    llr += 1.0
+    llr *= float(channel_llr)
+
+    # Set punctured positions to neutral (LLR=0, infinite uncertainty)
+    punctured_indices = np.where(punctured_mask == 1)[0]
+    llr[punctured_indices] = 0.0
 
     return llr
 

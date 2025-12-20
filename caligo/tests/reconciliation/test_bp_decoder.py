@@ -41,7 +41,9 @@ class TestBuildChannelLLR:
     def test_low_qber_high_magnitude(self) -> None:
         """Low QBER produces high-magnitude LLRs."""
         bits = np.array([0, 0, 1, 1, 0, 1])
-        llr = build_channel_llr(bits, qber=0.01)
+        # No puncturing - all bits are payload
+        punctured_mask = np.zeros(len(bits), dtype=np.uint8)
+        llr = build_channel_llr(bits, qber=0.01, punctured_mask=punctured_mask)
         
         # All LLRs should have high magnitude
         assert np.all(np.abs(llr) > 3.0)
@@ -49,7 +51,8 @@ class TestBuildChannelLLR:
     def test_high_qber_low_magnitude(self) -> None:
         """High QBER produces lower-magnitude LLRs."""
         bits = np.array([0, 0, 1, 1, 0, 1])
-        llr = build_channel_llr(bits, qber=0.10)
+        punctured_mask = np.zeros(len(bits), dtype=np.uint8)
+        llr = build_channel_llr(bits, qber=0.10, punctured_mask=punctured_mask)
         
         # LLRs should have moderate magnitude
         assert np.all(np.abs(llr) < 5.0)
@@ -57,7 +60,8 @@ class TestBuildChannelLLR:
     def test_sign_matches_bits(self) -> None:
         """LLR sign matches bit values (0→positive, 1→negative)."""
         bits = np.array([0, 1, 0, 1])
-        llr = build_channel_llr(bits, qber=0.05)
+        punctured_mask = np.zeros(len(bits), dtype=np.uint8)
+        llr = build_channel_llr(bits, qber=0.05, punctured_mask=punctured_mask)
         
         for i, bit in enumerate(bits):
             if bit == 0:
@@ -66,10 +70,15 @@ class TestBuildChannelLLR:
                 assert llr[i] < 0
 
     def test_output_shape(self) -> None:
-        """Output shape matches input."""
-        bits = np.zeros(100, dtype=np.int8)
-        llr = build_channel_llr(bits, qber=0.05)
-        assert llr.shape == bits.shape
+        """Output shape matches full frame with puncturing."""
+        frame_size = 100
+        payload_len = 80
+        bits = np.zeros(payload_len, dtype=np.int8)
+        # 20 bits punctured
+        punctured_mask = np.zeros(frame_size, dtype=np.uint8)
+        punctured_mask[:20] = 1
+        llr = build_channel_llr(bits, qber=0.05, punctured_mask=punctured_mask)
+        assert llr.shape == (frame_size,)
 
 
 class TestSyndromeGuidedRefinement:
@@ -140,7 +149,9 @@ class TestBeliefPropagationDecoder:
         codeword = np.zeros(n, dtype=np.int8)
         syndrome = np.zeros(m, dtype=np.int8)
         
-        llr = build_channel_llr(codeword, qber=0.01)
+        # No puncturing
+        punctured_mask = np.zeros(n, dtype=np.uint8)
+        llr = build_channel_llr(codeword, qber=0.01, punctured_mask=punctured_mask)
         result = decoder.decode(llr, syndrome)
         
         assert result.converged
@@ -163,7 +174,9 @@ class TestBeliefPropagationDecoder:
         
         syndrome = np.zeros(m, dtype=np.int8)
         
-        llr = build_channel_llr(noisy, qber=0.03)
+        # No puncturing
+        punctured_mask = np.zeros(n, dtype=np.uint8)
+        llr = build_channel_llr(noisy, qber=0.03, punctured_mask=punctured_mask)
         result = decoder.decode(llr, syndrome)
         
         # Should likely converge with low noise
@@ -178,7 +191,10 @@ class TestBeliefPropagationDecoder:
         
         codeword = np.zeros(n, dtype=np.int8)
         syndrome = np.zeros(m, dtype=np.int8)
-        llr = build_channel_llr(codeword, qber=0.05)
+        
+        # No puncturing
+        punctured_mask = np.zeros(n, dtype=np.uint8)
+        llr = build_channel_llr(codeword, qber=0.05, punctured_mask=punctured_mask)
         
         result = decoder.decode(llr, syndrome)
         

@@ -58,12 +58,16 @@ class MatrixPool:
         Sorted tuple of available rates.
     checksum : str
         SHA-256 checksum for synchronization.
+    puncture_patterns : Dict[float, np.ndarray]
+        Rate → untainted puncturing pattern mapping.
+        Pattern is binary array of shape (n,) where 1 indicates punctured position.
     """
 
     frame_size: int
     matrices: Dict[float, sp.csr_matrix] = field(repr=False)
     rates: Tuple[float, ...]
     checksum: str
+    puncture_patterns: Dict[float, np.ndarray] = field(default_factory=dict, repr=False)
 
 
 # =============================================================================
@@ -88,6 +92,7 @@ class MatrixManager:
         self._pool = pool
         self._compiled_by_rate: Dict[float, CompiledParityCheckMatrix] = {}
         self._matrix_paths: Dict[float, Path] = {}
+        self._pattern_paths: Dict[float, Path] = {}
 
     @classmethod
     def from_directory(
@@ -135,6 +140,8 @@ class MatrixManager:
 
         compiled: Dict[float, CompiledParityCheckMatrix] = {}
         matrix_paths: Dict[float, Path] = {}
+        puncture_patterns: Dict[float, np.ndarray] = {}
+        pattern_paths: Dict[float, Path] = {}
 
         for idx, rate in enumerate(sorted_rates, 1):
             filename = constants.LDPC_MATRIX_FILE_PATTERN.format(
@@ -171,7 +178,37 @@ class MatrixManager:
                 rate, matrix.shape, matrix.nnz
             )
 
-        checksum = cls._compute_checksum(matrices)
+        # Load puncture patterns from puncture_patterns/ subdirectory
+        pattern_dir = directory / "puncture_patterns"
+        if pattern_dir.exists():
+            logger.debug("Scanning for puncture patterns in: %s", pattern_dir)
+            for rate in sorted_rates:
+                pattern_filename = f"puncture_pattern_rate{rate:.2f}.npy"
+                pattern_path = pattern_dir / pattern_filename
+                if pattern_path.exists():
+                    try:
+                        pattern = np.load(pattern_path)
+                        if pattern.shape[0] != frame_size:
+                            logger.warning(
+                                "Pattern %s has size %d, expected %d. Skipping.",
+                                pattern_filename, pattern.shape[0], frame_size
+                            )
+                            continue
+                        puncture_patterns[rate] = pattern.astype(np.uint8)
+                        pattern_paths[rate] = pattern_path
+                        logger.info(
+                            "Loaded puncture pattern for rate=%.2f: %d punctured bits",
+                            rate, int(pattern.sum())
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to load pattern %s: %s",
+                            pattern_filename, exc
+                        )
+        else:
+            logger.debug("No puncture_patterns/ subdirectory found")
+
+        checksum = cls._compute_checksum(matrices, puncture_patterns)
         logger.info("Matrix pool checksum: %s...", checksum[:16])
 
         pool = MatrixPool(
@@ -179,11 +216,13 @@ class MatrixManager:
             matrices=matrices,
             rates=sorted_rates,
             checksum=checksum,
+            puncture_patterns=puncture_patterns,
         )
 
         manager = cls(pool)
         manager._compiled_by_rate.update(compiled)
         manager._matrix_paths.update(matrix_paths)
+        manager._pattern_paths.update(pattern_paths)
 
         # Optional: precompute and persist compiled caches for future runs.
         if os.getenv("CALIGO_LDPC_WRITE_COMPILED_CACHE", "0") == "1":
@@ -193,11 +232,27 @@ class MatrixManager:
         return manager
 
     @staticmethod
-    def _compute_checksum(matrices: Dict[float, sp.csr_matrix]) -> str:
+    def _compute_checksum(
+        matrices: Dict[float, sp.csr_matrix],
+        puncture_patterns: Dict[float, np.ndarray] = None,
+    ) -> str:
         """
         Compute SHA-256 checksum for matrix pool.
 
-        Processes matrices in sorted rate order for determinism.
+        Processes matrices and patterns in sorted rate order for determinism.
+        Including patterns in checksum ensures Alice-Bob synchronization.
+
+        Parameters
+        ----------
+        matrices : Dict[float, sp.csr_matrix]
+            Rate → matrix mapping.
+        puncture_patterns : Dict[float, np.ndarray], optional
+            Rate → pattern mapping.
+
+        Returns
+        -------
+        str
+            SHA-256 checksum hex digest.
         """
         digest = hashlib.sha256()
         for rate in sorted(matrices.keys()):
@@ -207,6 +262,14 @@ class MatrixManager:
             digest.update(matrix.indices.tobytes())
             if matrix.data is not None:
                 digest.update(matrix.data.tobytes())
+
+        # Include puncture patterns in checksum for synchronization
+        if puncture_patterns:
+            for rate in sorted(puncture_patterns.keys()):
+                pattern = puncture_patterns[rate]
+                digest.update(f"pattern_{rate}".encode())
+                digest.update(pattern.tobytes())
+
         return digest.hexdigest()
 
     def get_matrix(self, rate: float) -> sp.csr_matrix:
@@ -316,3 +379,28 @@ class MatrixManager:
     def frame_size(self) -> int:
         """Common frame size for all matrices."""
         return self._pool.frame_size
+
+    def get_puncture_pattern(self, rate: float) -> Optional[np.ndarray]:
+        """
+        Retrieve untainted puncturing pattern for rate.
+
+        Returns None if no pattern is available for the rate, in which case
+        the caller should fall back to legacy random padding.
+
+        Parameters
+        ----------
+        rate : float
+            Desired code rate.
+
+        Returns
+        -------
+        np.ndarray or None
+            Binary puncturing pattern of shape (n,), or None if unavailable.
+            Pattern[i] = 1 indicates position i should be punctured.
+        """
+        return self._pool.puncture_patterns.get(rate)
+
+    @property
+    def available_pattern_rates(self) -> Tuple[float, ...]:
+        """Rates for which puncture patterns are available."""
+        return tuple(sorted(self._pool.puncture_patterns.keys()))

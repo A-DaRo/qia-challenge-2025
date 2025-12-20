@@ -43,6 +43,8 @@ class LeakageRecord:
         Syndrome bits transmitted.
     hash_bits : int
         Verification hash bits.
+    retry_penalty_bits : int
+        Conservative penalty for retry/interaction metadata.
     shortening_bits : float
         Shortening position leakage (log2 combinatorial bound).
     block_id : int
@@ -53,15 +55,19 @@ class LeakageRecord:
 
     syndrome_bits: int
     hash_bits: int = constants.LDPC_HASH_BITS
+    retry_penalty_bits: int = 0
     shortening_bits: float = 0.0
     block_id: int = 0
     iteration: int = 1
 
     @property
     def total_leakage(self) -> int:
-        """Total leakage for this record: syndrome + hash + shortening."""
+        """Total leakage for this record: syndrome + hash + retry + shortening."""
         return int(math.ceil(
-            self.syndrome_bits + self.hash_bits + self.shortening_bits
+            self.syndrome_bits
+            + self.hash_bits
+            + self.retry_penalty_bits
+            + self.shortening_bits
         ))
 
 
@@ -116,6 +122,7 @@ class LeakageTracker:
         self,
         syndrome_bits: int = 0,
         hash_bits: int = constants.LDPC_HASH_BITS,
+        retry_penalty_bits: int = 0,
         block_id: int = 0,
         iteration: int = 1,
         syndrome_length: int = None,  # Alias for syndrome_bits
@@ -133,6 +140,8 @@ class LeakageTracker:
             Syndrome bits transmitted.
         hash_bits : int
             Hash bits transmitted.
+        retry_penalty_bits : int
+            Conservative retry penalty bits.
         block_id : int
             Block identifier.
         iteration : int
@@ -156,6 +165,7 @@ class LeakageTracker:
         event = LeakageRecord(
             syndrome_bits=actual_syndrome,
             hash_bits=hash_bits,
+            retry_penalty_bits=retry_penalty_bits,
             shortening_bits=shortening_bits,
             block_id=block_id,
             iteration=iteration,
@@ -173,7 +183,7 @@ class LeakageTracker:
             Total leakage in bits (ceiling of float sum).
         """
         total = sum(
-            r.syndrome_bits + r.hash_bits + r.shortening_bits
+            r.syndrome_bits + r.hash_bits + r.retry_penalty_bits + r.shortening_bits
             for r in self.records
         )
         return int(math.ceil(total))

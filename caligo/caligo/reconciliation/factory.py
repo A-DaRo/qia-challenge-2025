@@ -593,6 +593,7 @@ class BlindReconciler:
                 frame_size=self.config.frame_size,
                 max_iterations=self.config.max_iterations,
                 max_retries=self.config.max_blind_rounds,
+                enforce_leakage_cap=False,
             )
 
             self._orchestrator = ReconciliationOrchestrator(
@@ -682,7 +683,7 @@ class BlindReconciler:
             Syndrome bits.
         """
         # Use orchestrator's encoder for consistency
-        from caligo.reconciliation.ldpc_encoder import encode_block
+        from caligo.reconciliation.ldpc_encoder import encode_block_from_payload
         
         orchestrator = self._get_orchestrator()
         bits_array = np.frombuffer(bits, dtype=np.uint8)
@@ -696,12 +697,12 @@ class BlindReconciler:
         n_shortened = frame_size - payload_len
         
         # Compute syndrome
-        syndrome_block = encode_block(
-            bits_array,
-            H,
-            rate,
-            n_shortened,
-            0,
+        syndrome_block = encode_block_from_payload(
+            payload=bits_array,
+            H=H,
+            rate=rate,
+            n_shortened=n_shortened,
+            prng_seed=0,
         )
         
         return syndrome_block.syndrome.tobytes()

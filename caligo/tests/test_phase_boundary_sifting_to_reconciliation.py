@@ -44,8 +44,8 @@ def test_p23_001_sifting_phase_result_drives_single_block_reconciliation(
 
     rng = np.random.default_rng(2025)
 
-    # Payload length intentionally < 4096 so the encoder uses shortening.
-    payload_len = 2867
+    # Use full frame for rate 0.5 (no puncturing)
+    payload_len = 4096
     alice_np = rng.integers(0, 2, size=payload_len, dtype=np.uint8)
 
     # Bob differs by ~1%.

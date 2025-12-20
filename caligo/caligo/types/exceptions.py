@@ -172,7 +172,41 @@ class ReconciliationError(ProtocolError):
     pass
 
 
-class DecodingFailed(ReconciliationError):
+class DecodingFailure(ReconciliationError):
+    """Recoverable decoding failure for a single block.
+
+    This error indicates that the belief-propagation decoder did not converge
+    after all configured retries for the current block.
+    """
+
+
+class LeakageBudgetExceeded(ReconciliationError):
+    """Fatal error raised when reconciliation leakage exceeds its budget.
+
+    Attributes
+    ----------
+    actual_leakage : int
+        Total leakage accumulated (bits).
+    max_allowed : int
+        Configured maximum leakage (bits).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        actual_leakage: int = 0,
+        max_allowed: int = 0,
+    ) -> None:
+        super().__init__(message)
+        self.actual_leakage = actual_leakage
+        self.max_allowed = max_allowed
+
+
+class SynchronizationError(SecurityError):
+    """Fatal error raised when Alice/Bob reconciliation metadata is inconsistent."""
+
+
+class DecodingFailed(DecodingFailure):
     """
     Raised when BP decoder fails to converge after all retries.
 
@@ -195,7 +229,7 @@ class DecodingFailed(ReconciliationError):
         self.blocks_total = blocks_total
 
 
-class LeakageCapExceeded(ReconciliationError):
+class LeakageCapExceeded(LeakageBudgetExceeded):
     """
     Raised when syndrome leakage exceeds safety cap.
 

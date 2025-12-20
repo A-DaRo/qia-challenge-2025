@@ -16,7 +16,7 @@ from caligo.amplification import (
 from caligo.connection.envelope import MessageType
 from caligo.protocol.base import CaligoProgram, ProtocolParameters
 from caligo.reconciliation import constants as recon_constants
-from caligo.reconciliation.ldpc_encoder import encode_block
+from caligo.reconciliation.ldpc_encoder import encode_block_from_payload
 from caligo.reconciliation.matrix_manager import MatrixManager
 from caligo.reconciliation.orchestrator import ReconciliationOrchestratorConfig
 from caligo.reconciliation.rate_selector import select_rate
@@ -323,118 +323,126 @@ class AliceProgram(CaligoProgram):
 
         hash_verifier = PolynomialHashVerifier(hash_bits=config.hash_bits)
 
-        # Import for blind reconciliation
-        from caligo.reconciliation.ldpc_encoder import generate_padding
+        # Import pattern-based reconciliation components
+        from caligo.reconciliation.block_reconciler import BlockReconciler, BlockReconcilerConfig
+        from caligo.reconciliation.orchestrator import partition_key
+        from caligo.reconciliation.ldpc_decoder import BeliefPropagationDecoder
+        from caligo.reconciliation.orchestrator import LeakageTracker
 
         # Determine reconciliation strategy
         is_blind = self.params.reconciliation.reconciliation_type == ReconciliationType.BLIND
+
+        # Create required components
+        decoder = BeliefPropagationDecoder(max_iterations=int(self.params.reconciliation.max_iterations))
+        leakage_tracker = LeakageTracker(safety_cap=10**12)
+
+        # Use BlockReconciler for pattern-based reconciliation
+        block_reconciler = BlockReconciler(
+            matrix_manager=matrix_manager,
+            decoder=decoder,
+            hash_verifier=hash_verifier,
+            leakage_tracker=leakage_tracker,
+            config=BlockReconcilerConfig(
+                frame_size=frame_size,
+                hash_bits=config.hash_bits,
+                max_iterations=int(self.params.reconciliation.max_iterations),
+                max_retries=max_retries,
+                f_crit=config.f_crit,
+            ),
+        )
 
         # Baseline/Blind flow: Alice sends per-block syndrome + metadata; Bob decodes locally.
         total_syndrome_bits = 0
         reconciled_parts: list[np.ndarray] = []
         verified_indices: list[int] = []  # Track which original bit positions are verified
 
-        for block_id, start in enumerate(range(0, len(alice_arr), frame_size)):
-            payload = alice_arr[start:start + frame_size]
-            end = start + len(payload)
+        # Partition Alice's key into blocks
+        alice_blocks = partition_key(alice_arr, frame_size)
 
-            # Rate selection uses conservative qber_adjusted
+        for block_id, alice_block in enumerate(alice_blocks):
+            # Store original payload length before any padding
+            payload_len = len(alice_block)
+            
+            # Pad short blocks to frame_size (for last block) - padding will be punctured
+            if len(alice_block) < frame_size:
+                padding_needed = frame_size - len(alice_block)
+                alice_block_padded = np.concatenate([alice_block, np.zeros(padding_needed, dtype=np.uint8)])
+            else:
+                alice_block_padded = alice_block
+            
+            # Use block reconciler for pattern-based reconciliation
+            from caligo.reconciliation.ldpc_encoder import encode_block_from_payload
+            from caligo.reconciliation.rate_selector import select_rate
+            
+            # Get rate based on QBER (all blocks are now full frame_size)
             rate = select_rate(
                 qber_estimate=qber_adjusted,
                 available_rates=matrix_manager.rates,
                 f_crit=config.f_crit,
             )
-            H = matrix_manager.get_matrix(rate)
-
-            n_shortened = max(0, int(frame_size) - int(len(payload)))
-            prng_seed = int(block_id + 12345)
-            syndrome_block = encode_block(payload, H, rate, n_shortened, prng_seed)
+            
+            # Use mother code (rate 0.5) with puncturing pattern
+            mother_rate = 0.5
+            H = matrix_manager.get_matrix(mother_rate)
+            puncture_pattern = matrix_manager.get_puncture_pattern(rate)
+            
+            if puncture_pattern is None:
+                raise ValueError(f"No puncture pattern available for rate {rate}")
+            
+            syndrome_block = encode_block_from_payload(
+                payload=alice_block_padded,
+                H=H,
+                puncture_pattern=puncture_pattern,
+            )
 
             hash_seed = int(block_id)
-            hash_int = int(hash_verifier.compute_hash(payload, seed=hash_seed))
+            hash_int = int(hash_verifier.compute_hash(alice_block, seed=hash_seed))
 
             total_syndrome_bits += int(len(syndrome_block.syndrome))
 
             if is_blind:
-                # Blind reconciliation: progressively reveal padding bits
-                n_padding = n_shortened
+                # Blind reconciliation with pattern-based approach
+                # Send syndrome and pattern info without QBER estimate
                 max_rounds = int(self.params.reconciliation.max_blind_rounds)
-
-                # Generate padding for disclosure
-                padding = generate_padding(n_padding, prng_seed) if n_padding > 0 else np.array([], dtype=np.uint8)
-
-                # Calculate reveal schedule: reveal some bits initially, then progressively more
-                # Initial reveal: shortened bits (high confidence known)
-                # Remaining bits revealed over max_rounds
-                modulation_fraction = 0.3  # Fraction of padding for modulation
-                modulation_bits = min(n_padding, int(modulation_fraction * frame_size))
-                n_shortened_initial = max(0, n_padding - modulation_bits)
-                n_punctured_initial = modulation_bits
-
-                initial_reveal = padding[:n_shortened_initial] if n_shortened_initial > 0 else np.array([], dtype=np.uint8)
-
-                delta = 0
-                if max_rounds > 0 and n_punctured_initial > 0:
-                    delta = max(1, int(np.ceil(n_punctured_initial / max_rounds)))
-
-                # Round 0: send syndrome + initial reveal
+                
+                # Get punctured positions count
+                n_punctured = int(puncture_pattern.sum())
+                
+                # For blind, we can't use QBER-based rate selection,
+                # so we use a conservative mid-range rate
+                # Bob will iterate through rates to find one that works
+                
+                # Round 0: send syndrome + pattern info
                 yield from self._ordered_socket.send(
                     MessageType.SYNDROME,
                     {
                         "kind": "blind",
                         "block_id": int(block_id),
                         "round_id": 0,
-                        "payload_length": int(len(payload)),
+                        "payload_length": int(len(alice_block)),
                         "frame_size": int(frame_size),
                         "rate": float(rate),
-                        "n_padding": int(n_padding),
-                        "n_shortened": int(n_shortened_initial),
-                        "n_punctured": int(n_punctured_initial),
-                        "delta": int(delta),
+                        "n_punctured": int(n_punctured),
                         "syndrome": syndrome_block.syndrome.astype(np.uint8).tobytes().hex(),
-                        "reveal": initial_reveal.astype(np.uint8).tobytes().hex() if len(initial_reveal) > 0 else "",
+                        "puncture_pattern": puncture_pattern.astype(np.uint8).tobytes().hex(),
                         "qber_channel": float(qber_observed),
-                        "qber_prior": float(qber_adjusted),
                         "hash_seed": int(hash_seed),
                         "hash_int": int(hash_int),
                     },
                 )
-
-                # Subsequent rounds: reveal more padding bits
-                revealed = int(n_shortened_initial)
-                for round_id in range(1, max_rounds + 1):
-                    if revealed >= n_padding:
-                        reveal_chunk = np.array([], dtype=np.uint8)
-                    else:
-                        next_reveal_end = min(n_padding, revealed + delta)
-                        reveal_chunk = padding[revealed:next_reveal_end]
-                        revealed = next_reveal_end
-
-                    yield from self._ordered_socket.send(
-                        MessageType.SYNDROME,
-                        {
-                            "kind": "blind",
-                            "block_id": int(block_id),
-                            "round_id": int(round_id),
-                            "payload_length": int(len(payload)),
-                            "frame_size": int(frame_size),
-                            "rate": float(rate),
-                            "n_padding": int(n_padding),
-                            "reveal": reveal_chunk.astype(np.uint8).tobytes().hex() if len(reveal_chunk) > 0 else "",
-                        },
-                    )
             else:
-                # Baseline reconciliation: single syndrome exchange
+                # Baseline reconciliation: single syndrome exchange with pattern
+                n_punctured = int(puncture_pattern.sum())
                 yield from self._ordered_socket.send(
                     MessageType.SYNDROME,
                     {
                         "kind": "baseline",
                         "block_id": int(block_id),
-                        "payload_length": int(len(payload)),
+                        "payload_length": int(len(alice_block)),
                         "frame_size": int(frame_size),
                         "rate": float(rate),
-                        "n_shortened": int(n_shortened),
-                        "prng_seed": int(prng_seed),
+                        "n_punctured": int(n_punctured),
+                        "puncture_pattern": puncture_pattern.astype(np.uint8).tobytes().hex(),
                         "syndrome": syndrome_block.syndrome.astype(np.uint8).tobytes().hex(),
                         "qber_channel": float(qber_observed),
                         "qber_prior": float(qber_adjusted),
@@ -463,7 +471,9 @@ class AliceProgram(CaligoProgram):
             )
             reconciled_parts.append(corrected_payload)
             # Track the original bit positions that are now verified
-            verified_indices.extend(range(start, end))
+            # start is the position in the original key where this block began
+            start = block_id * frame_size
+            verified_indices.extend(range(start, start + len(corrected_payload)))
 
         # Check if we have enough reconciled bits
         if len(reconciled_parts) == 0:

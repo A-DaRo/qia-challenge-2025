@@ -24,10 +24,11 @@ def matrix_manager() -> Iterator[MatrixManager]:
 
 @pytest.mark.integration
 def test_orchestrator_reconcile_key_multiblock_happy_path(matrix_manager: MatrixManager) -> None:
+    """Test multi-block reconciliation (>2 frames)."""
     rng = np.random.default_rng(2025)
 
-    # > 2 frames worth of payload so we hit multi-block behavior.
-    payload_len = 2 * 4096 + 777
+    # > 2 frames worth of payload (must use full frames for rate 0.5)
+    payload_len = 3 * 4096  # 3 full blocks
     alice = rng.integers(0, 2, size=payload_len, dtype=np.uint8)
 
     # Introduce ~1% errors.

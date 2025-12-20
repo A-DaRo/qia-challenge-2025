@@ -15,7 +15,7 @@ from caligo.reconciliation.orchestrator import ReconciliationOrchestrator, Recon
 from caligo.reconciliation.hash_verifier import PolynomialHashVerifier
 from caligo.reconciliation.ldpc_decoder import BeliefPropagationDecoder
 from caligo.reconciliation import constants as recon_constants_pkg
-from caligo.types.exceptions import SecurityError
+from caligo.types.exceptions import SecurityError, SynchronizationError
 from caligo.sifting.commitment import SHA256Commitment
 from caligo.types.keys import BobObliviousKey
 from caligo.utils.bitarray_utils import bitarray_from_numpy, bitarray_to_numpy
@@ -133,11 +133,17 @@ class BobProgram(CaligoProgram):
                 raise SecurityError("Reconciliation block_id mismatch")
 
             if kind == "baseline":
+                # Effectively-public on-wire fields Bob consumes for baseline:
+                # - payload_length, frame_size, rate
+                # - puncture_pattern (hex), n_punctured
+                # - syndrome (bytes), qber_channel/qber_prior
+                # - hash_int, hash_seed
                 payload_len = int(msg0["payload_length"])
+                frame_size = int(msg0.get("frame_size", config.frame_size))
                 syndrome = np.frombuffer(bytes.fromhex(str(msg0["syndrome"])), dtype=np.uint8)
                 rate = float(msg0["rate"])
-                n_shortened = int(msg0["n_shortened"])
-                prng_seed = int(msg0["prng_seed"])
+                puncture_pattern = np.frombuffer(bytes.fromhex(str(msg0["puncture_pattern"])), dtype=np.uint8)
+                n_punctured = int(msg0["n_punctured"])
                 # Use qber_channel for decoder LLR (accurate channel model)
                 # Falls back to qber_prior for backward compatibility
                 qber_channel = float(msg0.get(
@@ -147,19 +153,47 @@ class BobProgram(CaligoProgram):
                 expected_hash = int(msg0["hash_int"])
                 hash_seed = int(msg0["hash_seed"])
 
+                # Cheap synchronization guards: these should never fail for
+                # honest peers, but catch accidental coupling bugs early.
+                if frame_size != int(config.frame_size):
+                    raise SynchronizationError(
+                        "Reconciliation frame_size mismatch: "
+                        f"msg={frame_size} != expected={int(config.frame_size)}"
+                    )
+                if payload_len < 0 or payload_len > frame_size:
+                    raise SynchronizationError("Reconciliation payload_length out of range")
+
                 bob_payload = bob_key_np[start:start + payload_len]
                 end = start + payload_len
-                compiled_H = matrix_manager.get_compiled(rate)
-                decode = orchestrator._decode_with_retry(
-                    bob_key=bob_payload,
-                    syndrome=syndrome,
-                    H=compiled_H,
-                    n_shortened=n_shortened,
-                    prng_seed=prng_seed,
-                    qber_estimate=qber_channel,
+                
+                # Pad short blocks to frame_size (for last block) - matches Alice's padding
+                if len(bob_payload) < frame_size:
+                    padding_needed = frame_size - len(bob_payload)
+                    bob_payload_padded = np.concatenate([bob_payload, np.zeros(padding_needed, dtype=np.uint8)])
+                else:
+                    bob_payload_padded = bob_payload
+                
+                # Use mother code (rate 0.5) with puncture pattern
+                compiled_H = matrix_manager.get_compiled(0.5)
+                if int(syndrome.shape[0]) != int(compiled_H.m):
+                    raise SynchronizationError(
+                        "Reconciliation syndrome length mismatch: "
+                        f"len={int(syndrome.shape[0])} != expected={int(compiled_H.m)}"
+                    )
+                    
+                # Build LLR using puncture pattern (replaces n_shortened/prng_seed)
+                from caligo.reconciliation.ldpc_decoder import build_channel_llr
+                llr = build_channel_llr(
+                    bob_payload_padded,
+                    qber_channel,
+                    puncture_pattern.astype(bool)
                 )
+                
+                # Decode with retry
+                decoder = BeliefPropagationDecoder(max_iterations=config.max_iterations)
+                decode = decoder.decode(llr, syndrome, H=compiled_H)
 
-                corrected_payload = decode.corrected_bits[:payload_len]
+                corrected_payload = decode.corrected_bits[:payload_len]  # Extract only original payload
                 verified = hash_verifier.verify(corrected_payload, expected_hash, seed=hash_seed)
                 yield from self._ordered_socket.send(
                     MessageType.SYNDROME_RESPONSE,
@@ -186,13 +220,14 @@ class BobProgram(CaligoProgram):
                 verified_positions.extend(range(start, end))
 
             elif kind == "blind":
-                max_rounds = int(self.params.reconciliation.max_blind_rounds)
-
+                # Blind reconciliation: same as baseline but Bob doesn't know QBER a priori
                 payload_len = int(msg0["payload_length"])
+                frame_size = int(msg0.get("frame_size", config.frame_size))
                 syndrome = np.frombuffer(bytes.fromhex(str(msg0["syndrome"])), dtype=np.uint8)
                 rate = float(msg0["rate"])
-                n_padding = int(msg0["n_padding"])
-                # Use qber_channel for decoder LLR (falls back to qber_prior for compat)
+                puncture_pattern = np.frombuffer(bytes.fromhex(str(msg0["puncture_pattern"])), dtype=np.uint8)
+                n_punctured = int(msg0["n_punctured"])
+                # Use qber_channel for decoder LLR
                 qber_channel = float(msg0.get(
                     "qber_channel",
                     msg0.get("qber_prior", self.params.nsm_params.qber_conditional)
@@ -200,85 +235,45 @@ class BobProgram(CaligoProgram):
                 expected_hash = int(msg0["hash_int"])
                 hash_seed = int(msg0["hash_seed"])
 
-                # Known padding values filled progressively; unknown => None.
-                known_padding: list[int | None] = [None] * n_padding
-
-                initial_reveal = np.frombuffer(bytes.fromhex(str(msg0.get("reveal", ""))), dtype=np.uint8)
-                for i in range(min(len(initial_reveal), n_padding)):
-                    known_padding[i] = int(initial_reveal[i])
-
                 bob_payload = bob_key_np[start:start + payload_len]
                 end = start + payload_len
-                compiled_H = matrix_manager.get_compiled(rate)
+                
+                # Pad short blocks to frame_size (for last block) - matches Alice's padding
+                if len(bob_payload) < frame_size:
+                    padding_needed = frame_size - len(bob_payload)
+                    bob_payload_padded = np.concatenate([bob_payload, np.zeros(padding_needed, dtype=np.uint8)])
+                else:
+                    bob_payload_padded = bob_payload
+                
+                # Use mother code (rate 0.5) with puncture pattern
+                compiled_H = matrix_manager.get_compiled(0.5)
+                
+                # Build LLR using puncture pattern
+                from caligo.reconciliation.ldpc_decoder import build_channel_llr
+                llr = build_channel_llr(
+                    bob_payload_padded,
+                    qber_channel,
+                    puncture_pattern.astype(bool)
+                )
+                
+                # Decode
                 decoder = BeliefPropagationDecoder(max_iterations=config.max_iterations)
-
-                best_corrected: np.ndarray | None = None
-                best_verified = False
-                best_converged = False
-                best_syndrome_errors = 0
-
-                def _attempt_decode() -> None:
-                    nonlocal best_corrected, best_verified, best_converged, best_syndrome_errors
-
-                    q = float(np.clip(qber_channel, 1e-6, 0.5 - 1e-6))
-                    channel_llr = float(np.log((1.0 - q) / q))
-
-                    llr = np.zeros(payload_len + n_padding, dtype=np.float64)
-                    llr[:payload_len] = channel_llr * (1 - 2 * bob_payload.astype(np.float64))
-
-                    for j, val in enumerate(known_padding):
-                        if val is None:
-                            continue
-                        llr[payload_len + j] = recon_constants_pkg.LDPC_LLR_SHORTENED * (1 - 2 * float(val))
-
-                    res = decoder.decode(llr, syndrome.astype(np.uint8, copy=False), H=compiled_H)
-                    corrected_payload = res.corrected_bits[:payload_len]
-                    verified = hash_verifier.verify(corrected_payload, expected_hash, seed=hash_seed)
-                    if verified and not best_verified:
-                        best_corrected = corrected_payload.astype(np.uint8)
-                        best_verified = True
-                        best_converged = bool(res.converged)
-                        best_syndrome_errors = int(res.syndrome_errors)
-
-                # Attempt after round 0.
-                _attempt_decode()
-
-                # Consume remaining rounds.
-                revealed_count = len(initial_reveal)
-                for _round in range(1, max_rounds + 1):
-                    msg_r = yield from self._ordered_socket.recv(MessageType.SYNDROME)
-                    if str(msg_r.get("kind")) != "blind":
-                        raise SecurityError("Unexpected reconciliation kind")
-                    if int(msg_r.get("block_id", -1)) != int(block_id):
-                        raise SecurityError("Reconciliation block_id mismatch")
-
-                    chunk = np.frombuffer(bytes.fromhex(str(msg_r.get("reveal", ""))), dtype=np.uint8)
-                    for i in range(len(chunk)):
-                        idx = revealed_count + i
-                        if idx >= n_padding:
-                            break
-                        known_padding[idx] = int(chunk[i])
-                    revealed_count = min(n_padding, revealed_count + len(chunk))
-
-                    if not best_verified:
-                        _attempt_decode()
-
-                if best_corrected is None:
-                    # Fall back to Bob's current payload if never verified.
-                    best_corrected = bob_payload.copy().astype(np.uint8)
+                res = decoder.decode(llr, syndrome.astype(np.uint8, copy=False), H=compiled_H)
+                corrected_payload = res.corrected_bits[:payload_len]  # Extract only original payload
+                verified = hash_verifier.verify(corrected_payload, expected_hash, seed=hash_seed)
 
                 yield from self._ordered_socket.send(
                     MessageType.SYNDROME_RESPONSE,
                     {
                         "kind": "blind",
                         "block_id": int(block_id),
-                        "verified": bool(best_verified),
-                        "converged": bool(best_converged),
-                        "syndrome_errors": int(best_syndrome_errors),
-                        "corrected_payload": best_corrected.astype(np.uint8).tobytes().hex(),
+                        "verified": bool(verified),
+                        "converged": bool(res.converged),
+                        "syndrome_errors": int(res.syndrome_errors),
+                        "corrected_payload": corrected_payload.astype(np.uint8).tobytes().hex(),
                     },
                 )
-                if not best_verified:
+                if not verified:
                     # Log warning but continue with other blocks
                     from caligo.utils.logging import get_logger
                     _logger = get_logger(__name__)
@@ -287,7 +282,7 @@ class BobProgram(CaligoProgram):
                     )
                     continue  # Skip this block, try remaining blocks
 
-                reconciled_parts.append(best_corrected.astype(np.uint8))
+                reconciled_parts.append(corrected_payload.astype(np.uint8))
                 # Track the original bit positions that are now verified
                 verified_positions.extend(range(start, end))
 

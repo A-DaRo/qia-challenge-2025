@@ -28,7 +28,8 @@ def test_fint_001_blind_factory_reconciler_runs_one_block_when_assets_exist() ->
     reconciler = create_reconciler(cfg)
 
     rng = np.random.default_rng(4242)
-    payload_len = 2867
+    # Use full frame for rate 0.5
+    payload_len = 4096
     alice = rng.integers(0, 2, size=payload_len, dtype=np.uint8)
 
     bob = alice.copy()

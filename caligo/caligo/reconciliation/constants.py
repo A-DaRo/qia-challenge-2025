@@ -66,6 +66,21 @@ LDPC_LLR_SHORTENED: float = 100.0
 """LLR value for shortened bits (effectively infinite confidence)."""
 
 # =============================================================================
+# Determinism / Synchronization
+# =============================================================================
+
+SEED_OFFSET: int = 12345
+"""Deterministic per-block seed offset.
+
+Padding generation must be deterministic and synchronized between Alice and Bob.
+The protocol derives per-block seeds as:
+
+    seed = block_id + SEED_OFFSET
+
+This keeps legacy behavior stable while removing magic numbers.
+"""
+
+# =============================================================================
 # Verification Parameters
 # =============================================================================
 

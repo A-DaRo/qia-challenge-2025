@@ -62,8 +62,7 @@ from caligo.reconciliation.ldpc_decoder import (
 from caligo.reconciliation.ldpc_encoder import (
     SyndromeBlock,
     compute_syndrome,
-    encode_block,
-    generate_padding,
+    encode_block_from_payload,
     prepare_frame,
 )
 
@@ -108,6 +107,12 @@ from caligo.reconciliation.orchestrator import (
     partition_key,
 )
 
+# Single-block reconciler
+from caligo.reconciliation.block_reconciler import (
+    BlockReconciler,
+    BlockReconcilerConfig,
+)
+
 # Factory (existing)
 from caligo.reconciliation.factory import (
     ReconciliationType,
@@ -133,8 +138,7 @@ __all__ = [
     # Encoder
     "SyndromeBlock",
     "compute_syndrome",
-    "encode_block",
-    "generate_padding",
+    "encode_block_from_payload",
     "prepare_frame",
     # Hash Verifier
     "PolynomialHashVerifier",
@@ -161,6 +165,9 @@ __all__ = [
     "BlockResult",
     "ReconciliationOrchestrator",
     "partition_key",
+    # Block reconciler
+    "BlockReconciler",
+    "BlockReconcilerConfig",
     # Factory
     "ReconciliationType",
     "ReconciliationConfig",

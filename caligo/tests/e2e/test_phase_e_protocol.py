@@ -112,20 +112,6 @@ def _blind_params(*, session_id: str, num_pairs: int, precomputed: PrecomputedEP
 def test_phase_e_end_to_end_ot_agreement(choice_bit: int, _precomputed_epr: PrecomputedEPRData) -> None:
     """Bob's output must match exactly Alice's chosen key."""
 
-#    pytest.importorskip("squidasm")
-#    pytest.importorskip("netsquid")
-
-#    # The current environment may ship NetQASM 2.x, whose instruction set is
-#    # not supported by SquidASM 0.13.x stack runner (e.g. it errors on
-#    # instructions like "mov Q0 M0").
-#    import netqasm
-#
-#    if str(getattr(netqasm, "__version__", "")).startswith("2"):
-#        pytest.skip(
-#            "NetQASM 2.x detected; Phase E SquidASM E2E requires NetQASM < 2.0 "
-#            "(or a newer SquidASM stack runner that supports NetQASM 2.x)."
-#        )
-
     # Needs to be large enough to overcome finite-size penalties.
     params = _default_params(
         session_id=f"e2e-{choice_bit}",
