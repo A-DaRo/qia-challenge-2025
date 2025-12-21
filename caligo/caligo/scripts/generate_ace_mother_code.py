@@ -324,10 +324,12 @@ class ACEPEGGenerator(PEGMatrixGenerator):
         max_vn_degree = int(vn_target.max(initial=0))
         # Check degrees can exceed their targets (esp. when reachable set covers
         # all checks); allocate headroom and let kernels skip full checks.
+        # For large block lengths and ACE constraints, local check node degrees
+        # can spike significantly above the average.
         max_cn_degree = max(
-            int(cn_target.max(initial=0)) * 2,
-            int(np.ceil(total_edges / max(1, self.m))) * 3,
-            8,
+            int(cn_target.max(initial=0)) * 4,
+            int(np.ceil(total_edges / max(1, self.m))) * 6,
+            256,
         )
 
         vn_adj = np.full((self.n, max_vn_degree), -1, dtype=np.int32)
@@ -352,6 +354,10 @@ class ACEPEGGenerator(PEGMatrixGenerator):
         next_active_vars = np.empty(self.n, dtype=np.int32)
         active_checks = np.empty(self.m, dtype=np.int32)
         next_active_checks = np.empty(self.m, dtype=np.int32)
+        
+        # Anti-duplicate arrays for Viterbi
+        var_in_next = np.zeros(self.n, dtype=np.int32)
+        check_in_next = np.zeros(self.m, dtype=np.int32)
 
         seed = getattr(self, "_seed", 1)
         rng_state = np.uint64(seed if seed is not None else 1)
@@ -386,6 +392,8 @@ class ACEPEGGenerator(PEGMatrixGenerator):
             active_checks=active_checks,
             next_active_vars=next_active_vars,
             next_active_checks=next_active_checks,
+            var_in_next=var_in_next,
+            check_in_next=check_in_next,
             rng_state=rng_state,
         )
 
@@ -434,6 +442,9 @@ class ACEPEGGenerator(PEGMatrixGenerator):
         next_active_vars = np.empty(self.n, dtype=np.int32)
         active_checks = np.empty(self.m, dtype=np.int32)
         next_active_checks = np.empty(self.m, dtype=np.int32)
+        
+        var_in_next = np.zeros(self.n, dtype=np.int32)
+        check_in_next = np.zeros(self.m, dtype=np.int32)
 
         visit_token = np.int32(1)
         violations = 0
@@ -456,6 +467,8 @@ class ACEPEGGenerator(PEGMatrixGenerator):
                 active_checks,
                 next_active_vars,
                 next_active_checks,
+                var_in_next,
+                check_in_next,
                 visit_token,
             )
             if passes == 0:
@@ -1017,7 +1030,7 @@ def main() -> int:
         "--output-path",
         type=Path,
         required=True,
-        help="Output path for .npz matrix file",
+        help="Output directory or file path. Final filename will follow 'ldpc_{n}_rate{rate:.2f}.npz' convention",
     )
     parser.add_argument(
         "--seed",
@@ -1096,10 +1109,23 @@ def main() -> int:
         )
         H = generator.generate()
         
-        # Save matrix
-        args.output_path.parent.mkdir(parents=True, exist_ok=True)
-        sp.save_npz(args.output_path, H.tocsr())
-        logger.info("Saved ACE mother code to %s", args.output_path)
+        # Save matrix using enforced naming convention: ldpc_{n}_rate{rate:.2f}.npz
+        desired_fname = f"ldpc_{args.block_length}_rate{args.rate:.2f}.npz"
+        if args.output_path.exists() and args.output_path.is_dir():
+            out_dir = args.output_path
+        else:
+            out_dir = args.output_path.parent
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / desired_fname
+        if out_path != args.output_path:
+            logger.info(
+                "Output filename adjusted to follow convention: %s -> %s",
+                args.output_path,
+                out_path,
+            )
+        sp.save_npz(out_path, H.tocsr())
+        logger.info("Saved ACE mother code to %s", out_path)
+
         logger.info(
             "Matrix properties: shape=%s, nnz=%d, density=%.4f",
             H.shape,

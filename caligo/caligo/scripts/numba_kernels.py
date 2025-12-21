@@ -149,10 +149,15 @@ def add_edge_packed(
     cn_deg: np.ndarray,
 ) -> None:
     """Add edge (v, c) into packed fixed-width adjacency arrays."""
+    if c < 0:
+        print("DEBUG: Invalid check node index c=", c)
+        raise IndexError("Invalid check node index")
     dv = vn_deg[v]
     dc = cn_deg[c]
-    if dv >= vn_adj.shape[1] or dc >= cn_adj.shape[1]:
-        raise IndexError("fixed-width adjacency capacity exceeded")
+    if dv >= vn_adj.shape[1]:
+        raise IndexError("vn_adj capacity exceeded")
+    if dc >= cn_adj.shape[1]:
+        raise IndexError("cn_adj capacity exceeded")
     vn_adj[v, dv] = c
     cn_adj[c, dc] = v
     vn_deg[v] = dv + 1
@@ -207,9 +212,12 @@ def select_check_min_fill_ratio(
     """
     m = cn_deg.shape[0]
     best_c = np.int32(-1)
-    best_num = np.int64(1 << 60)  # current degree numerator
-    best_den = np.int64(1)        # target degree denominator
-    best_deg = np.int32(1 << 30)
+    # Initialize with the first eligible check node. Using a large sentinel for
+    # best_num can overflow in the cross-multiplication (best_num * tgt) when
+    # tgt is moderately large (e.g. 9-13), which can lead to returning -1.
+    best_num = np.int64(0)  # current degree numerator
+    best_den = np.int64(1)  # target degree denominator
+    best_deg = np.int32(0)
     ties = np.int32(0)
 
     for c in range(m):
@@ -221,6 +229,14 @@ def select_check_min_fill_ratio(
         tgt = np.int64(cn_target_deg[c])
         if tgt < 1:
             tgt = np.int64(1)
+
+        if best_c == -1:
+            best_c = np.int32(c)
+            best_num = np.int64(cur)
+            best_den = tgt
+            best_deg = cur
+            ties = np.int32(1)
+            continue
 
         # Compare cur/tgt vs best_num/best_den via cross-multiplication
         left = np.int64(cur) * best_den
@@ -245,6 +261,9 @@ def select_check_min_fill_ratio(
                 rng_state = _xorshift64star(rng_state)
                 if np.int64(rng_state % np.uint64(ties)) == 0:
                     best_c = np.int32(c)
+
+    if best_c == -1:
+        pass
 
     return best_c, rng_state
 
@@ -293,6 +312,8 @@ def ace_detection_viterbi(
     active_checks: np.ndarray,
     next_active_vars: np.ndarray,
     next_active_checks: np.ndarray,
+    var_in_next: np.ndarray,
+    check_in_next: np.ndarray,
     visit_token: np.int32,
 ) -> np.uint8:
     """Numba port of ACEPEGGenerator._ace_detection_viterbi.
@@ -331,8 +352,10 @@ def ace_detection_viterbi(
                     p_temp = pv
                     if p_temp < p_check[c]:
                         p_check[c] = p_temp
-                        next_active_checks[n_next_checks] = c
-                        n_next_checks += 1
+                        if check_in_next[c] != visit_token:
+                            check_in_next[c] = visit_token
+                            next_active_checks[n_next_checks] = c
+                            n_next_checks += 1
             n_active_vars = np.int32(0)
             for i in range(n_next_checks):
                 active_checks[i] = next_active_checks[i]
@@ -362,8 +385,10 @@ def ace_detection_viterbi(
                     p_temp = pc + ace_w
                     if p_temp < p_var[w]:
                         p_var[w] = p_temp
-                        next_active_vars[n_next_vars] = w
-                        n_next_vars += 1
+                        if var_in_next[w] != visit_token:
+                            var_in_next[w] = visit_token
+                            next_active_vars[n_next_vars] = w
+                            n_next_vars += 1
             n_active_checks = np.int32(0)
             for i in range(n_next_vars):
                 active_vars[i] = next_active_vars[i]
@@ -444,6 +469,12 @@ def build_peg_graph(
                         rng_state,
                     )
 
+            # Defensive: never allow invalid check index.
+            # If this triggers, it indicates there is no check node with
+            # remaining capacity.
+            if c == -1:
+                raise IndexError("no available check node")
+
             add_edge_packed(v, c, vn_adj, cn_adj, vn_deg, cn_deg)
 
     return rng_state
@@ -477,6 +508,8 @@ def build_ace_peg_graph(
     active_checks: np.ndarray,
     next_active_vars: np.ndarray,
     next_active_checks: np.ndarray,
+    var_in_next: np.ndarray,
+    check_in_next: np.ndarray,
     rng_state: np.uint64,
 ) -> Tuple[np.uint64, np.int64, np.int64]:
     """Build a Tanner graph using ACE-PEG selection.
@@ -572,6 +605,8 @@ def build_ace_peg_graph(
                     active_checks,
                     next_active_vars,
                     next_active_checks,
+                    var_in_next,
+                    check_in_next,
                     ace_token,
                 )
 
@@ -587,6 +622,14 @@ def build_ace_peg_graph(
                 tgt = np.int64(cn_target_deg[c_idx])
                 if tgt < 1:
                     tgt = np.int64(1)
+
+                if best_c == -1:
+                    best_c = c_idx32
+                    best_num = np.int64(cur)
+                    best_den = tgt
+                    best_deg = cur
+                    ties = np.int32(1)
+                    continue
 
                 left = np.int64(cur) * best_den
                 right = best_num * tgt
@@ -610,9 +653,11 @@ def build_ace_peg_graph(
                         if np.int64(rng_state % np.uint64(ties)) == 0:
                             best_c = c_idx32
 
+            final_c = best_c
+
             if found_viable == 0:
                 ace_fallbacks += 1
-                best_c, rng_state = select_check_min_fill_ratio(
+                final_c, rng_state = select_check_min_fill_ratio(
                     cn_deg,
                     cn_target_deg,
                     cn_capacity,
@@ -621,8 +666,8 @@ def build_ace_peg_graph(
                     restrict,
                     rng_state,
                 )
-                if best_c == -1:
-                    best_c, rng_state = select_check_min_fill_ratio(
+                if final_c == -1:
+                    final_c, rng_state = select_check_min_fill_ratio(
                         cn_deg,
                         cn_target_deg,
                         cn_capacity,
@@ -631,8 +676,11 @@ def build_ace_peg_graph(
                         np.uint8(0),
                         rng_state,
                     )
+                
+                if final_c == -1:
+                    raise IndexError("No check node found")
 
-            add_edge_packed(v, best_c, vn_adj, cn_adj, vn_deg, cn_deg)
+            add_edge_packed(v, final_c, vn_adj, cn_adj, vn_deg, cn_deg)
 
     return rng_state, ace_checks_performed, ace_fallbacks
 

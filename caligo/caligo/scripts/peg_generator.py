@@ -53,20 +53,24 @@ class DegreeDistribution:
         invalid values, or probabilities do not sum to a positive value.
     """
 
-    """PEG-based LDPC parity-check matrix generator.
+    degrees: Sequence[int]
+    probabilities: Sequence[float]
 
-    This is an offline utility used to generate a mother parity-check matrix that is
-    later loaded by :class:`caligo.reconciliation.mother_code_manager.MotherCodeManager`.
-    """
+    def __post_init__(self) -> None:
+        # Basic shape checks
         if len(self.degrees) != len(self.probabilities):
             raise ValueError("degrees and probabilities must have same length")
-        if any(d < 1 for d in self.degrees):
+        # Value checks
+        if any(int(d) < 1 for d in self.degrees):
             raise ValueError("degrees must be positive")
-        if any(p < 0.0 or p > 1.0 for p in self.probabilities):
+        if any(float(p) < 0.0 or float(p) > 1.0 for p in self.probabilities):
             raise ValueError("probabilities must be within [0, 1]")
+
+        # Normalise and final validation
         total = float(sum(self.probabilities))
         if total <= 0.0:
             raise ValueError("probabilities sum must be positive")
+
         # Perform L1-normalization if sums deviate from 1.0
         if not math.isclose(total, 1.0, rel_tol=1e-6, abs_tol=1e-6):
             logger.warning(
@@ -74,7 +78,10 @@ class DegreeDistribution:
                 total,
             )
             self.probabilities = [float(p) / total for p in self.probabilities]
-        # Final check
+        else:
+            # Make sure we have a concrete list of floats
+            self.probabilities = [float(p) for p in self.probabilities]
+
         if not math.isclose(sum(self.probabilities), 1.0, rel_tol=1e-6, abs_tol=1e-6):
             raise ValueError("probabilities must sum to 1 after normalization")
 
@@ -282,7 +289,17 @@ class PEGMatrixGenerator:
         cn_target_degrees: List[int],
         total_edges: int,
     ) -> sp.csr_matrix:
-        """Fast PEG implementation using fixed-width adjacency arrays + Numba."""
+        """Fast PEG implementation using fixed-width adjacency arrays + Numba.
+
+        Notes
+        -----
+        The Numba kernels operate on fixed-width adjacency arrays. For large
+        frames and/or irregular degree distributions, some check nodes can
+        temporarily exceed their target degree during PEG fallback. To avoid
+        brittle failures (IndexError: capacity exceeded), we start with a
+        conservative capacity estimate and automatically retry with larger
+        check-node adjacency width if needed.
+        """
         logger.debug("PEG: Using Numba-accelerated graph builder")
 
         vn_target = np.asarray(vn_degrees, dtype=np.int32)
@@ -290,45 +307,119 @@ class PEGMatrixGenerator:
         order = np.argsort(vn_target).astype(np.int32)
 
         max_vn_degree = int(vn_target.max(initial=0))
-        # Check degrees can exceed target degrees due to PEG fallback when all
-        # candidates are reachable; allocate headroom to avoid overflow.
-        max_cn_degree = max(
-            int(cn_target.max(initial=0)) * 2,
-            int(np.ceil(total_edges / max(1, self.m))) * 3,
-            8,
-        )
+        # Small VN headroom: protects against any off-by-one in kernels and
+        # keeps retry logic symmetric with CN capacity growth.
+        vn_capacity = max_vn_degree + 1
 
-        vn_adj = np.full((self.n, max_vn_degree), -1, dtype=np.int32)
-        cn_adj = np.full((self.m, max_cn_degree), -1, dtype=np.int32)
-        vn_deg = np.zeros(self.n, dtype=np.int32)
-        cn_deg = np.zeros(self.m, dtype=np.int32)
+        # Initial CN capacity estimate.
+        # - cn_target.max()+8: baseline headroom beyond target degrees
+        # - avg_cn_deg*6+16: robust for skewed load during PEG fallback
+        # - >=32: avoids frequent retries for moderate frames
+        avg_cn_deg = int(np.ceil(total_edges / max(1, self.m)))
+        max_cn_degree = max(int(cn_target.max(initial=0)) + 8, avg_cn_deg * 6 + 16, 32)
 
-        # BFS workspaces
-        visited_vars = np.zeros(self.n, dtype=np.int32)
-        visited_checks = np.zeros(self.m, dtype=np.int32)
-        frontier_vars = np.empty(self.n, dtype=np.int32)
-        next_frontier_vars = np.empty(self.n, dtype=np.int32)
-        frontier_checks = np.empty(self.m, dtype=np.int32)
-        next_frontier_checks = np.empty(self.m, dtype=np.int32)
+        # Round up to a power of two (cheap doubling strategy on retry).
+        max_cn_degree = 1 << (int(max_cn_degree) - 1).bit_length()
 
-        rng_state = np.uint64(self._seed if self._seed is not None else 1)
-        numba_kernels.build_peg_graph(
-            order=order,
-            vn_target_deg=vn_target,
-            cn_target_deg=cn_target,
-            vn_adj=vn_adj,
-            cn_adj=cn_adj,
-            vn_deg=vn_deg,
-            cn_deg=cn_deg,
-            max_tree_depth=np.int32(self.max_tree_depth),
-            visited_vars=visited_vars,
-            visited_checks=visited_checks,
-            frontier_vars=frontier_vars,
-            frontier_checks=frontier_checks,
-            next_frontier_vars=next_frontier_vars,
-            next_frontier_checks=next_frontier_checks,
-            rng_state=rng_state,
-        )
+        max_retries = 6
+        max_cn_degree_limit = 8192
+        max_vn_degree_limit = max(256, vn_capacity * 4)
+        last_error: Optional[Exception] = None
+
+        for attempt in range(max_retries):
+            vn_adj = np.full((self.n, vn_capacity), -1, dtype=np.int32)
+            cn_adj = np.full((self.m, max_cn_degree), -1, dtype=np.int32)
+            vn_deg = np.zeros(self.n, dtype=np.int32)
+            cn_deg = np.zeros(self.m, dtype=np.int32)
+
+            # BFS workspaces
+            visited_vars = np.zeros(self.n, dtype=np.int32)
+            visited_checks = np.zeros(self.m, dtype=np.int32)
+            frontier_vars = np.empty(self.n, dtype=np.int32)
+            next_frontier_vars = np.empty(self.n, dtype=np.int32)
+            frontier_checks = np.empty(self.m, dtype=np.int32)
+            next_frontier_checks = np.empty(self.m, dtype=np.int32)
+
+            rng_state = np.uint64(self._seed if self._seed is not None else 1)
+
+            try:
+                numba_kernels.build_peg_graph(
+                    order=order,
+                    vn_target_deg=vn_target,
+                    cn_target_deg=cn_target,
+                    vn_adj=vn_adj,
+                    cn_adj=cn_adj,
+                    vn_deg=vn_deg,
+                    cn_deg=cn_deg,
+                    max_tree_depth=np.int32(self.max_tree_depth),
+                    visited_vars=visited_vars,
+                    visited_checks=visited_checks,
+                    frontier_vars=frontier_vars,
+                    frontier_checks=frontier_checks,
+                    next_frontier_vars=next_frontier_vars,
+                    next_frontier_checks=next_frontier_checks,
+                    rng_state=rng_state,
+                )
+                break
+            except IndexError as exc:
+                # Numba kernels raise IndexError on overflow.
+                msg = str(exc)
+                last_error = exc
+
+                overflow_vn = "vn_adj capacity exceeded" in msg
+                overflow_cn = "cn_adj capacity exceeded" in msg
+
+                # If the kernel cannot find any eligible check node, it implies
+                # all checks are considered at capacity under the current
+                # fixed-width representation.
+                if "no available check node" in msg:
+                    overflow_cn = True
+
+                if not overflow_vn and not overflow_cn:
+                    # Backwards compatibility with older error message.
+                    if "fixed-width adjacency capacity exceeded" not in msg:
+                        raise
+                    overflow_cn = True
+
+                if overflow_cn:
+                    if max_cn_degree >= max_cn_degree_limit:
+                        logger.error(
+                            "PEG: Numba CN adjacency capacity exceeded (width=%d) and hit limit=%d",
+                            max_cn_degree,
+                            max_cn_degree_limit,
+                        )
+                        raise
+                    new_cn = max_cn_degree * 2
+                    logger.warning(
+                        "PEG: Numba CN adjacency capacity exceeded (width=%d). Retrying with width=%d (%d/%d)",
+                        max_cn_degree,
+                        new_cn,
+                        attempt + 1,
+                        max_retries,
+                    )
+                    max_cn_degree = new_cn
+
+                if overflow_vn:
+                    if vn_capacity >= max_vn_degree_limit:
+                        logger.error(
+                            "PEG: Numba VN adjacency capacity exceeded (width=%d) and hit limit=%d",
+                            vn_capacity,
+                            max_vn_degree_limit,
+                        )
+                        raise
+                    new_vn = vn_capacity * 2
+                    logger.warning(
+                        "PEG: Numba VN adjacency capacity exceeded (width=%d). Retrying with width=%d (%d/%d)",
+                        vn_capacity,
+                        new_vn,
+                        attempt + 1,
+                        max_retries,
+                    )
+                    vn_capacity = new_vn
+        else:
+            # Defensive: loop exhausted without break.
+            if last_error is not None:
+                raise last_error
 
         # Build COO arrays in Numba, then CSR
         rows = np.empty(total_edges, dtype=np.int32)

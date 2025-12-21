@@ -37,7 +37,7 @@ from __future__ import annotations
 import argparse
 import time
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import scipy.sparse as sp
 import yaml
@@ -129,9 +129,14 @@ def _get_distributions(
     return all_distributions[fallback_rate]
 
 
-def generate_all(output_dir: Path, logger) -> None:
+def generate_all(
+    output_dir: Path,
+    logger,
+    frame_size: int = constants.LDPC_FRAME_SIZE,
+    rates: Optional[List[float]] = None,
+) -> None:
     """
-    Generate all LDPC matrices for configured rates.
+    Generate LDPC matrices for the provided `rates` and `frame_size`.
 
     Parameters
     ----------
@@ -139,13 +144,20 @@ def generate_all(output_dir: Path, logger) -> None:
         Directory to save generated matrices.
     logger : logging.Logger
         Logger instance for progress reporting.
+    frame_size : int
+        Number of variable nodes (codeword length).
+    rates : list of float or None
+        List of code rates to generate. If None, uses configured rates from
+        `constants.LDPC_CODE_RATES`.
     """
     output_dir.mkdir(exist_ok=True, parents=True)
     logger.info("Output directory: %s", output_dir.resolve())
+
+    rates_list = list(rates) if rates is not None else list(constants.LDPC_CODE_RATES)
     logger.info(
         "Generating matrices for %d rates: %s",
-        len(constants.LDPC_CODE_RATES),
-        list(constants.LDPC_CODE_RATES),
+        len(rates_list),
+        rates_list,
     )
     logger.info("-" * 70)
 
@@ -156,12 +168,12 @@ def generate_all(output_dir: Path, logger) -> None:
     total_start = time.perf_counter()
     results: List[Tuple[float, Tuple[int, int], int, float]] = []
 
-    for idx, rate in enumerate(constants.LDPC_CODE_RATES, 1):
+    for idx, rate in enumerate(rates_list, 1):
         start = time.perf_counter()
         logger.info(
             "[%d/%d] Starting generation for rate=%.2f",
             idx,
-            len(constants.LDPC_CODE_RATES),
+            len(rates_list),
             rate,
         )
 
@@ -169,37 +181,36 @@ def generate_all(output_dir: Path, logger) -> None:
         dists = _get_distributions(rate, all_distributions, logger)
 
         # Create generator
-        m = int(constants.LDPC_FRAME_SIZE * (1 - rate))
+        m = int(frame_size * (1 - rate))
         logger.debug(
             "Initializing PEG generator (n=%d, m=%d, max_depth=%d, seed=%d)",
-            constants.LDPC_FRAME_SIZE,
+            frame_size,
             m,
             constants.PEG_MAX_TREE_DEPTH,
             constants.PEG_DEFAULT_SEED,
         )
 
         generator = PEGMatrixGenerator(
-            n=constants.LDPC_FRAME_SIZE,
+            n=frame_size,
             rate=rate,
             lambda_dist=dists["lambda"],
             rho_dist=dists["rho"],
             max_tree_depth=constants.PEG_MAX_TREE_DEPTH,
             seed=constants.PEG_DEFAULT_SEED,
         )
-
         # Generate matrix
         logger.info(
-            "[%d/%d] Running PEG algorithm...", idx, len(constants.LDPC_CODE_RATES)
+            "[%d/%d] Running PEG algorithm...", idx, len(rates_list)
         )
         H = generator.generate()
 
         # Save to file
         filename = constants.LDPC_MATRIX_FILE_PATTERN.format(
-            frame_size=constants.LDPC_FRAME_SIZE, rate=rate
+            frame_size=frame_size, rate=rate
         )
         path = output_dir / filename
         logger.debug(
-            "[%d/%d] Saving matrix to %s", idx, len(constants.LDPC_CODE_RATES), path.name
+            "[%d/%d] Saving matrix to %s", idx, len(rates_list), path.name
         )
         sp.save_npz(path, H)
 
@@ -207,7 +218,7 @@ def generate_all(output_dir: Path, logger) -> None:
         logger.info(
             "[%d/%d] ✓ Generated %s (shape=%s, nnz=%d, density=%.4f) in %.2fs",
             idx,
-            len(constants.LDPC_CODE_RATES),
+            len(rates_list),
             filename,
             H.shape,
             H.nnz,
@@ -270,8 +281,11 @@ Examples:
   # Generate with debug output in terminal
   python -m caligo.scripts.generate_ldpc_matrices --log-show --log-level DEBUG
 
+  # Generate for specific frame size and rates
+  python -m caligo.scripts.generate_ldpc_matrices --frame-size 16 --rates 0.5 0.75
+
 Log files are always created in ./logs/generate_ldpc_matrices.log
-        """,
+        """
     )
     parser.add_argument(
         "--log-show",
@@ -291,8 +305,27 @@ Log files are always created in ./logs/generate_ldpc_matrices.log
         default=None,
         help="Output directory for matrices (default: caligo/configs/ldpc_matrices/)",
     )
+    parser.add_argument(
+        "--frame-size",
+        type=int,
+        default=None,
+        help="Frame size (n) for generated matrices. If omitted uses configured default.",
+    )
+    parser.add_argument(
+        "--rates",
+        type=float,
+        nargs="+",
+        default=None,
+        help="One or more code rates to generate (e.g. --rates 0.5 0.75). If omitted all configured rates are used.",
+    )
 
     args = parser.parse_args()
+
+    # Basic validation
+    if args.frame_size is not None and args.frame_size <= 0:
+        parser.error("--frame-size must be a positive integer")
+    if args.rates is not None and any((r <= 0.0 or r >= 1.0) for r in args.rates):
+        parser.error("--rates values must be floats in the interval (0, 1)")
 
     # Initialize logging
     logger = setup_script_logging(
@@ -307,20 +340,23 @@ Log files are always created in ./logs/generate_ldpc_matrices.log
     else:
         output_dir = constants.LDPC_MATRICES_DIR
 
+    # Use provided frame size or fallback to configured constant
+    frame_size = args.frame_size if args.frame_size is not None else constants.LDPC_FRAME_SIZE
+    rates = args.rates if args.rates is not None else list(constants.LDPC_CODE_RATES)
+
     try:
         logger.info("LDPC Matrix Generation Starting")
         logger.info("Configuration:")
-        logger.info("  Frame size: %d", constants.LDPC_FRAME_SIZE)
-        logger.info("  Code rates: %s", list(constants.LDPC_CODE_RATES))
+        logger.info("  Frame size: %d", frame_size)
+        logger.info("  Code rates: %s", rates)
         logger.info("  PEG max tree depth: %d", constants.PEG_MAX_TREE_DEPTH)
         logger.info("  PEG seed: %d", constants.PEG_DEFAULT_SEED)
         logger.info("=" * 70)
 
-        generate_all(output_dir, logger)
+        generate_all(output_dir, logger, frame_size=frame_size, rates=rates)
 
         logger.info("Matrix generation completed successfully.")
         logger.info("All matrices available in: %s", output_dir.resolve())
-
     except Exception as e:
         logger.exception("Matrix generation failed: %s", e)
         raise
