@@ -404,3 +404,427 @@ class MatrixManager:
     def available_pattern_rates(self) -> Tuple[float, ...]:
         """Rates for which puncture patterns are available."""
         return tuple(sorted(self._pool.puncture_patterns.keys()))
+
+# =============================================================================
+# Mother Code Manager (Phase 1)
+# =============================================================================
+
+@dataclass
+class NumbaGraphTopology:
+    """
+    Pre-compiled graph topology arrays for Numba kernels (Phase 1).
+    
+    Structure-of-Arrays (SoA) format optimized for cache locality.
+    These arrays are pinned in memory and passed as read-only arguments
+    to JIT-compiled kernels.
+    
+    Per Implementation Report v2 §6: This replaces CompiledParityCheckMatrix
+    for the Phase 1 hybrid architecture.
+    
+    Attributes
+    ----------
+    check_row_ptr : np.ndarray
+        CSR row pointers (uint32[m+1]).
+    check_col_idx : np.ndarray
+        CSR column indices (uint32[nnz]).
+    var_col_ptr : np.ndarray
+        CSC column pointers (uint32[n+1]).
+    var_row_idx : np.ndarray
+        CSC row indices (uint32[nnz]).
+    edge_c2v : np.ndarray
+        Check→Var edge indices (uint32[nnz]).
+    edge_v2c : np.ndarray
+        Var→Check edge indices (uint32[nnz]).
+    n_checks : int
+        Number of check nodes (m).
+    n_vars : int
+        Number of variable nodes (n).
+    n_edges : int
+        Number of edges (nnz).
+    """
+    check_row_ptr: np.ndarray      # uint32[m+1]: Row pointers
+    check_col_idx: np.ndarray      # uint32[nnz]: Column indices
+    var_col_ptr: np.ndarray        # uint32[n+1]: Column pointers
+    var_row_idx: np.ndarray        # uint32[nnz]: Row indices
+    edge_c2v: np.ndarray           # uint32[nnz]: Check→Var edge indices
+    edge_v2c: np.ndarray           # uint32[nnz]: Var→Check edge indices
+    n_checks: int
+    n_vars: int
+    n_edges: int
+
+
+class MotherCodeManager:
+    """
+    Singleton manager for R=0.5 Mother Code with Hybrid Pattern Library (Phase 1).
+
+    Per Theoretical Report v2 §2.2 and §5.1, this class:
+    1. Manages a single R_0=0.5 mother matrix
+    2. Provides Hybrid Pattern Library (Untainted + ACE-Guided)
+    3. Serves as the 'Static Data' provider for Numba kernels
+    
+    The Hybrid Pattern Library covers R_eff ∈ [0.51, 0.90] with Δ R = 0.01:
+    - Regime A (R ≤ R_sat): Untainted puncturing patterns [3]
+    - Regime B (R > R_sat): ACE-guided puncturing patterns [4]
+    
+    References
+    ----------
+    [3] Elkouss et al., "Untainted Puncturing for Irregular LDPC Codes"
+    [4] Liu & de Lamare, "Rate-Compatible LDPC Codes Based on Puncturing"
+    """
+
+    _instance: Optional["MotherCodeManager"] = None
+    _init_lock = False  # Prevent re-initialization
+
+    def __init__(
+        self,
+        matrix_path: Path,
+        pattern_dir: Path,
+    ) -> None:
+        """
+        Load mother matrix and Hybrid Pattern Library.
+        
+        Parameters
+        ----------
+        matrix_path : Path
+            Path to R=0.5 mother matrix (.npz format).
+        pattern_dir : Path
+            Directory containing hybrid pattern files.
+        """
+        if self._init_lock:
+            raise RuntimeError("Use MotherCodeManager.get_instance() for singleton access")
+        
+        # Load single R=0.5 matrix
+        logger.info(f"Loading mother matrix from {matrix_path}")
+        self._H_csr = sp.load_npz(matrix_path).tocsr().astype(np.uint8)
+        
+        # Verify R=0.5
+        n, m = self._H_csr.shape[1], self._H_csr.shape[0]
+        rate = 1.0 - m / n
+        if abs(rate - 0.5) > 0.01:
+            raise ValueError(f"Mother code rate {rate:.3f} != 0.5")
+        
+        logger.info(f"Mother matrix shape: {self._H_csr.shape}, rate: {rate:.3f}")
+        
+        # PRE-COMPILE FOR NUMBA:
+        # Flatten CSR arrays to contiguous uint32/uint64 buffers for 
+        # direct access by JIT kernels.
+        logger.info("Compiling topology for Numba kernels...")
+        self._compiled_topology = self._compile_topology()
+        logger.info(f"Topology compiled: {self._compiled_topology.n_edges} edges")
+        
+        # Load Hybrid Pattern Library (Step = 0.01)
+        logger.info(f"Loading hybrid patterns from {pattern_dir}")
+        self._patterns = self._load_hybrid_library(pattern_dir)
+        logger.info(f"Loaded {len(self._patterns)} hybrid patterns")
+        
+        # Pre-computed modulation indices for Blind protocol
+        self._modulation_indices: Optional[np.ndarray] = None
+        
+        # Legacy compiled matrix for backward compatibility
+        self._compiled: Optional[CompiledParityCheckMatrix] = None
+
+    @classmethod
+    def get_instance(cls, **kwargs) -> "MotherCodeManager":
+        """
+        Singleton accessor for MotherCodeManager.
+        
+        Parameters
+        ----------
+        **kwargs : dict
+            Arguments passed to __init__ on first invocation.
+            
+        Returns
+        -------
+        MotherCodeManager
+            Singleton instance.
+        """
+        if cls._instance is None:
+            cls._init_lock = False  # Allow first init
+            cls._instance = cls(**kwargs)
+            cls._init_lock = True   # Prevent further inits
+        return cls._instance
+
+    @classmethod
+    def from_config(
+        cls,
+        code_type: str = "ace_peg",
+        base_dir: Optional[Path] = None,
+        frame_size: int = constants.LDPC_FRAME_SIZE,
+    ) -> "MotherCodeManager":
+        """
+        Create MotherCodeManager from configuration (convenience method).
+
+        Parameters
+        ----------
+        code_type : str
+            Type of code to load (e.g., "ace_peg").
+        base_dir : Path, optional
+            Directory containing matrices. Defaults to constants.LDPC_MATRICES_DIR.
+        frame_size : int
+            Frame size n.
+
+        Returns
+        -------
+        MotherCodeManager
+            Singleton instance.
+        """
+        if base_dir is None:
+            base_dir = constants.LDPC_MATRICES_DIR
+
+        # Construct paths
+        if code_type == "ace_peg":
+            matrix_path = base_dir / f"ldpc_ace_peg/ldpc_{frame_size}_rate0.50.npz"
+        else:
+            matrix_path = base_dir / f"ldpc_{frame_size}_rate0.50.npz"
+
+        pattern_dir = base_dir / "hybrid_patterns"
+
+        if not matrix_path.exists():
+            raise FileNotFoundError(
+                f"Mother matrix not found at {matrix_path}. "
+                "Run generate_ace_mother_code.py to create it."
+            )
+
+        if not pattern_dir.exists():
+            raise FileNotFoundError(
+                f"Hybrid patterns directory not found at {pattern_dir}. "
+                "Run generate_hybrid_patterns.py to create patterns."
+            )
+
+        return cls.get_instance(
+            matrix_path=matrix_path,
+            pattern_dir=pattern_dir,
+        )
+
+    @property
+    def frame_size(self) -> int:
+        """Get frame size (n)."""
+        return self._H_csr.shape[1]
+
+    @property
+    def mother_rate(self) -> float:
+        """Get mother code rate (R_0=0.5)."""
+        return constants.MOTHER_CODE_RATE
+
+    @property
+    def compiled_topology(self) -> NumbaGraphTopology:
+        """Get pre-compiled NumbaGraphTopology."""
+        return self._compiled_topology
+
+    @property
+    def num_edges(self) -> int:
+        """Get number of edges in the Tanner graph."""
+        return self._compiled_topology.n_edges
+
+    @property
+    def patterns(self) -> Dict[float, np.ndarray]:
+        """Get dictionary of hybrid patterns."""
+        return self._patterns
+
+    def get_compiled_mother_code(self) -> CompiledParityCheckMatrix:
+        """
+        Get legacy JIT-compiled mother matrix (backward compatibility).
+
+        Returns
+        -------
+        CompiledParityCheckMatrix
+            Compiled matrix structure for legacy Numba kernels.
+        """
+        if self._compiled is None:
+            self._compiled = compile_parity_check_matrix(self._H_csr)
+        return self._compiled
+
+    def get_pattern(self, target_rate: float) -> np.ndarray:
+        """
+        Get hybrid puncturing pattern for target effective rate.
+        
+        Per Theoretical Report v2 §2.2:
+        - R ≤ R_sat: Untainted pattern (Regime A)
+        - R > R_sat: ACE-guided pattern (Regime B)
+        
+        Parameters
+        ----------
+        target_rate : float
+            Desired effective rate.
+
+        Returns
+        -------
+        np.ndarray
+            Binary mask (uint8) where 1 indicates punctured position.
+            
+        Raises
+        ------
+        ValueError
+            If no pattern found for rate.
+        """
+        # Find closest available rate (Δ R = 0.01 step)
+        available = sorted(self._patterns.keys())
+        if not available:
+            raise ValueError("No patterns loaded")
+        
+        closest = min(available, key=lambda r: abs(r - target_rate))
+        
+        # Tolerance check
+        if abs(closest - target_rate) > 0.02:
+            logger.warning(
+                f"Requested rate {target_rate:.2f} not in library. "
+                f"Using closest: {closest:.2f}"
+            )
+        
+        return self._patterns[closest].copy()
+
+    def get_modulation_indices(self, d: int) -> np.ndarray:
+        """
+        Get d hybrid modulation indices for Blind protocol.
+        
+        Per Theoretical Report v2 §4.3: the revelation order is fixed
+        at setup time using the hybrid puncturing order (Phase I untainted
+        first, then Phase II ACE-guided).
+        
+        Parameters
+        ----------
+        d : int
+            Number of modulation positions (punctured + shortened budget).
+            
+        Returns
+        -------
+        np.ndarray
+            Ordered indices for modulation positions.
+        """
+        if self._modulation_indices is None:
+            self._modulation_indices = self._compute_hybrid_indices()
+        
+        if d > len(self._modulation_indices):
+            raise ValueError(
+                f"Requested {d} indices but only {len(self._modulation_indices)} available"
+            )
+        
+        return self._modulation_indices[:d].copy()
+
+    def _compile_topology(self) -> NumbaGraphTopology:
+        """
+        Convert CSR matrix to Numba-friendly SoA format.
+        
+        This is the "baking" step that converts the sparse matrix
+        representation into flat arrays optimized for JIT compilation.
+        
+        Returns
+        -------
+        NumbaGraphTopology
+            Pre-compiled topology arrays.
+        """
+        H = self._H_csr
+        H_csc = H.tocsc()
+        
+        # CSR format (check-to-variable)
+        check_row_ptr = H.indptr.astype(np.uint32)
+        check_col_idx = H.indices.astype(np.uint32)
+        
+        # CSC format (variable-to-check)
+        var_col_ptr = H_csc.indptr.astype(np.uint32)
+        var_row_idx = H_csc.indices.astype(np.uint32)
+        
+        # Edge indexing (for message arrays)
+        n_edges = H.nnz
+        edge_c2v = np.arange(n_edges, dtype=np.uint32)
+        edge_v2c = np.arange(n_edges, dtype=np.uint32)
+        
+        return NumbaGraphTopology(
+            check_row_ptr=check_row_ptr,
+            check_col_idx=check_col_idx,
+            var_col_ptr=var_col_ptr,
+            var_row_idx=var_row_idx,
+            edge_c2v=edge_c2v,
+            edge_v2c=edge_v2c,
+            n_checks=H.shape[0],
+            n_vars=H.shape[1],
+            n_edges=n_edges,
+        )
+
+    def _load_hybrid_library(self, pattern_dir: Path) -> Dict[float, np.ndarray]:
+        """
+        Load Hybrid Pattern Library from directory.
+        
+        Expected file naming: pattern_rate0.51.npy, pattern_rate0.52.npy, ...
+        Covers R_eff ∈ [0.51, 0.90] with Δ R = 0.01 (~40 files).
+        
+        Parameters
+        ----------
+        pattern_dir : Path
+            Directory containing pattern files.
+            
+        Returns
+        -------
+        Dict[float, np.ndarray]
+            Rate → pattern mapping.
+            
+        Raises
+        ------
+        ValueError
+            If insufficient patterns found.
+        """
+        patterns = {}
+        
+        for path in pattern_dir.glob("pattern_rate*.npy"):
+            # Parse rate from filename: pattern_rate0.65.npy
+            try:
+                rate_str = path.stem.split("rate")[-1]
+                rate = float(rate_str)
+                pattern = np.load(path).astype(np.uint8)
+                
+                # Validate shape
+                if pattern.shape[0] != self._H_csr.shape[1]:
+                    logger.warning(
+                        f"Skipping {path.name}: shape {pattern.shape[0]} != {self._H_csr.shape[1]}"
+                    )
+                    continue
+                
+                patterns[rate] = pattern
+            except (ValueError, IndexError) as e:
+                logger.warning(f"Skipping malformed pattern file {path.name}: {e}")
+                continue
+        
+        if len(patterns) < 10:
+            raise ValueError(
+                f"Insufficient patterns in {pattern_dir}. "
+                f"Expected ~40, found {len(patterns)}. "
+                "Run generate_hybrid_patterns.py to create Hybrid Pattern Library."
+            )
+        
+        return patterns
+
+    def _compute_hybrid_indices(self) -> np.ndarray:
+        """
+        Compute ordered modulation indices from hybrid puncturing order.
+        
+        Per Theoretical Report v2 §2.2.3: Phase I (untainted) first,
+        then Phase II (ACE-guided), maintaining nesting property for
+        rate-compatible modulation.
+        
+        Returns
+        -------
+        np.ndarray
+            Ordered indices for Blind protocol modulation.
+        """
+        # Load modulation_indices.npy from pattern directory if available
+        # This file is generated by generate_hybrid_patterns.py
+        try:
+            pattern_dir = constants.LDPC_MATRICES_DIR / "hybrid_patterns"
+            indices_path = pattern_dir / "modulation_indices.npy"
+            
+            if indices_path.exists():
+                return np.load(indices_path).astype(np.int64)
+        except Exception as e:
+            logger.warning(f"Could not load modulation indices: {e}")
+        
+        # Fallback: construct from pattern order (use highest rate pattern)
+        highest_rate = max(self._patterns.keys())
+        pattern = self._patterns[highest_rate]
+        punctured_indices = np.where(pattern == 1)[0]
+        
+        logger.warning(
+            "Using fallback modulation indices from highest rate pattern. "
+            "Recommend running generate_hybrid_patterns.py to create proper indices."
+        )
+        
+        return punctured_indices.astype(np.int64)

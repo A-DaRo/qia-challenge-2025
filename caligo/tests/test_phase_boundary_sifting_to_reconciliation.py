@@ -32,8 +32,9 @@ from caligo.utils.bitarray_utils import bitarray_from_numpy, bitarray_to_numpy
 @pytest.fixture(scope="module")
 def matrix_manager() -> Iterator[MatrixManager]:
     """Load LDPC matrix manager once for this module."""
-
-    yield MatrixManager.from_directory(constants.LDPC_MATRICES_PATH)
+    # Phase 1: Only load rate 0.5 (only available matrix in ldpc_peg)
+    matrix_dir = constants.LDPC_MATRICES_PATH / "ldpc_peg"
+    yield MatrixManager.from_directory(matrix_dir, rates=(0.5,))
 
 
 @pytest.mark.integration

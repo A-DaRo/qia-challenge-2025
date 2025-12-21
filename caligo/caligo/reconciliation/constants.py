@@ -50,6 +50,34 @@ LDPC_DEFAULT_RATE: float = 0.50
 """Default rate used when QBER is unknown or very high."""
 
 # =============================================================================
+# Hybrid Architecture Constants (Phase 1)
+# =============================================================================
+
+MOTHER_CODE_RATE: float = 0.5
+"""Base rate of the single mother code used for all derived rates."""
+
+RATE_STEP: float = 0.01
+"""Granularity of rate adaptation."""
+
+UNTAINTED_SATURATION_RATE: float = 0.625
+"""
+Threshold rate where untainted puncturing saturates.
+Rates <= this use Untainted Puncturing (Regime A).
+Rates > this use ACE-Guided Puncturing (Regime B).
+"""
+
+RATE_MIN: float = 0.50
+RATE_MAX: float = 0.95
+
+# =============================================================================
+# Numba Configuration
+# =============================================================================
+
+NUMBA_CACHE_ENABLED: bool = True
+NUMBA_PARALLEL_ENABLED: bool = False
+NUMBA_FASTMATH_ENABLED: bool = True
+
+# =============================================================================
 # Decoder Parameters
 # =============================================================================
 

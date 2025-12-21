@@ -10,11 +10,13 @@ from caligo.amplification import OTOutputFormatter
 from caligo.connection.envelope import MessageType
 from caligo.protocol.base import CaligoProgram, ProtocolParameters
 from caligo.reconciliation import constants as recon_constants
-from caligo.reconciliation.matrix_manager import MatrixManager
-from caligo.reconciliation.orchestrator import ReconciliationOrchestrator, ReconciliationOrchestratorConfig
-from caligo.reconciliation.hash_verifier import PolynomialHashVerifier
-from caligo.reconciliation.ldpc_decoder import BeliefPropagationDecoder
-from caligo.reconciliation import constants as recon_constants_pkg
+from caligo.reconciliation.factory import (
+    ReconciliationConfig,
+    ReconciliationType,
+    create_strategy,
+)
+from caligo.reconciliation.leakage_tracker import LeakageTracker, compute_safety_cap
+from caligo.reconciliation.strategies import ReconciliationContext
 from caligo.types.exceptions import SecurityError, SynchronizationError
 from caligo.sifting.commitment import SHA256Commitment
 from caligo.types.keys import BobObliviousKey
@@ -83,7 +85,11 @@ class BobProgram(CaligoProgram):
                 {"test_bits": test_bits.tobytes().hex()},
             )
 
-        # Phase III: receive per-block syndrome(s), decode locally.
+        # Phase III: Reconciliation via Strategy Pattern
+        # Per Implementation Report v2 §10.2.6:
+        # - Delegates to ReconciliationStrategy (Baseline or Blind)
+        # - Role class kept thin (< 10 lines per protocol)
+
         # Determine matching indices from bases only.
         matching_mask = _alice_bases == bob_bases
         matching_indices = np.where(matching_mask)[0].astype(np.int64)
@@ -97,7 +103,6 @@ class BobProgram(CaligoProgram):
 
         # For baseline, Alice removes test indices; mimic that removal locally.
         if self.params.reconciliation.requires_qber_estimation:
-            # Remove test indices from matching_indices.
             test_set = set(test_indices.tolist())
             key_indices = np.array([i for i in matching_indices.tolist() if i not in test_set], dtype=np.int64)
         else:
@@ -110,190 +115,8 @@ class BobProgram(CaligoProgram):
         i0_indices = np.intersect1d(i0_all, key_indices)
         i1_indices = np.intersect1d(i1_all, key_indices)
 
-        matrix_manager = MatrixManager.from_directory(recon_constants.LDPC_MATRICES_PATH)
-        config = ReconciliationOrchestratorConfig(
-            frame_size=int(self.params.reconciliation.frame_size),
-            max_iterations=int(self.params.reconciliation.max_iterations),
-            max_retries=int(self.params.reconciliation.max_blind_rounds),
-        )
-        orchestrator = ReconciliationOrchestrator(
-            matrix_manager=matrix_manager,
-            config=config,
-            safety_cap=10**12,
-        )
-
-        hash_verifier = PolynomialHashVerifier(hash_bits=config.hash_bits)
-
-        reconciled_parts: list[np.ndarray] = []
-        verified_positions: list[int] = []  # Track which original bit positions are verified
-        for block_id, start in enumerate(range(0, len(bob_key_np), config.frame_size)):
-            msg0 = yield from self._ordered_socket.recv(MessageType.SYNDROME)
-            kind = str(msg0.get("kind"))
-            if int(msg0.get("block_id", -1)) != int(block_id):
-                raise SecurityError("Reconciliation block_id mismatch")
-
-            if kind == "baseline":
-                # Effectively-public on-wire fields Bob consumes for baseline:
-                # - payload_length, frame_size, rate
-                # - puncture_pattern (hex), n_punctured
-                # - syndrome (bytes), qber_channel/qber_prior
-                # - hash_int, hash_seed
-                payload_len = int(msg0["payload_length"])
-                frame_size = int(msg0.get("frame_size", config.frame_size))
-                syndrome = np.frombuffer(bytes.fromhex(str(msg0["syndrome"])), dtype=np.uint8)
-                rate = float(msg0["rate"])
-                puncture_pattern = np.frombuffer(bytes.fromhex(str(msg0["puncture_pattern"])), dtype=np.uint8)
-                n_punctured = int(msg0["n_punctured"])
-                # Use qber_channel for decoder LLR (accurate channel model)
-                # Falls back to qber_prior for backward compatibility
-                qber_channel = float(msg0.get(
-                    "qber_channel",
-                    msg0.get("qber_prior", self.params.nsm_params.qber_conditional)
-                ))
-                expected_hash = int(msg0["hash_int"])
-                hash_seed = int(msg0["hash_seed"])
-
-                # Cheap synchronization guards: these should never fail for
-                # honest peers, but catch accidental coupling bugs early.
-                if frame_size != int(config.frame_size):
-                    raise SynchronizationError(
-                        "Reconciliation frame_size mismatch: "
-                        f"msg={frame_size} != expected={int(config.frame_size)}"
-                    )
-                if payload_len < 0 or payload_len > frame_size:
-                    raise SynchronizationError("Reconciliation payload_length out of range")
-
-                bob_payload = bob_key_np[start:start + payload_len]
-                end = start + payload_len
-                
-                # Pad short blocks to frame_size (for last block) - matches Alice's padding
-                if len(bob_payload) < frame_size:
-                    padding_needed = frame_size - len(bob_payload)
-                    bob_payload_padded = np.concatenate([bob_payload, np.zeros(padding_needed, dtype=np.uint8)])
-                else:
-                    bob_payload_padded = bob_payload
-                
-                # Use mother code (rate 0.5) with puncture pattern
-                compiled_H = matrix_manager.get_compiled(0.5)
-                if int(syndrome.shape[0]) != int(compiled_H.m):
-                    raise SynchronizationError(
-                        "Reconciliation syndrome length mismatch: "
-                        f"len={int(syndrome.shape[0])} != expected={int(compiled_H.m)}"
-                    )
-                    
-                # Build LLR using puncture pattern (replaces n_shortened/prng_seed)
-                from caligo.reconciliation.ldpc_decoder import build_channel_llr
-                llr = build_channel_llr(
-                    bob_payload_padded,
-                    qber_channel,
-                    puncture_pattern.astype(bool)
-                )
-                
-                # Decode with retry
-                decoder = BeliefPropagationDecoder(max_iterations=config.max_iterations)
-                decode = decoder.decode(llr, syndrome, H=compiled_H)
-
-                corrected_payload = decode.corrected_bits[:payload_len]  # Extract only original payload
-                verified = hash_verifier.verify(corrected_payload, expected_hash, seed=hash_seed)
-                yield from self._ordered_socket.send(
-                    MessageType.SYNDROME_RESPONSE,
-                    {
-                        "kind": "baseline",
-                        "block_id": int(block_id),
-                        "verified": bool(verified),
-                        "converged": bool(decode.converged),
-                        "syndrome_errors": int(decode.syndrome_errors),
-                        "corrected_payload": corrected_payload.astype(np.uint8).tobytes().hex(),
-                    },
-                )
-                if not verified:
-                    # Log warning but continue with other blocks
-                    from caligo.utils.logging import get_logger
-                    _logger = get_logger(__name__)
-                    _logger.warning(
-                        f"Block {block_id} failed verification - excluding from final key"
-                    )
-                    continue  # Skip this block, try remaining blocks
-
-                reconciled_parts.append(corrected_payload.astype(np.uint8))
-                # Track the original bit positions that are now verified
-                verified_positions.extend(range(start, end))
-
-            elif kind == "blind":
-                # Blind reconciliation: same as baseline but Bob doesn't know QBER a priori
-                payload_len = int(msg0["payload_length"])
-                frame_size = int(msg0.get("frame_size", config.frame_size))
-                syndrome = np.frombuffer(bytes.fromhex(str(msg0["syndrome"])), dtype=np.uint8)
-                rate = float(msg0["rate"])
-                puncture_pattern = np.frombuffer(bytes.fromhex(str(msg0["puncture_pattern"])), dtype=np.uint8)
-                n_punctured = int(msg0["n_punctured"])
-                # Use qber_channel for decoder LLR
-                qber_channel = float(msg0.get(
-                    "qber_channel",
-                    msg0.get("qber_prior", self.params.nsm_params.qber_conditional)
-                ))
-                expected_hash = int(msg0["hash_int"])
-                hash_seed = int(msg0["hash_seed"])
-
-                bob_payload = bob_key_np[start:start + payload_len]
-                end = start + payload_len
-                
-                # Pad short blocks to frame_size (for last block) - matches Alice's padding
-                if len(bob_payload) < frame_size:
-                    padding_needed = frame_size - len(bob_payload)
-                    bob_payload_padded = np.concatenate([bob_payload, np.zeros(padding_needed, dtype=np.uint8)])
-                else:
-                    bob_payload_padded = bob_payload
-                
-                # Use mother code (rate 0.5) with puncture pattern
-                compiled_H = matrix_manager.get_compiled(0.5)
-                
-                # Build LLR using puncture pattern
-                from caligo.reconciliation.ldpc_decoder import build_channel_llr
-                llr = build_channel_llr(
-                    bob_payload_padded,
-                    qber_channel,
-                    puncture_pattern.astype(bool)
-                )
-                
-                # Decode
-                decoder = BeliefPropagationDecoder(max_iterations=config.max_iterations)
-                res = decoder.decode(llr, syndrome.astype(np.uint8, copy=False), H=compiled_H)
-                corrected_payload = res.corrected_bits[:payload_len]  # Extract only original payload
-                verified = hash_verifier.verify(corrected_payload, expected_hash, seed=hash_seed)
-
-                yield from self._ordered_socket.send(
-                    MessageType.SYNDROME_RESPONSE,
-                    {
-                        "kind": "blind",
-                        "block_id": int(block_id),
-                        "verified": bool(verified),
-                        "converged": bool(res.converged),
-                        "syndrome_errors": int(res.syndrome_errors),
-                        "corrected_payload": corrected_payload.astype(np.uint8).tobytes().hex(),
-                    },
-                )
-                if not verified:
-                    # Log warning but continue with other blocks
-                    from caligo.utils.logging import get_logger
-                    _logger = get_logger(__name__)
-                    _logger.warning(
-                        f"Block {block_id} failed verification - excluding from final key"
-                    )
-                    continue  # Skip this block, try remaining blocks
-
-                reconciled_parts.append(corrected_payload.astype(np.uint8))
-                # Track the original bit positions that are now verified
-                verified_positions.extend(range(start, end))
-
-            else:
-                raise SecurityError("Unsupported reconciliation kind")
-
-        # Check if we have enough reconciled bits
-        if len(reconciled_parts) == 0:
-            raise SecurityError("All reconciliation blocks failed verification")
-        
-        reconciled_np = np.concatenate(reconciled_parts).astype(np.uint8) if reconciled_parts else np.array([], dtype=np.uint8)
+        # Execute Phase III reconciliation via strategy delegation
+        reconciled_np, verified_positions = yield from self._phase3_reconcile(bob_key_np)
 
         # Filter partition indices to only include verified positions.
         # The reconciled_np corresponds to verified_positions in the original key.
@@ -345,6 +168,167 @@ class BobProgram(CaligoProgram):
             "bob_key": bob_key,
             "choice_bit": int(self._choice_bit),
         }
+
+    def _phase3_reconcile(
+        self, bob_key_np: np.ndarray
+    ) -> Generator[Any, None, Tuple[np.ndarray, list]]:
+        """
+        Execute reconciliation (Phase III) via Strategy Pattern.
+
+        Per Implementation Report v2 §10.2.6:
+        - Delegates to ReconciliationStrategy (Baseline or Blind)
+        - Role class kept thin (< 10 lines per protocol)
+        - YAML-driven runtime switching
+
+        Parameters
+        ----------
+        bob_key_np : np.ndarray
+            Bob's sifted key bits.
+
+        Yields
+        ------
+        Messages to/from ordered socket.
+
+        Returns
+        -------
+        Tuple[np.ndarray, list]
+            Reconciled key bits and list of verified positions.
+        """
+        assert self._ordered_socket is not None
+
+        frame_size = int(self.params.reconciliation.frame_size)
+
+        # 1. Build ReconciliationConfig from protocol parameters
+        config = ReconciliationConfig(
+            reconciliation_type=self.params.reconciliation.reconciliation_type,
+            frame_size=frame_size,
+            max_iterations=int(self.params.reconciliation.max_iterations),
+            max_blind_rounds=int(self.params.reconciliation.max_blind_rounds),
+        )
+
+        # 2. Create dependencies (injected into strategy)
+        from caligo.reconciliation.matrix_manager import MotherCodeManager
+        from caligo.reconciliation.strategies.codec import LDPCCodec
+
+        mother_code = MotherCodeManager.from_config()
+        codec = LDPCCodec(mother_code)
+        # Bob doesn't know QBER, use conservative default for safety cap
+        safety_cap = compute_safety_cap(len(bob_key_np), 0.05)
+        leakage_tracker = LeakageTracker(safety_cap=safety_cap, abort_on_exceed=False)
+
+        # 3. Create strategy via factory
+        strategy = create_strategy(config, mother_code, codec, leakage_tracker)
+
+        # 4. Build ReconciliationContext (Bob doesn't have QBER initially)
+        ctx = ReconciliationContext(
+            session_id=id(self),
+            frame_size=frame_size,
+            mother_rate=0.5,
+            max_iterations=config.max_iterations,
+            hash_bits=64,
+            f_crit=1.16,
+            qber_measured=None,  # Bob doesn't know QBER
+            qber_heuristic=None,
+            modulation_delta=0.44,
+        )
+
+        # 5. Partition key into blocks
+        from caligo.reconciliation.orchestrator import partition_key
+        bob_blocks = partition_key(bob_key_np, frame_size)
+
+        # 6. Reconcile each block via strategy generator
+        reconciled_parts: list[np.ndarray] = []
+        verified_positions: list[int] = []
+
+        for block_id, bob_block in enumerate(bob_blocks):
+            # Drive the strategy generator via network socket
+            result = yield from self._drive_bob_strategy(
+                strategy, bob_block, ctx, block_id
+            )
+
+            if result.verified:
+                reconciled_parts.append(result.corrected_payload)
+                start = block_id * frame_size
+                verified_positions.extend(range(start, start + len(result.corrected_payload)))
+            else:
+                logger.warning(f"Block {block_id} failed verification - excluding from final key")
+
+        if len(reconciled_parts) == 0:
+            raise SecurityError("All reconciliation blocks failed verification")
+
+        reconciled_np = np.concatenate(reconciled_parts) if reconciled_parts else np.array([], dtype=np.uint8)
+        return reconciled_np, verified_positions
+
+    def _drive_bob_strategy(
+        self,
+        strategy,
+        payload: np.ndarray,
+        ctx: ReconciliationContext,
+        block_id: int,
+    ) -> Generator[Any, None, Any]:
+        """
+        Drive Bob's strategy generator via network socket.
+
+        Bridges the strategy's generator interface with the ordered socket
+        for message exchange with Alice.
+
+        Parameters
+        ----------
+        strategy : ReconciliationStrategy
+            Active strategy instance (Baseline or Blind).
+        payload : np.ndarray
+            Bob's payload bits for this block.
+        ctx : ReconciliationContext
+            Session context.
+        block_id : int
+            Block identifier.
+
+        Yields
+        ------
+        Messages to/from ordered socket.
+
+        Returns
+        -------
+        BlockResult
+            Reconciliation result for this block.
+        """
+        gen = strategy.bob_reconcile_block(payload, ctx, block_id)
+        
+        # First call yields an empty dict, expecting incoming message
+        try:
+            _ = next(gen)  # Initial yield
+        except StopIteration as e:
+            return e.value
+
+        # Receive first message from Alice
+        msg = yield from self._ordered_socket.recv(MessageType.SYNDROME)
+        
+        if int(msg.get("block_id", -1)) != int(block_id):
+            raise SecurityError("Reconciliation block_id mismatch")
+        
+        # Loop: send message to generator, get response, send to Alice
+        while True:
+            try:
+                response = gen.send(msg)
+            except StopIteration as e:
+                return e.value
+            
+            # Send response to Alice
+            yield from self._ordered_socket.send(MessageType.SYNDROME_RESPONSE, {
+                "block_id": int(block_id),
+                **response,
+            })
+            
+            # Check if this was a terminal response (verified or final iteration)
+            if response.get("verified", False) or response.get("kind") != "blind_reveal":
+                # Try to get final result
+                try:
+                    next(gen)
+                except StopIteration as e:
+                    return e.value
+            
+            # For blind protocol, may receive another message
+            msg = yield from self._ordered_socket.recv(MessageType.SYNDROME)
 
     def _phase1_quantum_and_commit(
         self, context

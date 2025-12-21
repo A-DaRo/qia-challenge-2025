@@ -106,11 +106,6 @@ def channel_capacity(qber: float) -> float:
     return 1.0 - binary_entropy(qber)
 
 
-# Available LDPC code rates (frame size 4096)
-LDPC_CODE_RATES: tuple[float, ...] = (0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90)
-LDPC_F_CRIT: float = 1.22  # Efficiency criterion
-
-
 def suggested_ldpc_rate_from_qber(
     qber: float,
     safety_margin: float = 0.0,
@@ -172,46 +167,6 @@ def suggested_ldpc_rate_from_qber(
 
     # Default to lowest rate.
     return LDPC_CODE_RATES[0]
-
-
-def blind_reconciliation_initial_config(qber: float) -> dict[str, Any]:
-    """
-    Generate blind reconciliation configuration from estimated QBER.
-
-    Provides initial parameters for blind reconciliation based on
-    the channel quality.
-
-    Parameters
-    ----------
-    qber : float
-        Estimated quantum bit error rate in [0, 0.5].
-
-    Returns
-    -------
-    dict[str, Any]
-        Configuration dictionary with keys:
-        - initial_rate: Suggested LDPC code rate
-        - rate_adaptation: "puncturing" or "shortening"
-
-    Notes
-    -----
-    - Low QBER (<2%): High rate with puncturing for efficiency
-    - Moderate QBER (2-5%): Medium-high rate with puncturing
-    - Higher QBER (5-8%): Medium rate with shortening
-    - High QBER (>8%): Low rate with shortening for reliability
-
-    References
-    ----------
-    - recon_phase_spec.md Section 3.2: Blind Reconciliation
-    """
-    if qber < 0.02:
-        return {"initial_rate": 0.90, "rate_adaptation": "puncturing"}
-    elif qber < 0.05:
-        return {"initial_rate": 0.80, "rate_adaptation": "puncturing"}
-    elif qber < 0.08:
-        return {"initial_rate": 0.70, "rate_adaptation": "shortening"}
-    else:
-        return {"initial_rate": 0.60, "rate_adaptation": "shortening"}
 
 
 def compute_qber_erven(
@@ -445,3 +400,98 @@ def key_length_bound(
     raw_length = n_sifted * h_rate - leakage_bits - security_cost
 
     return max(0, int(math.floor(raw_length)))
+
+
+def blind_reconciliation_initial_config(
+    qber: float,
+    frame_size: int = 4096,
+    mother_rate: float = 0.5,
+) -> dict[str, Any]:
+    """
+    Compute initial configuration for blind reconciliation from QBER heuristic.
+
+    Per Theoretical Report v2 §4 and Implementation Report v2 §2.4.4,
+    blind reconciliation can use an optional NSM-gated QBER heuristic
+    (from compute_qber_erven) to inform:
+    1. Starting rate cap (modulation budget)
+    2. Iteration budget (higher QBER → more iterations allowed)
+
+    This function implements the NSM-gated variant that provides a
+    permissive starting point while maintaining the blind protocol's
+    advantage of not requiring explicit test-bit QBER estimation.
+
+    Parameters
+    ----------
+    qber : float
+        Heuristic QBER estimate from NSM channel parameters.
+        Computed via compute_qber_erven() using physical model.
+    frame_size : int, optional
+        LDPC frame size (default: 4096).
+    mother_rate : float, optional
+        Mother code rate (default: 0.5).
+
+    Returns
+    -------
+    dict
+        Configuration dictionary with keys:
+        - 'initial_shortening': Initial number of bits to shorten (s₁)
+        - 'max_iterations': Recommended iteration budget (t)
+        - 'modulation_delta': Modulation budget (δ)
+        - 'heuristic_qber': Input QBER (for logging)
+
+    Notes
+    -----
+    The NSM-gated variant uses a conservative mapping:
+    - Low QBER (≤ 0.05): Minimal shortening (s₁=0), tight budget (t=3)
+    - Medium QBER (0.05-0.10): Moderate shortening, standard budget (t=3)
+    - High QBER (> 0.10): Aggressive shortening, extended budget (t=5)
+
+    This maintains blind reconciliation's efficiency advantage while
+    using available physical information to avoid unnecessary iterations.
+
+    References
+    ----------
+    - Martinez-Mateo et al. (2012): Blind Reconciliation protocol
+    - Erven et al. (2014): NSM experimental parameters
+    - Implementation Report v2 §2.4.4: NSM-Gated Heuristic
+
+    Examples
+    --------
+    >>> config = blind_reconciliation_initial_config(qber=0.03)
+    >>> config['initial_shortening']
+    0
+    >>> config['max_iterations']
+    3
+    """
+    # Conservative QBER-to-shortening mapping
+    # Per Theoretical Report v2: Starting rate should be permissive
+    # to avoid excessive early shortening
+    if qber <= 0.05:
+        # Low noise: Start with minimal shortening
+        initial_shortening = 0
+        max_iterations = 3
+        delta = 0.10  # Standard modulation budget
+    elif qber <= 0.10:
+        # Medium noise: Moderate pre-shortening
+        # Target starting rate ≈ 0.55
+        target_rate = 0.55
+        # R_eff = (R₀ - s/n) / (1 - s/n)
+        # Solve for s: s = n × (R₀ - R_eff) / (1 - R_eff)
+        shortening_fraction = (mother_rate - target_rate) / (1.0 - target_rate)
+        initial_shortening = int(shortening_fraction * frame_size)
+        max_iterations = 3
+        delta = 0.15
+    else:
+        # High noise: Aggressive pre-shortening
+        target_rate = 0.52
+        shortening_fraction = (mother_rate - target_rate) / (1.0 - target_rate)
+        initial_shortening = int(shortening_fraction * frame_size)
+        max_iterations = 5  # Allow more iterations for difficult channel
+        delta = 0.20
+
+    return {
+        "initial_shortening": initial_shortening,
+        "max_iterations": max_iterations,
+        "modulation_delta": delta,
+        "heuristic_qber": qber,
+    }

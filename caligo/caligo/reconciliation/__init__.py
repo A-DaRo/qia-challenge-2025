@@ -1,5 +1,5 @@
 """
-Reconciliation Subpackage for E-HOK Information Reconciliation.
+Reconciliation Subpackage for Caligo Information Reconciliation.
 
 This package provides LDPC-based reconciliation with support for:
 - Rate-adaptive reconciliation (puncturing/shortening)
@@ -48,6 +48,15 @@ from caligo.reconciliation.constants import (
     LDPC_HASH_BITS,
     BLIND_MAX_ITERATIONS,
     BLIND_MODULATION_FRACTION,
+    # Phase 1: Architectural constants
+    MOTHER_CODE_RATE,
+    RATE_STEP,
+    UNTAINTED_SATURATION_RATE,
+    RATE_MIN,
+    RATE_MAX,
+    NUMBA_CACHE_ENABLED,
+    NUMBA_PARALLEL_ENABLED,
+    NUMBA_FASTMATH_ENABLED,
 )
 
 # Decoder
@@ -118,7 +127,15 @@ from caligo.reconciliation.factory import (
     ReconciliationType,
     ReconciliationConfig,
     create_reconciler,
+    create_strategy,  # Phase 1: Strategy factory
 )
+
+# Strategy Pattern (Phase 1: Foundation) - DISABLED until strategies implemented
+# from caligo.reconciliation.strategies import (
+#     BlockResult as StrategyBlockResult,
+#     ReconciliationContext,
+#     ReconciliationStrategy,
+# )
 
 __all__ = [
     # Constants
@@ -130,6 +147,15 @@ __all__ = [
     "LDPC_HASH_BITS",
     "BLIND_MAX_ITERATIONS",
     "BLIND_MODULATION_FRACTION",
+    # Phase 1: Architectural constants
+    "MOTHER_CODE_RATE",
+    "RATE_STEP",
+    "UNTAINTED_SATURATION_RATE",
+    "RATE_MIN",
+    "RATE_MAX",
+    "NUMBA_CACHE_ENABLED",
+    "NUMBA_PARALLEL_ENABLED",
+    "NUMBA_FASTMATH_ENABLED",
     # Decoder
     "BeliefPropagationDecoder",
     "DecodeResult",
@@ -172,4 +198,9 @@ __all__ = [
     "ReconciliationType",
     "ReconciliationConfig",
     "create_reconciler",
+    "create_strategy",  # Phase 1: Strategy factory
+    # Strategy Pattern (Phase 1)
+    "StrategyBlockResult",
+    "ReconciliationContext",
+    "ReconciliationStrategy",
 ]

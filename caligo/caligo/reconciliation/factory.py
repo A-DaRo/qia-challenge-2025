@@ -855,3 +855,111 @@ def create_reconciler_from_yaml(
     """
     config = ReconciliationConfig.from_yaml_file(yaml_path)
     return create_reconciler(config, nsm_params)
+
+
+# =============================================================================
+# Strategy Factory (Phase 1 Foundation)
+# =============================================================================
+
+
+def create_strategy(
+    config: ReconciliationConfig,
+    mother_code_manager: Any,  # MotherCodeManager
+    ldpc_codec: Any,  # LDPCCodec
+    leakage_tracker: Any,  # LeakageTracker
+):
+    """
+    Create a reconciliation strategy instance based on configuration.
+
+    This is the Strategy Pattern factory function implementing Phase 2/3 integration.
+
+    Per Implementation Report v2 §5 and §10.2.6:
+    - Baseline: Elkouss et al. (2010) rate-compatible protocol
+    - Blind: Martinez-Mateo et al. (2012) blind protocol
+    - Enables YAML-based runtime switching without code changes
+
+    Parameters
+    ----------
+    config : ReconciliationConfig
+        Reconciliation configuration including protocol type.
+    mother_code_manager : MotherCodeManager
+        Single R=0.5 mother code + hybrid pattern library.
+    ldpc_codec : LDPCCodec
+        Numba JIT kernel facade for encode/decode.
+    leakage_tracker : LeakageTracker
+        Circuit breaker for leakage enforcement.
+
+    Returns
+    -------
+    ReconciliationStrategy
+        Concrete strategy instance (BaselineStrategy or BlindStrategy).
+
+    Raises
+    ------
+    ValueError
+        If reconciliation_type is INTERACTIVE (not supported).
+    ImportError
+        If strategy modules not available.
+
+    Examples
+    --------
+    >>> from caligo.reconciliation.matrix_manager import MotherCodeManager
+    >>> from caligo.reconciliation.strategies.codec import LDPCCodec
+    >>> from caligo.reconciliation.leakage_tracker import LeakageTracker
+    >>> 
+    >>> config = ReconciliationConfig(
+    ...     reconciliation_type=ReconciliationType.BASELINE,
+    ...     frame_size=4096,
+    ...     max_iterations=60,
+    ... )
+    >>> mgr = MotherCodeManager.from_config()
+    >>> codec = LDPCCodec(mgr)
+    >>> tracker = LeakageTracker(safety_cap=100000)
+    >>> strategy = create_strategy(config, mgr, codec, tracker)
+    >>> # Returns: BaselineStrategy instance
+
+    Notes
+    -----
+    This factory enables runtime selection between Baseline and Blind
+    reconciliation without modifying protocol orchestration code.
+    """
+    if config.reconciliation_type == ReconciliationType.INTERACTIVE:
+        raise ValueError(
+            "Interactive reconciliation not implemented. "
+            "Use BASELINE or BLIND."
+        )
+    
+    try:
+        from caligo.reconciliation.strategies.baseline import BaselineStrategy
+        from caligo.reconciliation.strategies.blind import BlindStrategy
+    except ImportError as e:
+        raise ImportError(
+            "Strategy modules not available. Ensure Phase 2 implementation complete."
+        ) from e
+    
+    if config.reconciliation_type == ReconciliationType.BASELINE:
+        logger.info(
+            "Creating BaselineStrategy: frame_size=%d, max_iter=%d",
+            config.frame_size,
+            config.max_iterations,
+        )
+        return BaselineStrategy(
+            mother_code=mother_code_manager,
+            codec=ldpc_codec,
+            leakage_tracker=leakage_tracker,
+        )
+    elif config.reconciliation_type == ReconciliationType.BLIND:
+        logger.info(
+            "Creating BlindStrategy: frame_size=%d, max_blind_rounds=%d",
+            config.frame_size,
+            config.max_blind_rounds,
+        )
+        return BlindStrategy(
+            mother_code=mother_code_manager,
+            codec=ldpc_codec,
+            leakage_tracker=leakage_tracker,
+            max_blind_iterations=config.max_blind_rounds,
+            modulation_fraction=0.44,  # Per Theoretical Report v2 Remark 2.1
+        )
+    else:
+        raise ValueError(f"Unknown reconciliation type: {config.reconciliation_type}")

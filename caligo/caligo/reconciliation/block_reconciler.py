@@ -58,20 +58,37 @@ class LeakageBreakdown:
 
 @dataclass
 class BlockResult:
-    """Result of single block reconciliation.
-
-    This dataclass intentionally preserves the legacy attributes used by tests
-    and downstream code (`corrected_payload`, `verified`, `converged`,
-    `error_count`, `syndrome_length`) while adding structured reporting.
     """
-
+    Result of single block reconciliation.
+    
+    Per Theoretical Report v2 §1.2, leakage accounting must be exact:
+    leak_EC = syndrome_leakage + hash_leakage + revealed_leakage
+    """
     corrected_payload: np.ndarray
     verified: bool
     converged: bool
-    error_count: int
-    syndrome_length: int
+    iterations_used: int
+    syndrome_leakage: int
+    revealed_leakage: int
+    hash_leakage: int
+    retry_count: int
+    effective_rate: float = 0.5
+    
+    # Legacy compatibility
+    error_count: int = 0
+    syndrome_length: int = 0
     retry_report: Optional[RetryReport] = None
     leakage: Optional[LeakageBreakdown] = None
+
+    @property
+    def total_leakage(self) -> int:
+        """
+        Total leakage for this block.
+        
+        Per Theoretical Report v2 Eq. (leak_EC):
+        leak = |Σ| + |Hash| + |Revealed|
+        """
+        return self.syndrome_leakage + self.revealed_leakage + self.hash_leakage
 
 
 @dataclass(frozen=True)

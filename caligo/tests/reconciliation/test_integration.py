@@ -413,13 +413,25 @@ class TestErrorScenarios:
         assert hash_verifier.verify(bob_key, alice_hash) is False
 
     def test_leakage_cap_exceeded(self) -> None:
-        """Leakage cap exceeded raises abort condition."""
-        tracker = LeakageTracker(safety_cap=1000)
+        """Leakage cap exceeded raises abort condition via circuit breaker."""
+        from caligo.types.exceptions import LeakageBudgetExceeded
+        
+        # Test with abort_on_exceed=True (circuit breaker pattern)
+        tracker = LeakageTracker(safety_cap=1000, abort_on_exceed=True)
         
         # First block
         tracker.record_block(block_id=0, syndrome_bits=600, hash_bits=50)
         assert tracker.should_abort() is False
         
-        # Second block exceeds cap
-        tracker.record_block(block_id=1, syndrome_bits=600, hash_bits=50)
-        assert tracker.should_abort() is True
+        # Second block exceeds cap - should raise immediately
+        with pytest.raises(LeakageBudgetExceeded) as exc_info:
+            tracker.record_block(block_id=1, syndrome_bits=600, hash_bits=50)
+        
+        assert exc_info.value.actual_leakage == 1300
+        assert exc_info.value.max_allowed == 1000
+        
+        # Test with abort_on_exceed=False (legacy behavior)
+        tracker_legacy = LeakageTracker(safety_cap=1000, abort_on_exceed=False)
+        tracker_legacy.record_block(block_id=0, syndrome_bits=600, hash_bits=50)
+        tracker_legacy.record_block(block_id=1, syndrome_bits=600, hash_bits=50)
+        assert tracker_legacy.should_abort() is True

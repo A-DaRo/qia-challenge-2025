@@ -16,12 +16,13 @@ from caligo.amplification import (
 from caligo.connection.envelope import MessageType
 from caligo.protocol.base import CaligoProgram, ProtocolParameters
 from caligo.reconciliation import constants as recon_constants
-from caligo.reconciliation.ldpc_encoder import encode_block_from_payload
-from caligo.reconciliation.matrix_manager import MatrixManager
-from caligo.reconciliation.orchestrator import ReconciliationOrchestratorConfig
-from caligo.reconciliation.rate_selector import select_rate
-from caligo.reconciliation.hash_verifier import PolynomialHashVerifier
-from caligo.reconciliation.factory import ReconciliationType
+from caligo.reconciliation.factory import (
+    ReconciliationConfig,
+    ReconciliationType,
+    create_strategy,
+)
+from caligo.reconciliation.leakage_tracker import LeakageTracker, compute_safety_cap
+from caligo.reconciliation.strategies import ReconciliationContext
 from caligo.sifting.commitment import SHA256Commitment
 from caligo.sifting.qber import QBEREstimator
 from caligo.sifting.sifter import Sifter
@@ -286,9 +287,14 @@ class AliceProgram(CaligoProgram):
 
     def _phase3_reconcile(
         self, alice_bits: bitarray, qber_observed: float, qber_adjusted: float
-    ) -> Generator[Any, None, Tuple[bitarray, int]]:
+    ) -> Generator[Any, None, Tuple[bitarray, int, np.ndarray]]:
         """
-        Execute reconciliation (Phase III).
+        Execute reconciliation (Phase III) via Strategy Pattern.
+
+        Per Implementation Report v2 §10.2.6:
+        - Delegates to ReconciliationStrategy (Baseline or Blind)
+        - Role class kept thin (< 10 lines per protocol)
+        - YAML-driven runtime switching
 
         Parameters
         ----------
@@ -311,176 +317,127 @@ class AliceProgram(CaligoProgram):
         assert self._ordered_socket is not None
 
         alice_arr = bitarray_to_numpy(alice_bits)
-
-        matrix_manager = MatrixManager.from_directory(recon_constants.LDPC_MATRICES_PATH)
         frame_size = int(self.params.reconciliation.frame_size)
-        max_retries = int(self.params.reconciliation.max_blind_rounds)
-        config = ReconciliationOrchestratorConfig(
+
+        # 1. Build ReconciliationConfig from protocol parameters
+        config = ReconciliationConfig(
+            reconciliation_type=self.params.reconciliation.reconciliation_type,
             frame_size=frame_size,
             max_iterations=int(self.params.reconciliation.max_iterations),
-            max_retries=max_retries,
+            max_blind_rounds=int(self.params.reconciliation.max_blind_rounds),
         )
 
-        hash_verifier = PolynomialHashVerifier(hash_bits=config.hash_bits)
+        # 2. Create dependencies (injected into strategy)
+        from caligo.reconciliation.matrix_manager import MotherCodeManager
+        from caligo.reconciliation.strategies.codec import LDPCCodec
 
-        # Import pattern-based reconciliation components
-        from caligo.reconciliation.block_reconciler import BlockReconciler, BlockReconcilerConfig
+        mother_code = MotherCodeManager.from_config()
+        codec = LDPCCodec(mother_code)
+        safety_cap = compute_safety_cap(len(alice_arr), qber_adjusted)
+        leakage_tracker = LeakageTracker(safety_cap=safety_cap, abort_on_exceed=True)
+
+        # 3. Create strategy via factory (P3.1)
+        strategy = create_strategy(config, mother_code, codec, leakage_tracker)
+
+        # 4. Build ReconciliationContext with QBER flow (P3.5/P3.6)
+        ctx = ReconciliationContext(
+            session_id=id(self),
+            frame_size=frame_size,
+            mother_rate=0.5,
+            max_iterations=config.max_iterations,
+            hash_bits=64,
+            f_crit=1.16,  # Per Theoretical Report v2 §2.3
+            qber_measured=qber_adjusted if strategy.requires_qber_estimation else None,
+            qber_heuristic=qber_observed if not strategy.requires_qber_estimation else None,
+            modulation_delta=0.44,  # Per Theoretical Report v2 Remark 2.1
+        )
+
+        # 5. Partition key into blocks
         from caligo.reconciliation.orchestrator import partition_key
-        from caligo.reconciliation.ldpc_decoder import BeliefPropagationDecoder
-        from caligo.reconciliation.orchestrator import LeakageTracker
-
-        # Determine reconciliation strategy
-        is_blind = self.params.reconciliation.reconciliation_type == ReconciliationType.BLIND
-
-        # Create required components
-        decoder = BeliefPropagationDecoder(max_iterations=int(self.params.reconciliation.max_iterations))
-        leakage_tracker = LeakageTracker(safety_cap=10**12)
-
-        # Use BlockReconciler for pattern-based reconciliation
-        block_reconciler = BlockReconciler(
-            matrix_manager=matrix_manager,
-            decoder=decoder,
-            hash_verifier=hash_verifier,
-            leakage_tracker=leakage_tracker,
-            config=BlockReconcilerConfig(
-                frame_size=frame_size,
-                hash_bits=config.hash_bits,
-                max_iterations=int(self.params.reconciliation.max_iterations),
-                max_retries=max_retries,
-                f_crit=config.f_crit,
-            ),
-        )
-
-        # Baseline/Blind flow: Alice sends per-block syndrome + metadata; Bob decodes locally.
-        total_syndrome_bits = 0
-        reconciled_parts: list[np.ndarray] = []
-        verified_indices: list[int] = []  # Track which original bit positions are verified
-
-        # Partition Alice's key into blocks
         alice_blocks = partition_key(alice_arr, frame_size)
 
+        # 6. Reconcile each block via strategy generator
+        total_leakage = 0
+        reconciled_parts: list[np.ndarray] = []
+        verified_indices: list[int] = []
+
         for block_id, alice_block in enumerate(alice_blocks):
-            # Store original payload length before any padding
-            payload_len = len(alice_block)
-            
-            # Pad short blocks to frame_size (for last block) - padding will be punctured
-            if len(alice_block) < frame_size:
-                padding_needed = frame_size - len(alice_block)
-                alice_block_padded = np.concatenate([alice_block, np.zeros(padding_needed, dtype=np.uint8)])
+            # Drive the strategy generator via network socket
+            result = yield from self._drive_alice_strategy(
+                strategy, alice_block, ctx, block_id
+            )
+
+            if result.verified:
+                reconciled_parts.append(result.corrected_payload)
+                start = block_id * frame_size
+                verified_indices.extend(range(start, start + len(result.corrected_payload)))
+                total_leakage += result.total_leakage
             else:
-                alice_block_padded = alice_block
-            
-            # Use block reconciler for pattern-based reconciliation
-            from caligo.reconciliation.ldpc_encoder import encode_block_from_payload
-            from caligo.reconciliation.rate_selector import select_rate
-            
-            # Get rate based on QBER (all blocks are now full frame_size)
-            rate = select_rate(
-                qber_estimate=qber_adjusted,
-                available_rates=matrix_manager.rates,
-                f_crit=config.f_crit,
-            )
-            
-            # Use mother code (rate 0.5) with puncturing pattern
-            mother_rate = 0.5
-            H = matrix_manager.get_matrix(mother_rate)
-            puncture_pattern = matrix_manager.get_puncture_pattern(rate)
-            
-            if puncture_pattern is None:
-                raise ValueError(f"No puncture pattern available for rate {rate}")
-            
-            syndrome_block = encode_block_from_payload(
-                payload=alice_block_padded,
-                H=H,
-                puncture_pattern=puncture_pattern,
-            )
+                logger.warning(f"Block {block_id} failed verification - excluding from final key")
 
-            hash_seed = int(block_id)
-            hash_int = int(hash_verifier.compute_hash(alice_block, seed=hash_seed))
-
-            total_syndrome_bits += int(len(syndrome_block.syndrome))
-
-            if is_blind:
-                # Blind reconciliation with pattern-based approach
-                # Send syndrome and pattern info without QBER estimate
-                max_rounds = int(self.params.reconciliation.max_blind_rounds)
-                
-                # Get punctured positions count
-                n_punctured = int(puncture_pattern.sum())
-                
-                # For blind, we can't use QBER-based rate selection,
-                # so we use a conservative mid-range rate
-                # Bob will iterate through rates to find one that works
-                
-                # Round 0: send syndrome + pattern info
-                yield from self._ordered_socket.send(
-                    MessageType.SYNDROME,
-                    {
-                        "kind": "blind",
-                        "block_id": int(block_id),
-                        "round_id": 0,
-                        "payload_length": int(len(alice_block)),
-                        "frame_size": int(frame_size),
-                        "rate": float(rate),
-                        "n_punctured": int(n_punctured),
-                        "syndrome": syndrome_block.syndrome.astype(np.uint8).tobytes().hex(),
-                        "puncture_pattern": puncture_pattern.astype(np.uint8).tobytes().hex(),
-                        "qber_channel": float(qber_observed),
-                        "hash_seed": int(hash_seed),
-                        "hash_int": int(hash_int),
-                    },
-                )
-            else:
-                # Baseline reconciliation: single syndrome exchange with pattern
-                n_punctured = int(puncture_pattern.sum())
-                yield from self._ordered_socket.send(
-                    MessageType.SYNDROME,
-                    {
-                        "kind": "baseline",
-                        "block_id": int(block_id),
-                        "payload_length": int(len(alice_block)),
-                        "frame_size": int(frame_size),
-                        "rate": float(rate),
-                        "n_punctured": int(n_punctured),
-                        "puncture_pattern": puncture_pattern.astype(np.uint8).tobytes().hex(),
-                        "syndrome": syndrome_block.syndrome.astype(np.uint8).tobytes().hex(),
-                        "qber_channel": float(qber_observed),
-                        "qber_prior": float(qber_adjusted),
-                        "hash_seed": int(hash_seed),
-                        "hash_int": int(hash_int),
-                    },
-                )
-
-            resp = yield from self._ordered_socket.recv(MessageType.SYNDROME_RESPONSE)
-            if int(resp.get("block_id", -1)) != int(block_id):
-                raise SecurityError("Reconciliation block_id mismatch")
-
-            verified = bool(resp.get("verified", False))
-            if not verified:
-                # Log warning but continue with other blocks
-                # Failed blocks are excluded from the final key
-                from caligo.utils.logging import get_logger
-                _logger = get_logger(__name__)
-                _logger.warning(
-                    f"Block {block_id} failed verification - excluding from final key"
-                )
-                continue  # Skip this block, try remaining blocks
-
-            corrected_payload = np.frombuffer(
-                bytes.fromhex(str(resp["corrected_payload"])), dtype=np.uint8
-            )
-            reconciled_parts.append(corrected_payload)
-            # Track the original bit positions that are now verified
-            # start is the position in the original key where this block began
-            start = block_id * frame_size
-            verified_indices.extend(range(start, start + len(corrected_payload)))
-
-        # Check if we have enough reconciled bits
         if len(reconciled_parts) == 0:
             raise SecurityError("All reconciliation blocks failed verification")
+
+        reconciled_np = np.concatenate(reconciled_parts) if reconciled_parts else np.array([], dtype=np.uint8)
+        return bitarray_from_numpy(reconciled_np), int(total_leakage), np.array(verified_indices, dtype=np.int64)
+
+    def _drive_alice_strategy(
+        self,
+        strategy,
+        payload: np.ndarray,
+        ctx: ReconciliationContext,
+        block_id: int,
+    ) -> Generator[Any, None, Any]:
+        """
+        Drive Alice's strategy generator via network socket.
+
+        Bridges the strategy's generator interface with the ordered socket
+        for message exchange with Bob.
+
+        Parameters
+        ----------
+        strategy : ReconciliationStrategy
+            Active strategy instance (Baseline or Blind).
+        payload : np.ndarray
+            Alice's payload bits for this block.
+        ctx : ReconciliationContext
+            Session context.
+        block_id : int
+            Block identifier.
+
+        Yields
+        ------
+        Messages to/from ordered socket.
+
+        Returns
+        -------
+        BlockResult
+            Reconciliation result for this block.
+        """
+        gen = strategy.alice_reconcile_block(payload, ctx, block_id)
         
-        reconciled_np = np.concatenate(reconciled_parts).astype(np.uint8) if reconciled_parts else np.array([], dtype=np.uint8)
-        return bitarray_from_numpy(reconciled_np), int(total_syndrome_bits), np.array(verified_indices, dtype=np.int64)
+        # First call returns the outgoing message
+        try:
+            outgoing = next(gen)
+        except StopIteration as e:
+            return e.value
+
+        # Loop: send message, receive response, send to generator
+        while True:
+            # Send outgoing message
+            yield from self._ordered_socket.send(MessageType.SYNDROME, outgoing)
+            
+            # Receive response
+            resp = yield from self._ordered_socket.recv(MessageType.SYNDROME_RESPONSE)
+            
+            if int(resp.get("block_id", -1)) != int(block_id):
+                raise SecurityError("Reconciliation block_id mismatch")
+            
+            # Send response to generator
+            try:
+                outgoing = gen.send(resp)
+            except StopIteration as e:
+                return e.value
 
     def _phase4_amplify(
         self,

@@ -709,3 +709,322 @@ def fill_edges_from_cn_adj(
 def numba_available() -> bool:
     """Return True if Numba is importable in this environment."""
     return _NUMBA_AVAILABLE
+
+# ============================================================================
+# RECONCILIATION KERNELS (Phase 0)
+# ============================================================================
+
+@njit(cache=True)
+def encode_bitpacked_kernel(
+    packed_frame: np.ndarray,
+    check_row_ptr: np.ndarray,
+    check_col_idx: np.ndarray,
+    n_checks: int,
+) -> np.ndarray:
+    """
+    Compute syndrome using bit-packed SpMV kernel.
+    
+    Parameters
+    ----------
+    packed_frame : np.ndarray
+        Input frame packed into uint64 words.
+    check_row_ptr : np.ndarray
+        CSR row pointers for parity check matrix.
+    check_col_idx : np.ndarray
+        CSR column indices for parity check matrix.
+    n_checks : int
+        Number of check nodes (rows).
+        
+    Returns
+    -------
+    np.ndarray
+        Packed syndrome (uint64 array).
+    """
+    # Calculate output size (packed)
+    n_words_out = (n_checks + 63) // 64
+    packed_syndrome = np.zeros(n_words_out, dtype=np.uint64)
+    
+    for r in range(n_checks):
+        # Compute parity for row r
+        row_parity = np.uint64(0)
+        
+        # Iterate over non-zero columns in this row
+        start = check_row_ptr[r]
+        end = check_row_ptr[r + 1]
+        
+        for k in range(start, end):
+            c = check_col_idx[k]
+            
+            # Extract bit c from packed_frame
+            word_idx = c // 64
+            bit_idx = c % 64
+            bit_val = (packed_frame[word_idx] >> np.uint64(bit_idx)) & np.uint64(1)
+            
+            row_parity ^= bit_val
+            
+        # Store parity bit in packed_syndrome
+        if row_parity:
+            out_word_idx = r // 64
+            out_bit_idx = r % 64
+            packed_syndrome[out_word_idx] |= (np.uint64(1) << np.uint64(out_bit_idx))
+            
+    return packed_syndrome
+
+
+@njit(cache=True, fastmath=True)
+def decode_bp_virtual_graph_kernel(
+    llr: np.ndarray,
+    syndrome: np.ndarray,
+    messages: np.ndarray,
+    check_row_ptr: np.ndarray,
+    check_col_idx: np.ndarray,
+    var_col_ptr: np.ndarray,
+    var_row_idx: np.ndarray,
+    edge_c2v: np.ndarray,
+    edge_v2c: np.ndarray,
+    max_iterations: int,
+) -> Tuple[np.ndarray, bool, int]:
+    """
+    Belief Propagation decoder for Baseline protocol (Virtual Graph).
+    """
+    n_vars = len(llr)
+    n_checks = len(syndrome)
+    n_edges = len(check_col_idx)
+    
+    OFFSET_C2V = 0
+    OFFSET_V2C = n_edges
+    
+    converged = False
+    iterations = 0
+    corrected_bits = np.zeros(n_vars, dtype=np.uint8)
+    
+    # Initialize C2V to 0
+    messages[OFFSET_C2V : OFFSET_C2V + n_edges] = 0.0
+    
+    for it in range(max_iterations):
+        iterations += 1
+        
+        # --- Variable Node Step ---
+        for v in range(n_vars):
+            start = var_col_ptr[v]
+            end = var_col_ptr[v+1]
+            
+            # Compute sum of incoming C2V messages
+            c2v_sum = 0.0
+            for k in range(start, end):
+                edge_idx = edge_v2c[k]
+                c2v_sum += messages[OFFSET_C2V + edge_idx]
+            
+            # Total LLR for this variable
+            total_llr = llr[v] + c2v_sum
+            
+            # Hard decision
+            corrected_bits[v] = 1 if total_llr < 0 else 0
+            
+            # Compute outgoing V2C messages
+            for k in range(start, end):
+                edge_idx = edge_v2c[k]
+                val = total_llr - messages[OFFSET_C2V + edge_idx]
+                
+                # Clip to avoid overflow
+                if val > 30.0: val = 30.0
+                elif val < -30.0: val = -30.0
+                
+                messages[OFFSET_V2C + edge_idx] = val
+                
+        # --- Syndrome Check ---
+        syndrome_ok = True
+        for c in range(n_checks):
+            start = check_row_ptr[c]
+            end = check_row_ptr[c+1]
+            parity = 0
+            for k in range(start, end):
+                v = check_col_idx[k]
+                parity ^= corrected_bits[v]
+            
+            if parity != syndrome[c]:
+                syndrome_ok = False
+                break
+        
+        if syndrome_ok:
+            converged = True
+            break
+            
+        # --- Check Node Step ---
+        for c in range(n_checks):
+            start = check_row_ptr[c]
+            end = check_row_ptr[c+1]
+            
+            total_tanh = 1.0
+            zero_count = 0
+            
+            for k in range(start, end):
+                edge_idx = edge_c2v[k]
+                val = messages[OFFSET_V2C + edge_idx]
+                t = np.tanh(val / 2.0)
+                if np.abs(t) < 1e-12:
+                    zero_count += 1
+                else:
+                    total_tanh *= t
+            
+            for k in range(start, end):
+                edge_idx = edge_c2v[k]
+                val = messages[OFFSET_V2C + edge_idx]
+                t = np.tanh(val / 2.0)
+                
+                res = 0.0
+                if zero_count > 1:
+                    res = 0.0
+                elif zero_count == 1:
+                    if np.abs(t) < 1e-12:
+                        sub_prod = 1.0
+                        for k2 in range(start, end):
+                            if k2 == k: continue
+                            edge_idx2 = edge_c2v[k2]
+                            val2 = messages[OFFSET_V2C + edge_idx2]
+                            sub_prod *= np.tanh(val2 / 2.0)
+                        res = 2.0 * np.arctanh(sub_prod)
+                    else:
+                        res = 0.0
+                else:
+                    sub_prod = total_tanh / t
+                    if sub_prod > 0.999999999999: sub_prod = 0.999999999999
+                    if sub_prod < -0.999999999999: sub_prod = -0.999999999999
+                    res = 2.0 * np.arctanh(sub_prod)
+                
+                if syndrome[c] == 1:
+                    res = -res
+                    
+                messages[OFFSET_C2V + edge_idx] = res
+
+    return corrected_bits, converged, iterations
+
+
+@njit(cache=True, fastmath=True)
+def decode_bp_hotstart_kernel(
+    llr: np.ndarray,
+    syndrome: np.ndarray,
+    messages: np.ndarray,
+    frozen_mask: np.ndarray,
+    check_row_ptr: np.ndarray,
+    check_col_idx: np.ndarray,
+    var_col_ptr: np.ndarray,
+    var_row_idx: np.ndarray,
+    edge_c2v: np.ndarray,
+    edge_v2c: np.ndarray,
+    max_iterations: int,
+) -> Tuple[np.ndarray, bool, int, np.ndarray]:
+    """
+    Hot-Start BP decoder with Freeze optimization.
+    """
+    n_vars = len(llr)
+    n_checks = len(syndrome)
+    n_edges = len(check_col_idx)
+    
+    OFFSET_C2V = 0
+    OFFSET_V2C = n_edges
+    
+    converged = False
+    iterations = 0
+    corrected_bits = np.zeros(n_vars, dtype=np.uint8)
+    
+    for it in range(max_iterations):
+        iterations += 1
+        
+        # --- Variable Node Step ---
+        for v in range(n_vars):
+            start = var_col_ptr[v]
+            end = var_col_ptr[v+1]
+            
+            if frozen_mask[v]:
+                val = llr[v]
+                if val > 30.0: val = 30.0
+                elif val < -30.0: val = -30.0
+                
+                for k in range(start, end):
+                    edge_idx = edge_v2c[k]
+                    messages[OFFSET_V2C + edge_idx] = val
+                
+                corrected_bits[v] = 1 if llr[v] < 0 else 0
+                continue
+            
+            c2v_sum = 0.0
+            for k in range(start, end):
+                edge_idx = edge_v2c[k]
+                c2v_sum += messages[OFFSET_C2V + edge_idx]
+            
+            total_llr = llr[v] + c2v_sum
+            corrected_bits[v] = 1 if total_llr < 0 else 0
+            
+            for k in range(start, end):
+                edge_idx = edge_v2c[k]
+                val = total_llr - messages[OFFSET_C2V + edge_idx]
+                if val > 30.0: val = 30.0
+                elif val < -30.0: val = -30.0
+                messages[OFFSET_V2C + edge_idx] = val
+                
+        # --- Syndrome Check ---
+        syndrome_ok = True
+        for c in range(n_checks):
+            start = check_row_ptr[c]
+            end = check_row_ptr[c+1]
+            parity = 0
+            for k in range(start, end):
+                v = check_col_idx[k]
+                parity ^= corrected_bits[v]
+            if parity != syndrome[c]:
+                syndrome_ok = False
+                break
+        
+        if syndrome_ok:
+            converged = True
+            break
+            
+        # --- Check Node Step ---
+        for c in range(n_checks):
+            start = check_row_ptr[c]
+            end = check_row_ptr[c+1]
+            
+            total_tanh = 1.0
+            zero_count = 0
+            
+            for k in range(start, end):
+                edge_idx = edge_c2v[k]
+                val = messages[OFFSET_V2C + edge_idx]
+                t = np.tanh(val / 2.0)
+                if np.abs(t) < 1e-12:
+                    zero_count += 1
+                else:
+                    total_tanh *= t
+            
+            for k in range(start, end):
+                edge_idx = edge_c2v[k]
+                val = messages[OFFSET_V2C + edge_idx]
+                t = np.tanh(val / 2.0)
+                
+                res = 0.0
+                if zero_count > 1:
+                    res = 0.0
+                elif zero_count == 1:
+                    if np.abs(t) < 1e-12:
+                        sub_prod = 1.0
+                        for k2 in range(start, end):
+                            if k2 == k: continue
+                            edge_idx2 = edge_c2v[k2]
+                            val2 = messages[OFFSET_V2C + edge_idx2]
+                            sub_prod *= np.tanh(val2 / 2.0)
+                        res = 2.0 * np.arctanh(sub_prod)
+                    else:
+                        res = 0.0
+                else:
+                    sub_prod = total_tanh / t
+                    if sub_prod > 0.999999999999: sub_prod = 0.999999999999
+                    if sub_prod < -0.999999999999: sub_prod = -0.999999999999
+                    res = 2.0 * np.arctanh(sub_prod)
+                
+                if syndrome[c] == 1:
+                    res = -res
+                    
+                messages[OFFSET_C2V + edge_idx] = res
+
+    return corrected_bits, converged, iterations, messages

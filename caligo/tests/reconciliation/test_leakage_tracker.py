@@ -14,6 +14,7 @@ from caligo.reconciliation.leakage_tracker import (
     compute_safety_cap,
 )
 from caligo.reconciliation import constants
+from caligo.types.exceptions import LeakageBudgetExceeded
 
 
 class TestComputeSafetyCap:
@@ -127,17 +128,23 @@ class TestLeakageTracker:
         assert tracker.check_safety() is True
 
     def test_check_safety_over_cap(self) -> None:
-        """Safety check fails when over cap."""
-        tracker = LeakageTracker(safety_cap=1000)
+        """Circuit breaker raises exception when over cap."""
+        # Phase 1: Circuit breaker pattern now immediately raises
+        tracker = LeakageTracker(safety_cap=1000, abort_on_exceed=True)
         
         tracker.record_block(block_id=0, syndrome_bits=800, hash_bits=50)
-        tracker.record_block(block_id=1, syndrome_bits=800, hash_bits=50)
         
-        assert tracker.check_safety() is False
+        # Second block should trigger circuit breaker
+        with pytest.raises(LeakageBudgetExceeded) as exc_info:
+            tracker.record_block(block_id=1, syndrome_bits=800, hash_bits=50)
+        
+        assert exc_info.value.actual_leakage == 1700
+        assert exc_info.value.max_allowed == 1000
 
     def test_should_abort_when_exceeded(self) -> None:
-        """should_abort returns True when cap exceeded."""
-        tracker = LeakageTracker(safety_cap=500)
+        """Circuit breaker raises exception when cap exceeded."""
+        # Phase 1: Circuit breaker pattern now immediately raises
+        tracker = LeakageTracker(safety_cap=500, abort_on_exceed=True)
         
         # First block is fine
         assert tracker.should_abort() is False
@@ -145,8 +152,9 @@ class TestLeakageTracker:
         tracker.record_block(block_id=0, syndrome_bits=400, hash_bits=50)
         assert tracker.should_abort() is False
         
-        tracker.record_block(block_id=1, syndrome_bits=400, hash_bits=50)
-        assert tracker.should_abort() is True
+        # Second block triggers circuit breaker
+        with pytest.raises(LeakageBudgetExceeded):
+            tracker.record_block(block_id=1, syndrome_bits=400, hash_bits=50)
 
     def test_remaining_budget(self) -> None:
         """Remaining budget computed correctly."""
@@ -173,20 +181,20 @@ class TestLeakageTrackerEdgeCases:
     """Edge case tests for LeakageTracker."""
 
     def test_zero_cap_always_aborts(self) -> None:
-        """Zero safety cap aborts on any leakage."""
-        tracker = LeakageTracker(safety_cap=0)
+        """Zero safety cap triggers circuit breaker on any leakage."""
+        # Phase 1: Circuit breaker immediately raises
+        tracker = LeakageTracker(safety_cap=0, abort_on_exceed=True)
         
-        tracker.record_block(block_id=0, syndrome_bits=1, hash_bits=0)
-        
-        assert tracker.should_abort() is True
+        with pytest.raises(LeakageBudgetExceeded):
+            tracker.record_block(block_id=0, syndrome_bits=1, hash_bits=0)
 
     def test_large_single_block(self) -> None:
-        """Large single block exceeds cap."""
-        tracker = LeakageTracker(safety_cap=1000)
+        """Large single block triggers circuit breaker."""
+        # Phase 1: Circuit breaker immediately raises
+        tracker = LeakageTracker(safety_cap=1000, abort_on_exceed=True)
         
-        tracker.record_block(block_id=0, syndrome_bits=1500, hash_bits=50)
-        
-        assert tracker.should_abort() is True
+        with pytest.raises(LeakageBudgetExceeded):
+            tracker.record_block(block_id=0, syndrome_bits=1500, hash_bits=50)
 
     def test_blind_iteration_tracking(self) -> None:
         """Blind iterations add to total leakage."""

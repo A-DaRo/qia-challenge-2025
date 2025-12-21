@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from caligo.reconciliation import constants
+from caligo.types.exceptions import LeakageBudgetExceeded
 from caligo.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -78,15 +79,21 @@ class LeakageRecord:
 
 class LeakageTracker:
     """
-    Accumulate and enforce reconciliation leakage bounds.
+    Accumulate and enforce reconciliation leakage bounds with circuit breaker.
 
-    Tracks all information disclosed during Phase III and aborts
-    if the safety cap is exceeded.
+    Tracks all information disclosed during Phase III and immediately aborts
+    if the safety cap is exceeded (circuit breaker pattern).
+
+    Per Implementation Report v2 §7: Circuit breaker raises LeakageBudgetExceeded
+    exception before security violation occurs.
 
     Parameters
     ----------
     safety_cap : int
         Maximum allowed total leakage in bits.
+    abort_on_exceed : bool, optional
+        If True (default), immediately raise exception when cap exceeded.
+        If False, only log warnings (for testing/debugging).
 
     Attributes
     ----------
@@ -96,27 +103,54 @@ class LeakageTracker:
         Configured maximum leakage.
     """
 
-    def __init__(self, safety_cap: int) -> None:
+    def __init__(self, safety_cap: int, abort_on_exceed: bool = True) -> None:
         if safety_cap < 0:
             raise ValueError("safety_cap must be non-negative")
         self.safety_cap = safety_cap
+        self.abort_on_exceed = abort_on_exceed
         self.records: List[LeakageRecord] = []
 
     def record(self, event: LeakageRecord) -> None:
         """
-        Add a leakage event.
+        Add a leakage event with immediate circuit breaker enforcement.
 
         Parameters
         ----------
         event : LeakageRecord
             Leakage event to record.
+
+        Raises
+        ------
+        LeakageBudgetExceeded
+            If cumulative leakage exceeds safety_cap and abort_on_exceed=True.
+
+        Notes
+        -----
+        This is the CIRCUIT BREAKER implementation per Implementation Report v2 §7.
+        Raises exception BEFORE security violation propagates through protocol.
         """
         self.records.append(event)
+        current_leakage = self.total_leakage
+        
         logger.debug(
-            "Leakage recorded: block=%d, syndrome=%d, hash=%d, short=%.1f, iter=%d",
+            "Leakage recorded: block=%d, syndrome=%d, hash=%d, short=%.1f, iter=%d, "
+            "total=%d/%d",
             event.block_id, event.syndrome_bits, event.hash_bits, 
-            event.shortening_bits, event.iteration
+            event.shortening_bits, event.iteration, current_leakage, self.safety_cap
         )
+
+        # CIRCUIT BREAKER: Immediate enforcement
+        if self.abort_on_exceed and current_leakage > self.safety_cap:
+            logger.error(
+                "Leakage budget EXCEEDED: %d > %d (margin: %d)",
+                current_leakage, self.safety_cap, current_leakage - self.safety_cap
+            )
+            raise LeakageBudgetExceeded(
+                f"Cumulative leakage {current_leakage} bits exceeds "
+                f"safety cap {self.safety_cap} bits",
+                actual_leakage=current_leakage,
+                max_allowed=self.safety_cap,
+            )
 
     def record_block(
         self,
@@ -167,6 +201,43 @@ class LeakageTracker:
             hash_bits=hash_bits,
             retry_penalty_bits=retry_penalty_bits,
             shortening_bits=shortening_bits,
+            block_id=block_id,
+            iteration=iteration,
+        )
+        self.record(event)
+
+    def record_reveal(
+        self,
+        block_id: int,
+        iteration: int,
+        revealed_bits: int,
+    ) -> None:
+        """
+        Record Blind iteration reveal leakage (syndrome already counted).
+
+        Per Implementation Report v2 §5.3: Blind protocol reveals additional
+        bits in iterations 2+. This method records the revealed_bits leakage
+        without double-counting the syndrome.
+
+        Parameters
+        ----------
+        block_id : int
+            Block identifier.
+        iteration : int
+            Blind iteration number (≥2).
+        revealed_bits : int
+            Number of bits revealed in this iteration (Δ_i).
+
+        Raises
+        ------
+        LeakageBudgetExceeded
+            If cumulative leakage exceeds safety_cap.
+        """
+        event = LeakageRecord(
+            syndrome_bits=0,  # Syndrome already counted in iteration 1
+            hash_bits=0,       # Hash already counted
+            retry_penalty_bits=revealed_bits,  # Use retry_penalty for reveal bits
+            shortening_bits=0.0,
             block_id=block_id,
             iteration=iteration,
         )
