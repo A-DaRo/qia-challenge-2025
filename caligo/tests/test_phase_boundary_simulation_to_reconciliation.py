@@ -5,9 +5,13 @@ Covers REQ-P0R-001/010 from the extended test spec.
 This test validates *oracle consistency* between:
 - `caligo.simulation.noise_models.ChannelNoiseProfile`
 - `caligo.simulation.physical_model.NSMParameters`
-- reconciliation's discrete LDPC rate constants
+- reconciliation's continuous rate range [RATE_MIN, RATE_MAX]
 
 No SquidASM/NetSquid simulation is involved. No legacy MatrixManager used.
+
+Note: The Hybrid Rate-Compatible Architecture uses continuous rates instead
+of discrete LDPC_CODE_RATES. Rates are dynamically selected within
+[RATE_MIN, RATE_MAX] using the efficiency model R = 1 - f × h(QBER).
 """
 
 from __future__ import annotations
@@ -21,7 +25,7 @@ from caligo.simulation.constants import QBER_HARD_LIMIT
 
 @pytest.mark.integration
 def test_p0r_001_profile_to_nsm_qber_and_rate_are_consistent() -> None:
-    """REQ-P0R-001: total_qber should match NSM qber_channel and map to a known rate."""
+    """REQ-P0R-001: total_qber should match NSM qber_channel and rate in valid range."""
 
     profile = ChannelNoiseProfile(
         source_fidelity=0.98,
@@ -40,8 +44,8 @@ def test_p0r_001_profile_to_nsm_qber_and_rate_are_consistent() -> None:
     assert profile.total_qber == pytest.approx(nsm.qber_channel, abs=1e-15)
 
     suggested = profile.suggested_ldpc_rate(safety_margin=0.0)
-    # Check against the constant set of LDPC rates
-    assert suggested in recon_constants.LDPC_CODE_RATES
+    # Hybrid architecture: rate must be in continuous range [RATE_MIN, RATE_MAX]
+    assert recon_constants.RATE_MIN <= suggested <= recon_constants.RATE_MAX
 
 
 @pytest.mark.integration

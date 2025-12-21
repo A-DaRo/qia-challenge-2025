@@ -37,15 +37,20 @@ def test_channel_capacity_rejects_out_of_range() -> None:
 
 
 def test_suggested_ldpc_rate_low_qber_returns_highest_rate() -> None:
+    # Hybrid architecture: RATE_MAX = 0.95 for low QBER
+    from caligo.reconciliation.constants import RATE_MAX
     rate = suggested_ldpc_rate_from_qber(0.0)
-    assert math.isclose(rate, 0.90)
+    assert math.isclose(rate, RATE_MAX)
 
 
 def test_suggested_ldpc_rate_near_hard_limit_returns_lowest_rate() -> None:
-    # At ~11% QBER the Shannon capacity is ~0.5, so the best available
-    # rate in our discrete set should be 0.50.
+    # At ~11% QBER the Shannon capacity is ~0.5, so the rate should be
+    # approximately at or near RATE_MIN. The efficiency model gives:
+    # R = 1 - f_crit × h(0.11) ≈ 1 - 1.22 × 0.5 ≈ 0.39 < RATE_MIN
+    # So we expect RATE_MIN to be returned.
+    from caligo.reconciliation.constants import RATE_MIN
     rate = suggested_ldpc_rate_from_qber(0.11)
-    assert math.isclose(rate, 0.50)
+    assert math.isclose(rate, RATE_MIN, abs_tol=0.01)
 
 
 def test_suggested_ldpc_rate_safety_margin_reduces_rate_or_equal() -> None:

@@ -4,17 +4,26 @@ Phase III Reconciliation Constants.
 This module centralizes all constants for LDPC-based reconciliation,
 enabling consistent configuration across encoder, decoder, and orchestrator.
 
+Architecture
+------------
+The Hybrid Rate-Compatible Architecture uses a single R_0=0.5 mother code
+with dynamic rate adaptation via puncturing and shortening. Rates are
+generated dynamically from RATE_MIN to RATE_MAX with step RATE_STEP.
+
 References
 ----------
 - Martinez-Mateo et al. (2012): Blind reconciliation parameters
 - Kiktenko et al. (2016): Industrial LDPC parameters
 - Erven et al. (2014): E-HOK experimental implementation
+- Elkouss et al. (2010): Rate-compatible LDPC for QKD
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Tuple
+
+import numpy as np
 
 # =============================================================================
 # LDPC Code Parameters
@@ -41,6 +50,44 @@ Rates > this use ACE-Guided Puncturing (Regime B).
 
 RATE_MIN: float = 0.50
 RATE_MAX: float = 0.95
+
+# =============================================================================
+# Dynamic Rate Generation
+# =============================================================================
+
+
+def get_available_rates() -> Tuple[float, ...]:
+    """
+    Generate available rates for rate-compatible reconciliation.
+
+    Dynamically computes rates from RATE_MIN to RATE_MAX (inclusive)
+    with step size RATE_STEP. This replaces the legacy static LDPC_CODE_RATES.
+
+    Returns
+    -------
+    Tuple[float, ...]
+        Sorted tuple of available effective rates.
+
+    Notes
+    -----
+    The hybrid architecture uses a single R_0=0.5 mother code with
+    puncturing/shortening for rate adaptation. Available rates are
+    determined by the Hybrid Pattern Library, not by multiple pre-generated
+    LDPC matrices.
+
+    Rate coverage: R_eff ∈ [RATE_MIN, RATE_MAX] with Δ R = RATE_STEP
+    For default parameters: R ∈ [0.50, 0.95] with Δ R = 0.01
+    """
+    rates = np.arange(RATE_MIN, RATE_MAX + RATE_STEP / 2, RATE_STEP)
+    return tuple(float(round(r, 2)) for r in rates)
+
+
+# Compatibility aliases for code that expects static rate tuples
+LDPC_CODE_RATES: Tuple[float, ...] = get_available_rates()
+"""Available LDPC code rates (dynamically generated from RATE_MIN to RATE_MAX)."""
+
+LDPC_DEFAULT_RATE: float = MOTHER_CODE_RATE
+"""Default LDPC code rate (equals mother code rate R_0 = 0.5)."""
 
 # =============================================================================
 # Numba Configuration

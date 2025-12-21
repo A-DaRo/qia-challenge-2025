@@ -16,7 +16,7 @@ from caligo.reconciliation.factory import (
     create_strategy,
 )
 from caligo.reconciliation.leakage_tracker import LeakageTracker, compute_safety_cap
-from caligo.reconciliation.strategies import ReconciliationContext
+from caligo.reconciliation.strategies import BlockResult, ReconciliationContext
 from caligo.types.exceptions import SecurityError, SynchronizationError
 from caligo.sifting.commitment import SHA256Commitment
 from caligo.types.keys import BobObliviousKey
@@ -300,17 +300,21 @@ class BobProgram(CaligoProgram):
         except StopIteration as e:
             return e.value
 
-        # Receive first message from Alice
+        # Receive first message from Alice (syndrome or blind initial)
         msg = yield from self._ordered_socket.recv(MessageType.SYNDROME)
         
         if int(msg.get("block_id", -1)) != int(block_id):
             raise SecurityError("Reconciliation block_id mismatch")
         
-        # Loop: send message to generator, get response, send to Alice
+        # Iterative message loop for both baseline and blind protocols
+        # - Baseline: single round (generator returns after first response)
+        # - Blind: multiple rounds (generator yields after each response)
         while True:
+            # Send message to generator, get response
             try:
                 response = gen.send(msg)
             except StopIteration as e:
+                # Generator returned - done with this block
                 return e.value
             
             # Send response to Alice
@@ -319,16 +323,19 @@ class BobProgram(CaligoProgram):
                 **response,
             })
             
-            # Check if this was a terminal response (verified or final iteration)
-            if response.get("verified", False) or response.get("kind") != "blind_reveal":
-                # Try to get final result by sending termination signal
+            # Wait for next message from Alice (blind_reveal, done, or next block)
+            msg = yield from self._ordered_socket.recv(MessageType.SYNDROME)
+            
+            # Check for termination signal from Alice
+            if msg.get("kind") == "done":
+                # Alice has terminated - send the done signal to generator
+                # so it can clean up and return its final result
                 try:
-                    gen.send({})  # Send empty dict to trigger return
+                    gen.send(msg)
                 except StopIteration as e:
                     return e.value
-            
-            # For blind protocol, may receive another message
-            msg = yield from self._ordered_socket.recv(MessageType.SYNDROME)
+                # If generator didn't return, something is wrong
+                raise SynchronizationError("Generator did not terminate on done signal")
 
     def _phase1_quantum_and_commit(
         self, context

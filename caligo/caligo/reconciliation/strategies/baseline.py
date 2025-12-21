@@ -217,7 +217,6 @@ class BaselineStrategy(ReconciliationStrategy):
             block_id=block_id,
             syndrome_bits=len(syndrome),
             hash_bits=ctx.hash_bits,
-            revealed_bits=0,
         )
         
         logger.debug(
@@ -391,34 +390,35 @@ class BaselineStrategy(ReconciliationStrategy):
         self, payload: np.ndarray, pattern: np.ndarray, frame_size: int
     ) -> np.ndarray:
         """
-        Construct LDPC frame from payload with puncturing pattern.
+        Construct LDPC frame from payload.
+        
+        For baseline reconciliation with sifted keys:
+        - The payload IS the frame (already frame_size bits after sifting)
+        - The pattern is used ONLY for LLR initialization (erasures)
+        - No embedding/puncturing at frame construction time
         
         Per Theoretical Report v2 §3.2:
-        - Payload fills non-punctured positions
-        - Punctured positions filled with zeros (will be erased in LLR)
+        - Alice's sifted key block → syndrome computation
+        - Bob's sifted key block → decoder with erasures at pattern positions
         
         Parameters
         ----------
         payload : np.ndarray
-            Payload bits.
+            Sifted key bits (should be frame_size already).
         pattern : np.ndarray
-            Puncturing pattern (1=punctured).
+            Puncturing pattern (1=erasure for Bob's LLR, not used here).
         frame_size : int
             Target frame size.
             
         Returns
         -------
         np.ndarray
-            Constructed frame.
+            Frame for syndrome computation (padded if payload < frame_size).
         """
         frame = np.zeros(frame_size, dtype=np.uint8)
         
-        # Create mask for non-punctured positions
-        non_punctured_mask = (pattern == 0)
-        non_punctured_indices = np.where(non_punctured_mask)[0]
-        
-        # Fill non-punctured positions with payload
-        payload_length = min(len(payload), len(non_punctured_indices))
-        frame[non_punctured_indices[:payload_length]] = payload[:payload_length]
+        # Copy payload into frame (pad with zeros if shorter than frame_size)
+        payload_length = min(len(payload), frame_size)
+        frame[:payload_length] = payload[:payload_length]
         
         return frame

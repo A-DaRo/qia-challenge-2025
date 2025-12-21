@@ -181,11 +181,16 @@ class BlindStrategy(ReconciliationStrategy):
         # 4. Compute step size: Δ = d/t
         delta_step = max(1, d // self._max_iterations)
         
-        # 5. Construct frame with all punctured positions (highest rate)
-        frame = self._construct_frame_with_padding(
-            payload, puncture_indices, ctx.frame_size
-        )
-        padding_values = frame[puncture_indices]  # Save for potential reveal
+        # 5. Construct frame - use original payload values everywhere
+        # For blind reconciliation, we don't add random padding.
+        # Instead, we reveal Alice's actual payload values at punctured positions.
+        # This ensures the hash verification works correctly.
+        frame = np.zeros(ctx.frame_size, dtype=np.uint8)
+        payload_len = min(len(payload), ctx.frame_size)
+        frame[:payload_len] = payload[:payload_len]
+        
+        # Extract values at punctured positions (Alice's actual bits)
+        padding_values = frame[puncture_indices].copy()
         
         # 6. Compute syndrome ONCE (Theorem 4.1: syndrome reuse)
         # Use mother pattern (no puncturing for syndrome computation)
@@ -194,9 +199,10 @@ class BlindStrategy(ReconciliationStrategy):
         hash_value = compute_hash(payload, seed=block_id)
         
         # 7. Record initial syndrome leakage
+        # Note: len(syndrome) is already in bits (codec returns uint8 bit array)
         self._leakage_tracker.record_block(
             block_id=block_id,
-            syndrome_bits=len(syndrome) * 8,  # Bits, not bytes
+            syndrome_bits=len(syndrome),
             hash_bits=ctx.hash_bits,
             n_shortened=initial_shortened,
             frame_size=ctx.frame_size,
@@ -225,13 +231,13 @@ class BlindStrategy(ReconciliationStrategy):
         }
         
         # 10. Iterative reveal loop
+        # Per Theoretical Report v2 §4.3: Continue revealing until verified
+        # OR max iterations reached. The decoder may converge to wrong codewords
+        # with pure erasures - we need more revealed bits to constrain the solution.
         iteration = 1
         total_revealed = initial_shortened
         
         while not response.get("verified") and iteration < self._max_iterations:
-            if response.get("converged") and not response.get("verified"):
-                # Converged but wrong codeword - verification failed
-                break
             
             iteration += 1
             
@@ -267,7 +273,7 @@ class BlindStrategy(ReconciliationStrategy):
             verified=verified,
             converged=converged,
             iterations_used=0,
-            syndrome_leakage=len(syndrome) * 8,
+            syndrome_leakage=len(syndrome),  # Already in bits (uint8 array)
             revealed_leakage=total_revealed,
             hash_leakage=ctx.hash_bits,
             retry_count=iteration,
@@ -418,7 +424,7 @@ class BlindStrategy(ReconciliationStrategy):
             verified=verified,
             converged=result.converged,
             iterations_used=result.iterations,
-            syndrome_leakage=len(syndrome) * 8,
+            syndrome_leakage=len(syndrome),  # Already in bits (uint8 array)
             revealed_leakage=total_revealed,
             hash_leakage=ctx.hash_bits,
             retry_count=iteration,

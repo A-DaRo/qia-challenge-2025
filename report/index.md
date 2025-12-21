@@ -58,9 +58,8 @@
 
 ### 9. Implementation Details
 *   9.1 [Package Architecture](./implementation/package_architecture.md)
-*   9.2 [SquidASM Integration](./implementation/squidasm_integration.md)
-*   9.3 [Numerical Optimization](./implementation/numerical_optimization.md)
-*   9.4 [Module Specifications](./implementation/module_specs.md)
+*   9.2 [Numerical Optimization](./implementation/numerical_optimization.md)
+*   9.3 [Module Specifications](./implementation/module_specs.md)
 
 ### 10. Validation & Results
 *   10.1 [Test Strategy](./results/test_strategy.md)

@@ -437,6 +437,11 @@ class AliceProgram(CaligoProgram):
             try:
                 outgoing = gen.send(resp)
             except StopIteration as e:
+                # Generator returned - send termination signal to Bob
+                yield from self._ordered_socket.send(MessageType.SYNDROME, {
+                    "kind": "done",
+                    "block_id": int(block_id),
+                })
                 return e.value
 
     def _phase4_amplify(
