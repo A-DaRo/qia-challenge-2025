@@ -163,13 +163,18 @@ class BlockReconciler:
         )
         rate = float(rate_params.rate)
 
-        # Get puncture pattern for this rate (required - no fallback)
+        # Get puncture pattern for this rate
+        # Special case: rate 0.5 is the mother code rate (no puncturing)
         puncture_pattern = self._matrix_manager.get_puncture_pattern(rate)
         if puncture_pattern is None:
-            raise ValueError(
-                f"No puncture pattern available for rate {rate}. "
-                f"Available rates: {self._matrix_manager.available_pattern_rates}"
-            )
+            if abs(rate - 0.5) < 0.01:
+                # Rate 0.5 = mother code, no puncturing needed
+                puncture_pattern = np.zeros(frame_size, dtype=np.uint8)
+            else:
+                raise ValueError(
+                    f"No puncture pattern available for rate {rate}. "
+                    f"Available rates: {self._matrix_manager.available_pattern_rates}"
+                )
 
         # Always use mother code (rate 0.5) with puncturing patterns
         mother_rate = 0.5
@@ -234,6 +239,12 @@ class BlockReconciler:
             corrected_payload=corrected_payload,
             verified=verified,
             converged=bool(decode_result.converged),
+            iterations_used=int(decode_result.iterations),
+            syndrome_leakage=int(syndrome_block.syndrome.shape[0]),
+            revealed_leakage=0,  # Baseline protocol doesn't reveal bits
+            hash_leakage=int(hash_bits),
+            retry_count=int(retry_report.attempts - 1),
+            effective_rate=float(rate),
             error_count=error_count,
             syndrome_length=int(syndrome_block.syndrome.shape[0]),
             retry_report=retry_report,

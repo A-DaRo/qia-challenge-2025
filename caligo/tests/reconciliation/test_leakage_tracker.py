@@ -207,3 +207,149 @@ class TestLeakageTrackerEdgeCases:
         # Second iteration (same block)
         tracker.record_block(block_id=0, syndrome_bits=500, hash_bits=50, iteration=2)
         assert tracker.total_leakage == 1100
+
+
+# =============================================================================
+# TASK 5: Circuit Breaker Tests
+# =============================================================================
+
+
+class TestCircuitBreaker:
+    """Task 5: Circuit Breaker pattern tests."""
+    
+    def test_one_bit_too_many(self) -> None:
+        """
+        Task 5.1: The "One Bit Too Many" Test.
+        
+        Set safety_cap=100, record 99 bits, then 2 bits.
+        Circuit breaker should raise immediately.
+        """
+        tracker = LeakageTracker(safety_cap=100, abort_on_exceed=True)
+        
+        # Record 99 bits - should succeed
+        tracker.record_block(block_id=0, syndrome_bits=99, hash_bits=0)
+        assert tracker.total_leakage == 99
+        assert tracker.remaining_budget == 1
+        
+        # Record 2 more bits - total=101, exceeds cap=100
+        with pytest.raises(LeakageBudgetExceeded) as exc_info:
+            tracker.record_block(block_id=1, syndrome_bits=2, hash_bits=0)
+        
+        assert exc_info.value.actual_leakage == 101
+        assert exc_info.value.max_allowed == 100
+    
+    def test_exactly_at_cap(self) -> None:
+        """Recording exactly at cap should NOT raise."""
+        tracker = LeakageTracker(safety_cap=100, abort_on_exceed=True)
+        
+        # Record exactly 100 bits - should succeed
+        tracker.record_block(block_id=0, syndrome_bits=100, hash_bits=0)
+        assert tracker.total_leakage == 100
+        assert tracker.check_safety() is True
+        
+        # Next record triggers breach
+        with pytest.raises(LeakageBudgetExceeded):
+            tracker.record_block(block_id=1, syndrome_bits=1, hash_bits=0)
+    
+    def test_blind_iteration_accumulation(self) -> None:
+        """
+        Task 5.2: Blind Iteration Accumulation.
+        
+        Record a Blind block across multiple iterations:
+        - Iter 1: syndrome
+        - Iter 2: 50 reveal bits
+        - Iter 3: 50 reveal bits
+        Assert total leakage sums correctly.
+        """
+        tracker = LeakageTracker(safety_cap=10000, abort_on_exceed=True)
+        
+        # Iteration 1: syndrome + hash
+        syndrome_bits = 2048
+        hash_bits = 64
+        tracker.record_block(
+            block_id=0,
+            syndrome_bits=syndrome_bits,
+            hash_bits=hash_bits,
+            iteration=1,
+        )
+        
+        expected_after_1 = syndrome_bits + hash_bits
+        assert tracker.total_leakage == expected_after_1
+        
+        # Iteration 2: reveal 50 bits
+        tracker.record_reveal(block_id=0, iteration=2, revealed_bits=50)
+        expected_after_2 = expected_after_1 + 50
+        assert tracker.total_leakage == expected_after_2
+        
+        # Iteration 3: reveal 50 more bits
+        tracker.record_reveal(block_id=0, iteration=3, revealed_bits=50)
+        expected_after_3 = expected_after_2 + 50
+        assert tracker.total_leakage == expected_after_3
+        
+        # Verify total
+        assert tracker.total_leakage == syndrome_bits + hash_bits + 100
+    
+    def test_reveal_triggers_circuit_breaker(self) -> None:
+        """Reveal bits can trigger circuit breaker."""
+        tracker = LeakageTracker(safety_cap=2200, abort_on_exceed=True)
+        
+        # Initial syndrome + hash
+        tracker.record_block(block_id=0, syndrome_bits=2048, hash_bits=64)
+        assert tracker.total_leakage == 2112
+        
+        # First reveal ok
+        tracker.record_reveal(block_id=0, iteration=2, revealed_bits=50)
+        assert tracker.total_leakage == 2162
+        
+        # Second reveal exceeds cap
+        with pytest.raises(LeakageBudgetExceeded):
+            tracker.record_reveal(block_id=0, iteration=3, revealed_bits=50)
+    
+    def test_abort_on_exceed_false_logs_only(self) -> None:
+        """With abort_on_exceed=False, no exception is raised."""
+        tracker = LeakageTracker(safety_cap=100, abort_on_exceed=False)
+        
+        # Exceed cap - should not raise
+        tracker.record_block(block_id=0, syndrome_bits=200, hash_bits=0)
+        
+        assert tracker.total_leakage == 200
+        assert tracker.check_safety() is False
+        assert tracker.should_abort() is True
+    
+    def test_multiple_blocks_accumulate(self) -> None:
+        """Multiple blocks accumulate correctly toward cap."""
+        tracker = LeakageTracker(safety_cap=5000, abort_on_exceed=True)
+        
+        for i in range(4):
+            tracker.record_block(block_id=i, syndrome_bits=1000, hash_bits=50)
+        
+        assert tracker.total_leakage == 4200  # 4 * (1000 + 50)
+        assert tracker.num_blocks == 4
+        
+        # 5th block exceeds
+        with pytest.raises(LeakageBudgetExceeded):
+            tracker.record_block(block_id=4, syndrome_bits=1000, hash_bits=50)
+    
+    def test_shortening_bits_counted(self) -> None:
+        """Shortening leakage is included in total."""
+        tracker = LeakageTracker(safety_cap=5000, abort_on_exceed=True)
+        
+        # Record with shortening
+        tracker.record_block(
+            block_id=0,
+            syndrome_bits=1000,
+            hash_bits=50,
+            n_shortened=100,
+            frame_size=4096,
+        )
+        
+        # Total should be > 1050 (includes shortening bits)
+        assert tracker.total_leakage > 1050
+    
+    def test_remaining_budget_negative_when_exceeded(self) -> None:
+        """Remaining budget goes negative when exceeded."""
+        tracker = LeakageTracker(safety_cap=100, abort_on_exceed=False)
+        
+        tracker.record_block(block_id=0, syndrome_bits=150, hash_bits=0)
+        
+        assert tracker.remaining_budget == -50

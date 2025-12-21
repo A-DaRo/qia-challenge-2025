@@ -1,103 +1,21 @@
-"""Phase-boundary integration: Phase II DTO → reconciliation orchestrator.
+"""Phase-boundary integration: Phase II DTO contract validation.
 
-Covers REQ-P23-001/010/020 from the extended test spec.
+Covers REQ-P23-010/020 from the extended test spec.
 
 Notes
 -----
-- This is *not* an end-to-end protocol test. It only checks that the
-  Phase II DTO representation can be converted into the reconciliation
-  layer’s expected inputs without semantic drift.
-- This test uses the project’s LDPC matrix assets (same as existing
-  reconciliation integration tests).
+- These tests validate contract enforcement and data encoding at phase boundaries.
+- They do NOT depend on the legacy ReconciliationOrchestrator.
 """
 
 from __future__ import annotations
 
-from typing import Iterator
-
 import numpy as np
 import pytest
 
-from caligo.reconciliation import constants
-from caligo.reconciliation.matrix_manager import MatrixManager
-from caligo.reconciliation.orchestrator import (
-    ReconciliationOrchestrator,
-    ReconciliationOrchestratorConfig,
-)
 from caligo.types.exceptions import ContractViolation
 from caligo.types.phase_contracts import QBER_HARD_LIMIT, SiftingPhaseResult
-from caligo.utils.bitarray_utils import bitarray_from_numpy, bitarray_to_numpy
-
-
-@pytest.fixture(scope="module")
-def matrix_manager() -> Iterator[MatrixManager]:
-    """Load LDPC matrix manager once for this module."""
-    # Phase 1: Only load rate 0.5 (only available matrix in ldpc_peg)
-    matrix_dir = constants.LDPC_MATRICES_PATH / "ldpc_peg"
-    yield MatrixManager.from_directory(matrix_dir, rates=(0.5,))
-
-
-@pytest.mark.integration
-def test_p23_001_sifting_phase_result_drives_single_block_reconciliation(
-    matrix_manager: MatrixManager,
-) -> None:
-    """REQ-P23-001: SiftingPhaseResult bits should feed orchestrator correctly."""
-
-    rng = np.random.default_rng(2025)
-
-    # Use full frame for rate 0.5 (no puncturing)
-    payload_len = 4096
-    alice_np = rng.integers(0, 2, size=payload_len, dtype=np.uint8)
-
-    # Bob differs by ~1%.
-    bob_np = alice_np.copy()
-    n_errors = max(1, int(payload_len * 0.01))
-    error_positions = rng.choice(payload_len, size=n_errors, replace=False)
-    bob_np[error_positions] = 1 - bob_np[error_positions]
-
-    alice_bits = bitarray_from_numpy(alice_np)
-    bob_bits = bitarray_from_numpy(bob_np)
-
-    qber_estimate = 0.03
-    finite_size_penalty = 0.0
-
-    dto = SiftingPhaseResult(
-        sifted_key_alice=alice_bits,
-        sifted_key_bob=bob_bits,
-        matching_indices=np.arange(payload_len, dtype=np.int64),
-        i0_indices=np.arange(0, payload_len, 2, dtype=np.int64),
-        i1_indices=np.arange(1, payload_len, 2, dtype=np.int64),
-        test_set_indices=np.array([], dtype=np.int64),
-        qber_estimate=qber_estimate,
-        qber_adjusted=qber_estimate + finite_size_penalty,
-        finite_size_penalty=finite_size_penalty,
-        test_set_size=0,
-        timing_compliant=True,
-    )
-
-    alice_arr = bitarray_to_numpy(dto.sifted_key_alice)
-    bob_arr = bitarray_to_numpy(dto.sifted_key_bob)
-
-    assert alice_arr.dtype == np.uint8
-    assert bob_arr.dtype == np.uint8
-    assert len(alice_arr) == payload_len
-    assert len(bob_arr) == payload_len
-
-    orchestrator = ReconciliationOrchestrator(
-        matrix_manager=matrix_manager,
-        config=ReconciliationOrchestratorConfig(frame_size=4096, max_retries=2),
-        safety_cap=500_000,
-    )
-
-    result = orchestrator.reconcile_block(
-        alice_key=alice_arr,
-        bob_key=bob_arr,
-        qber_estimate=dto.qber_adjusted,
-        block_id=0,
-    )
-
-    if result.verified:
-        np.testing.assert_array_equal(result.corrected_payload, alice_arr)
+from caligo.utils.bitarray_utils import bitarray_from_numpy
 
 
 @pytest.mark.integration

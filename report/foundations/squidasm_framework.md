@@ -15,7 +15,7 @@
 
 ```
 ┌───────────────────────────────────────────────┐
-│         Caligo Protocol (User Code)          │
+│         Caligo Protocol (User Code)           │
 ├───────────────────────────────────────────────┤
 │        SquidASM Application Layer             │
 │  - NetQASMConnection (program compilation)    │
@@ -304,18 +304,18 @@ def enforce_nsm_delay(conn, delta_t_ns):
 
 ### What SquidASM Models Accurately
 
-✅ **Discrete-event timing** (nanosecond precision)  
-✅ **Density matrix evolution** (mixed states, decoherence)  
-✅ **Link losses** (fiber attenuation, detector efficiency)  
-✅ **Gate errors** (depolarization, dephasing)  
-✅ **Parallel execution** (asynchronous protocols)
+**Discrete-event timing** (nanosecond precision)  
+**Density matrix evolution** (mixed states, decoherence)  
+**Link losses** (fiber attenuation, detector efficiency)  
+**Gate errors** (depolarization, dephasing)  
+**Parallel execution** (asynchronous protocols)
 
 ### Limitations
 
-❌ **Continuous dynamics**: No master equation integration  
-❌ **Hardware-specific quirks**: Crosstalk, SPAM errors  
-❌ **Photon number resolution**: Assumes single-photon regime  
-❌ **Non-Markovian noise**: Assumes memoryless channels
+**Continuous dynamics**: No master equation integration  
+**Hardware-specific quirks**: Crosstalk, SPAM errors  
+**Photon number resolution**: Assumes single-photon regime  
+**Non-Markovian noise**: Assumes memoryless channels
 
 **Implication**: Caligo results are **upper bounds** on performance—real hardware will exhibit additional degradation.
 

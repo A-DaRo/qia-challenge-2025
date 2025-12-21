@@ -378,9 +378,12 @@ class BaselineStrategy(ReconciliationStrategy):
         target_rate = 1.0 - f_crit * h_qber
         
         # Clamp to achievable range
-        # Hybrid library covers [0.51, 0.90]
+        # NOTE: The decoder struggles with heavy puncturing (>15%).
+        # We cap at r_max=0.60 to ensure reliable convergence.
+        # This sacrifices efficiency for robustness - acceptable tradeoff
+        # until decoder improvements allow higher rates.
         r_min = 0.51
-        r_max = 0.90
+        r_max = 0.60  # Conservative cap for decoder stability
         
         return max(r_min, min(target_rate, r_max))
     

@@ -51,55 +51,76 @@ class TestBinaryEntropy:
 
 
 class TestRateSelection:
-    """Tests for rate selection logic.
+    """Tests for rate selection using efficiency model.
     
-    Note: Due to BP decoder limitations with current LDPC matrices, rate 0.5
-    is always selected for reliability (~90% success rate vs ~50% for higher rates).
+    Rate selection follows R = 1 - f_crit × h(QBER) as per Elkouss et al. (2010)
+    and Martinez-Mateo et al. (2012). Assumes correct decoder implementation.
     """
 
-    def test_low_qber_reliable_rate(self) -> None:
-        """Low QBER should select most reliable rate (0.5).
+    def test_low_qber_high_rate(self) -> None:
+        """Low QBER should select high rate via efficiency model.
         
-        Note: Higher rates (0.6, 0.7, 0.85, 0.9) have poor BP convergence
-        and are not used even for low QBER.
+        For QBER=0.01, h(0.01) ≈ 0.081, with f_crit=1.1:
+        R = 1 - 1.1 × 0.081 ≈ 0.91 → quantized to nearest available rate
         """
-        rate = select_rate(0.01, constants.LDPC_CODE_RATES)
-        assert rate == 0.5, f"Expected 0.5 for reliability, got {rate}"
+        rate = select_rate(0.01, constants.LDPC_CODE_RATES, f_crit=1.1)
+        # Should select high rate (expect 0.85 or 0.9)
+        assert rate >= 0.85, f"Expected high rate for low QBER, got {rate}"
 
-    def test_moderate_qber_reliable_rate(self) -> None:
-        """Moderate QBER (5%) selects most reliable rate."""
-        rate = select_rate(0.05, constants.LDPC_CODE_RATES)
-        # Rate 0.5 is the most reliable rate
-        assert rate == 0.5
+    def test_moderate_qber_medium_rate(self) -> None:
+        """Moderate QBER (5%) selects medium rate.
+        
+        For QBER=0.05, h(0.05) ≈ 0.286, with f_crit=1.1:
+        R = 1 - 1.1 × 0.286 ≈ 0.69 → quantized to 0.70
+        """
+        rate = select_rate(0.05, constants.LDPC_CODE_RATES, f_crit=1.1)
+        # Should be in medium range [0.65, 0.75]
+        assert 0.65 <= rate <= 0.75, f"Expected medium rate for QBER 0.05, got {rate}"
 
     def test_high_qber_low_rate(self) -> None:
-        """High QBER (10%) selects low rate."""
-        rate = select_rate(0.10, constants.LDPC_CODE_RATES)
-        assert rate <= 0.55
-
-    def test_reliability_over_efficiency(self) -> None:
-        """Rate selector prioritizes decoder reliability over efficiency.
+        """High QBER (10%) selects low rate.
         
-        Due to BP decoder limitations with available LDPC matrices, we always
-        use rate 0.5 which has the highest decoder reliability (~90% success rate).
-        Higher rates (0.6, 0.7) have lower success rates (~50-55%) and are not
-        used even for low QBER.
+        For QBER=0.10, h(0.10) ≈ 0.469, with f_crit=1.1:
+        R = 1 - 1.1 × 0.469 ≈ 0.48 → quantized to 0.50
         """
-        # All QBER values should select rate 0.5 for reliability
-        for qber in [0.01, 0.03, 0.05, 0.08, 0.10]:
-            rate = select_rate(qber, constants.LDPC_CODE_RATES)
-            assert rate == 0.5, f"Expected rate 0.5 at QBER {qber} for reliability, got {rate}"
+        rate = select_rate(0.10, constants.LDPC_CODE_RATES, f_crit=1.1)
+        assert rate <= 0.55, f"Expected low rate for high QBER, got {rate}"
 
-    @pytest.mark.parametrize("qber,expected_rate", [
-        (0.01, 0.50),  # Low QBER: use most reliable rate
-        (0.03, 0.50),  # Low QBER: use most reliable rate
-        (0.06, 0.50),  # Medium: use most reliable rate
-        (0.09, 0.50),  # High: use most reliable rate
+    def test_efficiency_criterion_scaling(self) -> None:
+        """Rate scales with efficiency criterion.
+        
+        Higher f_crit means more leakage tolerance → lower rate selected.
+        """
+        qber = 0.05
+        rate_strict = select_rate(qber, constants.LDPC_CODE_RATES, f_crit=1.0)
+        rate_relaxed = select_rate(qber, constants.LDPC_CODE_RATES, f_crit=1.2)
+        
+        # Relaxed efficiency allows lower rate (more error correction)
+        assert rate_relaxed <= rate_strict, \
+            f"Relaxed f_crit should give lower/equal rate: {rate_relaxed} vs {rate_strict}"
+
+    @pytest.mark.parametrize("qber,f_crit,expected_min,expected_max", [
+        (0.01, 1.1, 0.85, 0.90),  # Low QBER: high rate
+        (0.05, 1.1, 0.65, 0.75),  # Moderate QBER: medium rate
+        (0.10, 1.1, 0.50, 0.55),  # High QBER: low rate
     ])
-    def test_qber_rate_mapping(self, qber: float, expected_rate: float) -> None:
-        """Verify rate selection always returns most reliable rate."""
-        rate = select_rate(qber, constants.LDPC_CODE_RATES)
-        assert rate == expected_rate, f"Expected {expected_rate} at QBER {qber}, got {rate}"
+    def test_qber_rate_mapping(
+        self, qber: float, f_crit: float, expected_min: float, expected_max: float
+    ) -> None:
+        """Verify rate selection follows efficiency model."""
+        rate = select_rate(qber, constants.LDPC_CODE_RATES, f_crit=f_crit)
+        assert expected_min <= rate <= expected_max, \
+            f"Rate {rate} outside expected range [{expected_min}, {expected_max}] for QBER {qber}"
+    
+    def test_edge_case_zero_qber(self) -> None:
+        """Zero QBER returns highest available rate."""
+        rate = select_rate(0.0, constants.LDPC_CODE_RATES)
+        assert rate == max(constants.LDPC_CODE_RATES)
+    
+    def test_edge_case_maximum_qber(self) -> None:
+        """QBER at 0.5 returns lowest available rate."""
+        rate = select_rate(0.5, constants.LDPC_CODE_RATES)
+        assert rate == min(constants.LDPC_CODE_RATES)
 
 
 class TestShortening:
@@ -160,14 +181,20 @@ class TestRateSelectionWithParameters:
         assert isinstance(result, RateSelection)
 
     def test_includes_syndrome_length(self) -> None:
-        """Syndrome length computed correctly."""
+        """Syndrome length computed correctly from mother code rate.
+        
+        Critical: Syndrome length uses R_0 (mother rate), not R_eff.
+        For R_0 = 0.5, syndrome_length = (1 - 0.5) × n = n/2 = 2048 bits.
+        """
         result = select_rate_with_parameters(
             qber_estimate=0.05,
             payload_length=2000,
             frame_size=4096,
         )
-        expected_syndrome = int(4096 * (1 - result.rate))
-        assert result.syndrome_length == expected_syndrome
+        # Syndrome length is ALWAYS (1 - R_0) × n for mother code R_0 = 0.5
+        expected_syndrome = int(4096 * (1 - 0.5))  # = 2048 bits (constant)
+        assert result.syndrome_length == expected_syndrome, \
+            f"Syndrome length must be constant 2048 for R_0=0.5, got {result.syndrome_length}"
 
     def test_efficiency_computed(self) -> None:
         """Expected efficiency is calculated."""

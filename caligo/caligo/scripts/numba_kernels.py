@@ -851,6 +851,7 @@ def decode_bp_virtual_graph_kernel(
             break
             
         # --- Check Node Step ---
+        # All messages indexed by CSR edge index (k is already CSR index)
         for c in range(n_checks):
             start = check_row_ptr[c]
             end = check_row_ptr[c+1]
@@ -859,8 +860,7 @@ def decode_bp_virtual_graph_kernel(
             zero_count = 0
             
             for k in range(start, end):
-                edge_idx = edge_c2v[k]
-                val = messages[OFFSET_V2C + edge_idx]
+                val = messages[OFFSET_V2C + k]
                 t = np.tanh(val / 2.0)
                 if np.abs(t) < 1e-12:
                     zero_count += 1
@@ -868,8 +868,7 @@ def decode_bp_virtual_graph_kernel(
                     total_tanh *= t
             
             for k in range(start, end):
-                edge_idx = edge_c2v[k]
-                val = messages[OFFSET_V2C + edge_idx]
+                val = messages[OFFSET_V2C + k]
                 t = np.tanh(val / 2.0)
                 
                 res = 0.0
@@ -880,8 +879,7 @@ def decode_bp_virtual_graph_kernel(
                         sub_prod = 1.0
                         for k2 in range(start, end):
                             if k2 == k: continue
-                            edge_idx2 = edge_c2v[k2]
-                            val2 = messages[OFFSET_V2C + edge_idx2]
+                            val2 = messages[OFFSET_V2C + k2]
                             sub_prod *= np.tanh(val2 / 2.0)
                         res = 2.0 * np.arctanh(sub_prod)
                     else:
@@ -895,7 +893,7 @@ def decode_bp_virtual_graph_kernel(
                 if syndrome[c] == 1:
                     res = -res
                     
-                messages[OFFSET_C2V + edge_idx] = res
+                messages[OFFSET_C2V + k] = res
 
     return corrected_bits, converged, iterations
 
@@ -981,6 +979,7 @@ def decode_bp_hotstart_kernel(
             break
             
         # --- Check Node Step ---
+        # All messages indexed by CSR edge index (k is already CSR index)
         for c in range(n_checks):
             start = check_row_ptr[c]
             end = check_row_ptr[c+1]
@@ -989,8 +988,7 @@ def decode_bp_hotstart_kernel(
             zero_count = 0
             
             for k in range(start, end):
-                edge_idx = edge_c2v[k]
-                val = messages[OFFSET_V2C + edge_idx]
+                val = messages[OFFSET_V2C + k]
                 t = np.tanh(val / 2.0)
                 if np.abs(t) < 1e-12:
                     zero_count += 1
@@ -998,8 +996,7 @@ def decode_bp_hotstart_kernel(
                     total_tanh *= t
             
             for k in range(start, end):
-                edge_idx = edge_c2v[k]
-                val = messages[OFFSET_V2C + edge_idx]
+                val = messages[OFFSET_V2C + k]
                 t = np.tanh(val / 2.0)
                 
                 res = 0.0
@@ -1010,8 +1007,7 @@ def decode_bp_hotstart_kernel(
                         sub_prod = 1.0
                         for k2 in range(start, end):
                             if k2 == k: continue
-                            edge_idx2 = edge_c2v[k2]
-                            val2 = messages[OFFSET_V2C + edge_idx2]
+                            val2 = messages[OFFSET_V2C + k2]
                             sub_prod *= np.tanh(val2 / 2.0)
                         res = 2.0 * np.arctanh(sub_prod)
                     else:
@@ -1025,6 +1021,6 @@ def decode_bp_hotstart_kernel(
                 if syndrome[c] == 1:
                     res = -res
                     
-                messages[OFFSET_C2V + edge_idx] = res
+                messages[OFFSET_C2V + k] = res
 
     return corrected_bits, converged, iterations, messages

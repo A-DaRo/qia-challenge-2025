@@ -21,36 +21,9 @@ from typing import Tuple
 # =============================================================================
 
 LDPC_FRAME_SIZE: int = 4096
-"""
-Fixed LDPC frame size n in bits.
-
-All parity-check matrices are constructed for this frame size.
-Rate adaptation uses puncturing/shortening, not frame resizing.
-"""
-
-LDPC_CODE_RATES: Tuple[float, ...] = (
-    0.50,
-    0.55,
-    0.60,
-    0.65,
-    0.70,
-    0.75,
-    0.80,
-    0.85,
-    0.90,
-)
-"""
-Discrete LDPC code rates supported by the matrix pool.
-
-Sorted ascending. Rate selection chooses highest rate satisfying
-the efficiency criterion (1-R)/h(QBER) < f_crit.
-"""
-
-LDPC_DEFAULT_RATE: float = 0.50
-"""Default rate used when QBER is unknown or very high."""
 
 # =============================================================================
-# Hybrid Architecture Constants (Phase 1)
+# Hybrid Architecture Constants
 # =============================================================================
 
 MOTHER_CODE_RATE: float = 0.5
@@ -59,7 +32,7 @@ MOTHER_CODE_RATE: float = 0.5
 RATE_STEP: float = 0.01
 """Granularity of rate adaptation."""
 
-UNTAINTED_SATURATION_RATE: float = 0.625
+UNTAINTED_SATURATION_RATE: float = 0.6426
 """
 Threshold rate where untainted puncturing saturates.
 Rates <= this use Untainted Puncturing (Regime A).

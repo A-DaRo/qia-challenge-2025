@@ -321,9 +321,9 @@ class BobProgram(CaligoProgram):
             
             # Check if this was a terminal response (verified or final iteration)
             if response.get("verified", False) or response.get("kind") != "blind_reveal":
-                # Try to get final result
+                # Try to get final result by sending termination signal
                 try:
-                    next(gen)
+                    gen.send({})  # Send empty dict to trigger return
                 except StopIteration as e:
                     return e.value
             

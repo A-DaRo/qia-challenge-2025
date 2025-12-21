@@ -1,4 +1,4 @@
-"""Micro-benchmark harness for LDPC decoding.
+"""Micro-benchmark harness for LDPC decoding using MotherCodeManager.
 
 This is intentionally skip-by-default to avoid flaky timing assertions.
 Run with:
@@ -14,16 +14,16 @@ import time
 import numpy as np
 import pytest
 
-from caligo.reconciliation import constants
 from caligo.reconciliation.ldpc_decoder import BeliefPropagationDecoder, build_channel_llr
-from caligo.reconciliation.matrix_manager import MatrixManager
+from caligo.reconciliation.matrix_manager import MotherCodeManager
 
 
 @pytest.mark.performance
 def test_ldpc_decode_benchmark() -> None:
-    mm = MatrixManager.from_directory(constants.LDPC_MATRICES_PATH)
-    H = mm.get_matrix(0.70)
-    compiled = mm.get_compiled(0.70)
+    # Use new MotherCodeManager architecture
+    mother_code = MotherCodeManager.from_config()
+    H = mother_code.H_csr
+    compiled = mother_code.get_compiled()
     decoder = BeliefPropagationDecoder(parity_check_matrix=H, max_iterations=40)
 
     n = int(H.shape[1])

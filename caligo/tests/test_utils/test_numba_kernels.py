@@ -146,6 +146,8 @@ def test_ace_viterbi_matches_python_pass_fail() -> None:
     next_active_vars = np.empty(n, dtype=np.int32)
     active_checks = np.empty(m, dtype=np.int32)
     next_active_checks = np.empty(m, dtype=np.int32)
+    var_in_next = np.zeros(n, dtype=np.int32)
+    check_in_next = np.zeros(m, dtype=np.int32)
 
     token = np.int32(100)
     passes_nb = numba_kernels.ace_detection_viterbi(
@@ -164,6 +166,8 @@ def test_ace_viterbi_matches_python_pass_fail() -> None:
         active_checks,
         next_active_vars,
         next_active_checks,
+        var_in_next,
+        check_in_next,
         token,
     )
 

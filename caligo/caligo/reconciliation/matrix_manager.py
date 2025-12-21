@@ -178,7 +178,7 @@ class MatrixManager:
                 rate, matrix.shape, matrix.nnz
             )
 
-        # Load puncture patterns from puncture_patterns/ subdirectory
+        # Load puncture patterns from puncture_patterns/ subdirectory (legacy)
         pattern_dir = directory / "puncture_patterns"
         if pattern_dir.exists():
             logger.debug("Scanning for puncture patterns in: %s", pattern_dir)
@@ -207,6 +207,37 @@ class MatrixManager:
                         )
         else:
             logger.debug("No puncture_patterns/ subdirectory found")
+
+        # NEW: Also look for hybrid patterns in parent's hybrid_patterns/ dir
+        # This supports the new architecture where patterns are in ldpc_matrices/hybrid_patterns/
+        hybrid_pattern_dir = directory.parent / "hybrid_patterns"
+        if hybrid_pattern_dir.exists() and len(puncture_patterns) == 0:
+            logger.debug("Scanning for hybrid patterns in: %s", hybrid_pattern_dir)
+            # Load all patterns that exist (new naming: pattern_rate0.XX.npy)
+            for path in hybrid_pattern_dir.glob("pattern_rate*.npy"):
+                try:
+                    rate_str = path.stem.split("rate")[-1]
+                    rate = float(rate_str)
+                    pattern = np.load(path).astype(np.uint8)
+                    if pattern.shape[0] != frame_size:
+                        logger.warning(
+                            "Pattern %s has size %d, expected %d. Skipping.",
+                            path.name, pattern.shape[0], frame_size
+                        )
+                        continue
+                    puncture_patterns[rate] = pattern
+                    pattern_paths[rate] = path
+                    logger.debug(
+                        "Loaded hybrid pattern for rate=%.2f: %d punctured bits",
+                        rate, int(pattern.sum())
+                    )
+                except (ValueError, IndexError) as exc:
+                    logger.warning("Failed to parse pattern file %s: %s", path.name, exc)
+            if puncture_patterns:
+                logger.info(
+                    "Loaded %d hybrid patterns from %s",
+                    len(puncture_patterns), hybrid_pattern_dir
+                )
 
         checksum = cls._compute_checksum(matrices, puncture_patterns)
         logger.info("Matrix pool checksum: %s...", checksum[:16])
@@ -602,6 +633,11 @@ class MotherCodeManager:
         return self._H_csr.shape[1]
 
     @property
+    def H_csr(self) -> sp.csr_matrix:
+        """Get the mother code parity-check matrix (CSR format)."""
+        return self._H_csr
+
+    @property
     def mother_rate(self) -> float:
         """Get mother code rate (R_0=0.5)."""
         return constants.MOTHER_CODE_RATE
@@ -621,18 +657,29 @@ class MotherCodeManager:
         """Get dictionary of hybrid patterns."""
         return self._patterns
 
+    def get_compiled(self) -> CompiledParityCheckMatrix:
+        """
+        Get JIT-compiled mother matrix representation.
+
+        Returns
+        -------
+        CompiledParityCheckMatrix
+            Compiled matrix structure for Numba kernels.
+        """
+        if self._compiled is None:
+            self._compiled = compile_parity_check_matrix(self._H_csr)
+        return self._compiled
+
     def get_compiled_mother_code(self) -> CompiledParityCheckMatrix:
         """
-        Get legacy JIT-compiled mother matrix (backward compatibility).
+        Alias for get_compiled() (backward compatibility).
 
         Returns
         -------
         CompiledParityCheckMatrix
             Compiled matrix structure for legacy Numba kernels.
         """
-        if self._compiled is None:
-            self._compiled = compile_parity_check_matrix(self._H_csr)
-        return self._compiled
+        return self.get_compiled()
 
     def get_pattern(self, target_rate: float) -> np.ndarray:
         """
@@ -707,6 +754,7 @@ class MotherCodeManager:
         
         This is the "baking" step that converts the sparse matrix
         representation into flat arrays optimized for JIT compilation.
+        The edge_c2v and edge_v2c arrays map between CSR and CSC orderings.
         
         Returns
         -------
@@ -724,10 +772,33 @@ class MotherCodeManager:
         var_col_ptr = H_csc.indptr.astype(np.uint32)
         var_row_idx = H_csc.indices.astype(np.uint32)
         
-        # Edge indexing (for message arrays)
+        # Build edge permutation arrays
+        # CSR edges are ordered (c0,v_a), (c0,v_b), ..., (c1,v_c), ...
+        # CSC edges are ordered (c_x,v0), (c_y,v0), ..., (c_z,v1), ...
         n_edges = H.nnz
-        edge_c2v = np.arange(n_edges, dtype=np.uint32)
-        edge_v2c = np.arange(n_edges, dtype=np.uint32)
+        n_vars = H.shape[1]
+        n_checks = H.shape[0]
+        
+        # Build lookup: (check, var) -> CSR edge index
+        csr_edge_map = {}
+        for c in range(n_checks):
+            for k in range(H.indptr[c], H.indptr[c+1]):
+                v = H.indices[k]
+                csr_edge_map[(c, v)] = k
+        
+        # edge_c2v[csr_idx] = csc_idx for same (c,v) edge
+        # edge_v2c[csc_idx] = csr_idx for same (c,v) edge
+        edge_c2v = np.zeros(n_edges, dtype=np.uint32)
+        edge_v2c = np.zeros(n_edges, dtype=np.uint32)
+        
+        csc_idx = 0
+        for v in range(n_vars):
+            for k in range(H_csc.indptr[v], H_csc.indptr[v+1]):
+                c = H_csc.indices[k]
+                csr_idx = csr_edge_map[(c, v)]
+                edge_c2v[csr_idx] = csc_idx
+                edge_v2c[csc_idx] = csr_idx
+                csc_idx += 1
         
         return NumbaGraphTopology(
             check_row_ptr=check_row_ptr,
@@ -736,8 +807,8 @@ class MotherCodeManager:
             var_row_idx=var_row_idx,
             edge_c2v=edge_c2v,
             edge_v2c=edge_v2c,
-            n_checks=H.shape[0],
-            n_vars=H.shape[1],
+            n_checks=n_checks,
+            n_vars=n_vars,
             n_edges=n_edges,
         )
 

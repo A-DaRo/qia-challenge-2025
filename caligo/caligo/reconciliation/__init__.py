@@ -81,7 +81,6 @@ from caligo.reconciliation.hash_verifier import PolynomialHashVerifier
 # Rate Selector
 from caligo.reconciliation.rate_selector import (
     RateSelection,
-    binary_entropy,
     select_rate,
     compute_shortening,
     compute_puncturing,
@@ -170,7 +169,6 @@ __all__ = [
     "PolynomialHashVerifier",
     # Rate Selector
     "RateSelection",
-    "binary_entropy",
     "select_rate",
     "compute_shortening",
     "compute_puncturing",

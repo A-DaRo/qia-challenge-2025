@@ -148,6 +148,8 @@ class LDPCCodec:
             self._topo.check_col_idx,
             self._topo.var_col_ptr,
             self._topo.var_row_idx,
+            self._topo.edge_c2v,
+            self._topo.edge_v2c,
             max_iterations,
         )
         
@@ -210,6 +212,8 @@ class LDPCCodec:
             self._topo.check_col_idx,
             self._topo.var_col_ptr,
             self._topo.var_row_idx,
+            self._topo.edge_c2v,
+            self._topo.edge_v2c,
             max_iterations,
         )
         
@@ -242,7 +246,8 @@ class LDPCCodec:
             word_idx = i // 64
             bit_idx = i % 64
             if bits[i]:
-                packed[word_idx] |= (1 << bit_idx)
+                # Use np.uint64 to avoid Python int overflow in bitwise_or
+                packed[word_idx] |= np.uint64(1) << np.uint64(bit_idx)
         
         return packed
     
@@ -267,7 +272,8 @@ class LDPCCodec:
         for i in range(n_bits):
             word_idx = i // 64
             bit_idx = i % 64
-            if packed[word_idx] & (1 << bit_idx):
+            # Use np.uint64 for consistent type handling
+            if packed[word_idx] & (np.uint64(1) << np.uint64(bit_idx)):
                 bits[i] = 1
         
         return bits

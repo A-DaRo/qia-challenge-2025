@@ -198,7 +198,8 @@ class BlindStrategy(ReconciliationStrategy):
             block_id=block_id,
             syndrome_bits=len(syndrome) * 8,  # Bits, not bytes
             hash_bits=ctx.hash_bits,
-            revealed_bits=initial_shortened,
+            n_shortened=initial_shortened,
+            frame_size=ctx.frame_size,
         )
         
         # 8. Prepare initial revealed indices/values
@@ -491,7 +492,9 @@ class BlindStrategy(ReconciliationStrategy):
             frozen_mask[idx] = True
         
         # Initialize edge messages to zeros (no prior)
-        messages = np.zeros((frame_size * 6, 2), dtype=np.float64)  # Approx 6 edges per node
+        # Messages array is 1D with shape (2 * n_edges,) containing both c2v and v2c messages
+        n_edges = self._mother_code.compiled_topology.n_edges
+        messages = np.zeros(2 * n_edges, dtype=np.float64)
         
         return BlindDecoderState(
             llr=llr,

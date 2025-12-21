@@ -18,6 +18,10 @@ from typing import Any
 
 import numpy as np
 
+# Import LDPC constants for rate selection
+from caligo.reconciliation.constants import LDPC_F_CRIT
+from caligo.reconciliation.constants import RATE_MIN, RATE_MAX
+
 
 def binary_entropy(p: float) -> float:
     """
@@ -113,60 +117,67 @@ def suggested_ldpc_rate_from_qber(
     """
     Suggest an LDPC code rate for a given QBER.
 
-     Selects the highest rate satisfying both:
+    Uses RATE_MIN and RATE_MAX from caligo.reconciliation.constants
+    to provide a bounded continuous suggestion instead of relying on
+    a discrete LDPC_CODE_RATES table.
 
-     1) A *leakage-efficiency* cap (avoid sending excessively long syndromes):
-         (1 - rate) / h(qber) < f_crit
-
-     2) A *decodability* bound (Shannon capacity for a BSC):
-         rate <= 1 - h(qber)
+    Selection rules (highest feasible rate in [RATE_MIN, RATE_MAX]):
+    1) Leakage-efficiency cap:
+       (1 - rate) / h(qber) < f_crit  =>  rate > 1 - f_crit * h(qber)
+    2) Decodability (Shannon capacity for a BSC):
+       rate <= 1 - h(qber)
 
     Parameters
     ----------
     qber : float
         Estimated quantum bit error rate in [0, 0.5].
     safety_margin : float
-        Additional margin to add to QBER for rate selection.
+        Additional margin to add to QBER for conservative rate selection.
 
     Returns
     -------
     float
-        Suggested LDPC code rate from available rates.
+        Suggested LDPC code rate clipped to [RATE_MIN, RATE_MAX].
 
     Notes
     -----
-    With safety_margin > 0, the function uses qber + safety_margin
-    for rate selection, providing more redundancy.
-
-    References
-    ----------
-    - recon_phase_spec.md Section 5.1: Rate Selection
+    This implementation prefers the highest rate within the intersection
+    of the decodability and leakage-efficiency bounds while respecting
+    the configured RATE_MIN and RATE_MAX from constants.
     """
+
+    if not 0.0 <= qber <= 0.5:
+        raise ValueError(f"qber={qber} must be in [0, 0.5]")
+    if safety_margin < 0.0:
+        raise ValueError(f"safety_margin={safety_margin} must be >= 0")
+
     effective_qber = min(qber + safety_margin, 0.499)
     entropy = binary_entropy(effective_qber)
 
+    # Very low QBER: use maximum allowed rate
     if entropy < 1e-10:
-        # Very low QBER, use highest rate
-        return LDPC_CODE_RATES[-1]
+        return RATE_MAX
 
-    # Decodability: for a BSC, rate must not exceed channel capacity 1 - h(e)
+    # Decodability bound (capacity)
     max_rate = max(0.0, 1.0 - entropy)
-    # Leakage-efficiency cap: f = (1-R)/h(e) < fcrit  =>  R > 1 - fcrit*h(e)
+    # Leakage-efficiency cap: rate > 1 - f_crit * h(e)
     min_rate = max(0.0, 1.0 - LDPC_F_CRIT * entropy)
 
-    # Prefer rates that satisfy both bounds.
-    candidates = [r for r in LDPC_CODE_RATES if min_rate <= r <= max_rate]
-    if candidates:
-        return max(candidates)
+    # Intersection with configured allowed rate range
+    lower = max(RATE_MIN, min_rate)
+    upper = min(RATE_MAX, max_rate)
 
-    # If no rate satisfies both, prefer decodability (capacity) over the
-    # leakage-efficiency cap; feasibility checks should gate extreme cases.
-    decodable = [r for r in LDPC_CODE_RATES if r <= max_rate]
-    if decodable:
-        return max(decodable)
+    if upper >= lower:
+        # Choose the highest feasible rate in the intersection
+        return upper
 
-    # Default to lowest rate.
-    return LDPC_CODE_RATES[0]
+    # If no intersection, prefer decodability (cap to RATE_MAX)
+    preferred = min(max_rate, RATE_MAX)
+    if preferred >= RATE_MIN:
+        return preferred
+
+    # As a last resort return the minimum configured rate
+    return RATE_MIN
 
 
 def compute_qber_erven(
