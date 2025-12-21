@@ -1111,7 +1111,11 @@ def main() -> int:
         
         # Save matrix using enforced naming convention: ldpc_{n}_rate{rate:.2f}.npz
         desired_fname = f"ldpc_{args.block_length}_rate{args.rate:.2f}.npz"
+        # Treat non-existing paths without a file suffix as directories (e.g., "ldpc_matrices")
         if args.output_path.exists() and args.output_path.is_dir():
+            out_dir = args.output_path
+        elif args.output_path.suffix == "":
+            # User likely provided a directory path that doesn't exist yet
             out_dir = args.output_path
         else:
             out_dir = args.output_path.parent
