@@ -263,10 +263,4 @@ where $a_i = (F^{(i-1)} - F^{(i)})/(1 - F^{(t)})$ is fraction corrected in itera
 
 ---
 
-## References
-
-(Complete bibliography available in [Bibliography](../references/bibliography.md))
-
----
-
 [← Return to Main Index](../index.md) | [← Previous: SquidASM Framework](./squidasm_framework.md) | [Next Chapter: Protocol Architecture →](../architecture/protocol_overview.md)

@@ -63,27 +63,9 @@
 
 ### 10. Validation & Results
 *   10.1 [Test Strategy](./results/test_strategy.md)
-*   10.2 [Performance Metrics](./results/performance_metrics.md)
-*   10.3 [QBER Analysis](./results/qber_analysis.md)
-*   10.4 [Security Parameter Validation](./results/security_validation.md)
 
-### 11. Discussion
-*   11.1 [Key Achievements](./discussion/achievements.md)
-*   11.2 [Technical Challenges](./discussion/challenges.md)
-*   11.3 [Lessons Learned](./discussion/lessons_learned.md)
-*   11.4 [Future Work](./discussion/future_work.md)
-
-### 12. Conclusions
+### 11. Conclusions
 *   [Summary & Final Remarks](./conclusions/summary.md)
-
-### Appendices
-*   A. [Mathematical Proofs](./appendices/proofs.md)
-*   B. [Code Listings](./appendices/code_listings.md)
-*   C. [Simulation Configuration](./appendices/simulation_config.md)
-*   D. [Glossary of Terms](./appendices/glossary.md)
-
-### References
-*   [Bibliography](./references/bibliography.md)
 
 ---
 
