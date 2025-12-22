@@ -130,4 +130,4 @@ To maintain focus on the physical security analysis, we exclude:
 
 ---
 
-[← Return to Main Index](../index.md) | [← Previous: Introduction](./introduction.md) | [Next: Document Structure →](./structure.md)
+[← Return to Main Index](../index.md) | [← Previous: Introduction](./introduction.md) | [Next: The Noisy Storage Model →](../foundations/nsm_model.md)

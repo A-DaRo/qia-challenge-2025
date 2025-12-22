@@ -215,4 +215,4 @@ For **performance estimation** (honest party modeling): Use realistic parameters
 
 ---
 
-[← Return to Main Index](../index.md) | [Next: Physical Mapping](./physical_mapping.md)
+[← Return to Main Index](../index.md) | [Next: Timing Enforcement](./timing_enforcement.md)

@@ -249,4 +249,4 @@ This prevents security violations from propagating to privacy amplification.
 
 ---
 
-[← Return to Main Index](../index.md) | [← Previous: Hybrid Puncturing](./hybrid_puncturing.md)
+[← Return to Main Index](../index.md) | [← Previous: Hybrid Puncturing](./hybrid_puncturing.md) | [Next: Toeplitz Hashing →](../amplification/toeplitz_hashing.md)

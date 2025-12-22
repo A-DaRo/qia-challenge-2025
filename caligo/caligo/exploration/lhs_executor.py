@@ -63,6 +63,7 @@ from caligo.exploration.types import (
     ProtocolResult,
 )
 from caligo.utils.logging import get_logger
+from caligo.utils.math import compute_qber_erven
 
 logger = get_logger(__name__)
 
@@ -124,12 +125,18 @@ class Phase1Metrics:
 
     Attributes
     ----------
-    total_samples : int
-        Total samples in the campaign.
-    completed_samples : int
-        Successfully completed samples.
+    target_feasible_samples : int
+        Target number of feasible samples to collect.
+    feasible_samples : int
+        Number of feasible samples collected.
+    skipped_infeasible : int
+        Number of samples skipped due to infeasibility.
+    total_samples_processed : int
+        Total samples processed (feasible + skipped).
     failed_samples : int
         Failed protocol executions.
+    yield_rate : float
+        Fraction of feasible samples from total processed.
     current_efficiency : float
         Rolling average efficiency of recent samples.
     success_rate : float
@@ -140,9 +147,12 @@ class Phase1Metrics:
         Throughput rate.
     """
 
-    total_samples: int = 0
-    completed_samples: int = 0
+    target_feasible_samples: int = 0
+    feasible_samples: int = 0
+    skipped_infeasible: int = 0
+    total_samples_processed: int = 0
     failed_samples: int = 0
+    yield_rate: float = 1.0
     current_efficiency: float = 0.0
     success_rate: float = 0.0
     elapsed_seconds: float = 0.0
@@ -151,6 +161,7 @@ class Phase1Metrics:
     def to_progress_dict(self) -> Dict[str, str]:
         """Convert to tqdm postfix dictionary."""
         return {
+            "yield": f"{self.yield_rate:.1%}",
             "eff": f"{self.current_efficiency:.3f}",
             "success": f"{self.success_rate:.1%}",
             "rate": f"{self.samples_per_second:.1f}/s",
@@ -301,14 +312,14 @@ class Phase1Executor:
         verbose: bool = True,
     ) -> Phase1Metrics:
         """
-        Run the Phase 1 LHS campaign.
+        Run the Phase 1 LHS campaign with adaptive feasibility filtering.
 
         Parameters
         ----------
         num_samples : int
-            Total number of samples to generate.
+            Target number of feasible samples to collect.
         batch_size : int
-            Number of samples per batch.
+            Number of feasible samples per batch (target).
         checkpoint_interval : int
             Save checkpoint every N batches.
         verbose : bool
@@ -332,78 +343,139 @@ class Phase1Executor:
             state = self._state_manager.load(Phase1State)
             if state is not None:
                 logger.info(
-                    "Resuming from checkpoint: %d/%d samples",
-                    state.completed_samples,
-                    state.total_samples,
+                    "Resuming from checkpoint: %d/%d feasible samples (%d total processed)",
+                    state.feasible_samples_collected,
+                    state.target_feasible_samples,
+                    state.total_samples_processed,
                 )
                 restore_rng_state(state.rng_state)
-                start_sample = state.completed_samples
-                self._all_samples = self._sampler.generate(num_samples)
+                # Pre-generate full LHS design for deterministic sampling
+                self._all_samples = self._sampler.generate(num_samples * 20)  # Overgenerate
             else:
-                logger.info("Starting new Phase 1 campaign: %d samples", num_samples)
+                logger.info("Starting new Phase 1 campaign: %d feasible samples target", num_samples)
                 if self.random_seed is not None:
                     np.random.seed(self.random_seed)
-                start_sample = 0
-                self._all_samples = self._sampler.generate(num_samples)
+                # Pre-generate LHS design with oversampling buffer
+                self._all_samples = self._sampler.generate(num_samples * 20)
                 state = Phase1State(
-                    total_samples=num_samples,
-                    completed_samples=0,
+                    target_feasible_samples=num_samples,
+                    feasible_samples_collected=0,
+                    total_samples_processed=0,
                     current_batch_start=0,
                     rng_state=capture_rng_state(),
                     hdf5_path=self.hdf5_path,
                 )
 
-            self._metrics.total_samples = num_samples
-
-            # Calculate batches
-            num_batches = (num_samples - start_sample + batch_size - 1) // batch_size
-            batches_completed = 0
+            self._metrics.target_feasible_samples = num_samples
+            self._metrics.feasible_samples = state.feasible_samples_collected
+            self._metrics.total_samples_processed = state.total_samples_processed
+            self._metrics.skipped_infeasible = (
+                state.total_samples_processed - state.feasible_samples_collected
+            )
 
             # Progress bar setup
             pbar = tqdm(
                 total=num_samples,
-                initial=start_sample,
+                initial=state.feasible_samples_collected,
                 desc="Phase 1 (LHS)",
                 unit="samples",
                 disable=not verbose,
                 dynamic_ncols=True,
             )
 
-            # Process batches
-            for batch_idx in range(start_sample // batch_size, (num_samples + batch_size - 1) // batch_size):
-                batch_start = batch_idx * batch_size
-                batch_end = min(batch_start + batch_size, num_samples)
-                batch_samples = self._all_samples[batch_start:batch_end]
+            batches_completed = 0
+            sample_idx = state.total_samples_processed
 
-                if batch_start < start_sample:
-                    continue  # Skip already completed batches
-
-                # Execute batch
-                results = self._execute_batch(batch_samples, pbar)
-
-                # Write to HDF5
-                inputs, outputs, outcomes, metadata = result_to_hdf5_arrays(results)
-                self._hdf5_writer.append_batch(
-                    GROUP_LHS_WARMUP,
-                    inputs=inputs,
-                    outputs=outputs,
-                    outcomes=outcomes,
-                    metadata=metadata,
+            # Main loop: collect until we reach target feasible samples
+            while state.feasible_samples_collected < state.target_feasible_samples:
+                # Adaptive oversampling: estimate how many raw samples needed
+                remaining = state.target_feasible_samples - state.feasible_samples_collected
+                current_yield = self._metrics.yield_rate if self._metrics.yield_rate > 0.01 else 0.1
+                adjusted_batch_size = min(
+                    int(batch_size / current_yield),
+                    10000,  # Cap to prevent memory issues
+                    len(self._all_samples) - sample_idx,  # Don't exceed buffer
                 )
+                adjusted_batch_size = max(adjusted_batch_size, batch_size)  # Min = requested batch_size
 
-                # Update state
-                state.completed_samples = batch_end
+                # Extract raw samples
+                batch_end = min(sample_idx + adjusted_batch_size, len(self._all_samples))
+                if sample_idx >= batch_end:
+                    logger.warning(
+                        "LHS buffer exhausted at %d samples (collected %d/%d feasible). "
+                        "Consider increasing oversampling factor.",
+                        sample_idx,
+                        state.feasible_samples_collected,
+                        state.target_feasible_samples,
+                    )
+                    break
+
+                raw_samples = self._all_samples[sample_idx:batch_end]
+
+                # Step 1: Filter feasible vs. infeasible
+                feasible_samples = []
+                infeasible_results = []
+
+                for sample in raw_samples:
+                    is_feasible, margin = self._is_theoretically_feasible(sample)
+                    if is_feasible:
+                        feasible_samples.append(sample)
+                    else:
+                        # Create result for skipped sample (fast path)
+                        infeasible_results.append(
+                            ProtocolResult(
+                                sample=sample,
+                                outcome=ProtocolOutcome.SKIPPED_INFEASIBLE,
+                                net_efficiency=0.0,
+                                raw_key_length=0,
+                                final_key_length=0,
+                                qber_measured=float("nan"),
+                                reconciliation_efficiency=0.0,
+                                leakage_bits=0,
+                                execution_time_seconds=0.0,
+                                error_message=f"Infeasible: Q_channel >= Q_storage (margin={margin:.4f})",
+                                metadata={"infeasibility_margin": margin},
+                            )
+                        )
+
+                # Step 2: Execute feasible samples (slow path)
+                feasible_results = []
+                if feasible_samples:
+                    feasible_results = self._execute_batch(feasible_samples, pbar)
+
+                # Step 3: Combine and persist all results
+                all_results = infeasible_results + feasible_results
+
+                if all_results:
+                    inputs, outputs, outcomes, metadata = result_to_hdf5_arrays(all_results)
+                    self._hdf5_writer.append_batch(
+                        GROUP_LHS_WARMUP,
+                        inputs=inputs,
+                        outputs=outputs,
+                        outcomes=outcomes,
+                        metadata=metadata,
+                    )
+
+                # Step 4: Update state
+                state.total_samples_processed = batch_end
+                state.feasible_samples_collected += len(feasible_samples)
                 state.current_batch_start = batch_end
                 state.rng_state = capture_rng_state()
+
+                sample_idx = batch_end
 
                 # Checkpoint
                 batches_completed += 1
                 if batches_completed % checkpoint_interval == 0:
                     self._state_manager.save(state)
-                    logger.debug("Checkpoint saved at %d samples", batch_end)
+                    logger.debug(
+                        "Checkpoint: %d feasible / %d total processed",
+                        state.feasible_samples_collected,
+                        state.total_samples_processed,
+                    )
 
                 # Update metrics
-                self._update_metrics(results, pbar)
+                self._update_metrics(all_results, pbar)
 
             # Final save
             self._state_manager.save(state)
@@ -417,18 +489,56 @@ class Phase1Executor:
         finally:
             self._cleanup()
 
+    def _is_theoretically_feasible(
+        self, sample: ExplorationSample
+    ) -> tuple[bool, float]:
+        """
+        Check if a sample is theoretically feasible using NSM bounds.
+
+        A sample is infeasible if Q_channel >= Q_storage, which would
+        violate the NSM security proof (noise can't be removed if channel
+        introduces more noise than storage can tolerate).
+
+        Parameters
+        ----------
+        sample : ExplorationSample
+            The sample to check.
+
+        Returns
+        -------
+        tuple[bool, float]
+            (is_feasible, margin) where margin = Q_storage - Q_channel.
+            Negative margin means infeasible.
+        """
+        # Calculate channel QBER using Erven formula
+        q_channel = compute_qber_erven(
+            fidelity=sample.channel_fidelity,
+            detector_error=sample.detector_error,
+            detection_efficiency=sample.detection_efficiency,
+            dark_count_prob=sample.dark_count_prob,
+        )
+
+        # Calculate storage QBER bound: Q_storage = (1 - r) / 2
+        q_storage = (1.0 - sample.storage_noise_r) / 2.0
+
+        # Margin check (with small epsilon for floating point safety)
+        margin = q_storage - q_channel
+        is_feasible = margin > 1e-6  # Small tolerance for numerical stability
+
+        return is_feasible, margin
+
     def _execute_batch(
         self,
         samples: List[ExplorationSample],
         pbar: tqdm,
     ) -> List[ProtocolResult]:
         """
-        Execute a batch of samples.
+        Execute a batch of feasible samples.
 
         Parameters
         ----------
         samples : List[ExplorationSample]
-            Samples to execute.
+            Feasible samples to execute.
         pbar : tqdm
             Progress bar to update.
 
@@ -472,55 +582,69 @@ class Phase1Executor:
         pbar: tqdm,
     ) -> None:
         """
-        Update metrics from batch results.
+        Update campaign metrics with feasibility tracking.
 
         Parameters
         ----------
         results : List[ProtocolResult]
-            Batch results.
+            Batch results (including skipped infeasible samples).
         pbar : tqdm
             Progress bar to update.
         """
-        successes = sum(1 for r in results if r.is_success())
-        failures = len(results) - successes
+        # Separate feasible from infeasible
+        skipped = [r for r in results if r.outcome == ProtocolOutcome.SKIPPED_INFEASIBLE]
+        executed = [r for r in results if r.outcome != ProtocolOutcome.SKIPPED_INFEASIBLE]
+        successes = [r for r in executed if r.is_success()]
+        failures = [r for r in executed if not r.is_success()]
 
-        self._metrics.completed_samples += len(results)
-        self._metrics.failed_samples += failures
+        # Update counters
+        self._metrics.skipped_infeasible += len(skipped)
+        self._metrics.feasible_samples += len(executed)
+        self._metrics.total_samples_processed += len(results)
+        self._metrics.failed_samples += len(failures)
 
-        # Rolling efficiency (last batch)
-        efficiencies = [r.net_efficiency for r in results if r.is_success()]
-        if efficiencies:
-            self._metrics.current_efficiency = np.mean(efficiencies)
-
-        # Overall success rate
-        if self._metrics.completed_samples > 0:
-            self._metrics.success_rate = (
-                (self._metrics.completed_samples - self._metrics.failed_samples)
-                / self._metrics.completed_samples
+        # Update yield rate
+        if self._metrics.total_samples_processed > 0:
+            self._metrics.yield_rate = (
+                self._metrics.feasible_samples / self._metrics.total_samples_processed
             )
 
-        # Throughput
-        elapsed = time.perf_counter() - self._start_time
-        self._metrics.elapsed_seconds = elapsed
-        if elapsed > 0:
-            self._metrics.samples_per_second = self._metrics.completed_samples / elapsed
+        # Update success rate (of executed samples)
+        total_executed = len(successes) + len(failures)
+        if total_executed > 0:
+            self._metrics.success_rate = len(successes) / total_executed
+
+        # Update efficiency (rolling average of last 100 successful samples)
+        if successes:
+            recent_eff = np.mean([r.net_efficiency for r in successes[-100:]])
+            self._metrics.current_efficiency = recent_eff
+
+        # Update timing
+        self._metrics.elapsed_seconds = time.perf_counter() - self._start_time
+        if self._metrics.elapsed_seconds > 0:
+            self._metrics.samples_per_second = (
+                self._metrics.feasible_samples / self._metrics.elapsed_seconds
+            )
 
         # Update progress bar
         pbar.set_postfix(self._metrics.to_progress_dict())
 
     def _print_summary(self) -> None:
-        """Print campaign summary."""
+        """Print campaign summary with feasibility metrics."""
         logger.info("=" * 60)
-        logger.info("Phase 1 (LHS) Campaign Complete")
+        logger.info("Phase 1 Campaign Complete")
         logger.info("=" * 60)
-        logger.info("  Total Samples:      %d", self._metrics.total_samples)
-        logger.info("  Completed:          %d", self._metrics.completed_samples)
-        logger.info("  Failed:             %d", self._metrics.failed_samples)
-        logger.info("  Success Rate:       %.1f%%", self._metrics.success_rate * 100)
-        logger.info("  Mean Efficiency:    %.4f", self._metrics.current_efficiency)
-        logger.info("  Total Time:         %.1f s", self._metrics.elapsed_seconds)
-        logger.info("  Throughput:         %.2f samples/s", self._metrics.samples_per_second)
-        logger.info("  Output File:        %s", self.hdf5_path)
+        logger.info("Target Feasible:    %d", self._metrics.target_feasible_samples)
+        logger.info("Feasible Collected: %d", self._metrics.feasible_samples)
+        logger.info("Skipped (Infeas):   %d", self._metrics.skipped_infeasible)
+        logger.info("Total Processed:    %d", self._metrics.total_samples_processed)
+        logger.info("Yield Rate:         %.1f%%", self._metrics.yield_rate * 100)
+        logger.info("Failed Executions:  %d", self._metrics.failed_samples)
+        logger.info("Success Rate:       %.1f%%", self._metrics.success_rate * 100)
+        logger.info("Avg Efficiency:     %.3f", self._metrics.current_efficiency)
+        logger.info("Elapsed Time:       %.1f seconds", self._metrics.elapsed_seconds)
+        logger.info("Throughput:         %.1f samples/s", self._metrics.samples_per_second)
+        logger.info("Output File:        %s", self.hdf5_path)
         logger.info("=" * 60)
 
 

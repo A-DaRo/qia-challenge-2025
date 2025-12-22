@@ -13,6 +13,7 @@ from caligo.utils.logging import (
 from caligo.utils.math import (
     binary_entropy,
     channel_capacity,
+    compute_qber_erven,
     finite_size_penalty,
     gamma_function,
     smooth_min_entropy_rate,
@@ -37,6 +38,7 @@ __all__ = [
     # Math
     "binary_entropy",
     "channel_capacity",
+    "compute_qber_erven",
     "finite_size_penalty",
     "gamma_function",
     "smooth_min_entropy_rate",

@@ -84,6 +84,8 @@ class ProtocolOutcome(Enum):
         Protocol execution timed out.
     FAILURE_ERROR : str
         Unexpected error during execution.
+    SKIPPED_INFEASIBLE : str
+        Sample breaches infeasibility constraints theoretical_qber >= (1-r)/2 and is skipped.
     """
 
     SUCCESS = "success"
@@ -92,6 +94,7 @@ class ProtocolOutcome(Enum):
     FAILURE_SECURITY = "failure_security"
     FAILURE_TIMEOUT = "failure_timeout"
     FAILURE_ERROR = "failure_error"
+    SKIPPED_INFEASIBLE = "skipped_infeasible"
 
 
 # =============================================================================
@@ -358,10 +361,12 @@ class Phase1State:
 
     Parameters
     ----------
-    total_samples : int
-        Total number of samples in the LHS design.
-    completed_samples : int
-        Number of samples successfully processed.
+    target_feasible_samples : int
+        Goal number of feasible samples to collect.
+    feasible_samples_collected : int
+        Number of theoretically feasible samples collected so far.
+    total_samples_processed : int
+        Total number of samples processed (including skipped infeasible ones).
     current_batch_start : int
         Index of the first sample in the current batch.
     rng_state : Dict[str, Any]
@@ -373,16 +378,18 @@ class Phase1State:
 
     Attributes
     ----------
-    total_samples : int
-    completed_samples : int
+    target_feasible_samples : int
+    feasible_samples_collected : int
+    total_samples_processed : int
     current_batch_start : int
     rng_state : Dict[str, Any]
     current_phase : str
     hdf5_path : Path
     """
 
-    total_samples: int
-    completed_samples: int
+    target_feasible_samples: int
+    feasible_samples_collected: int
+    total_samples_processed: int
     current_batch_start: int
     rng_state: Dict[str, Any]
     current_phase: str = "LHS"
@@ -390,13 +397,13 @@ class Phase1State:
 
     def progress_fraction(self) -> float:
         """Return completion progress as a fraction in [0, 1]."""
-        if self.total_samples == 0:
+        if self.target_feasible_samples == 0:
             return 0.0
-        return self.completed_samples / self.total_samples
+        return self.feasible_samples_collected / self.target_feasible_samples
 
     def is_complete(self) -> bool:
         """Check if all samples have been processed."""
-        return self.completed_samples >= self.total_samples
+        return self.feasible_samples_collected >= self.target_feasible_samples
 
 
 @dataclass

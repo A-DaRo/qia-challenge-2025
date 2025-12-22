@@ -146,3 +146,7 @@ if qber_estimate.qber > QBER_CONSERVATIVE_THRESHOLD:
 - Hoeffding, W. (1963). "Probability inequalities for sums of bounded random variables." *J. Amer. Statist. Assoc.*, 58(301), 13-30.
 - Erven, C., et al. (2014). "An experimental implementation of oblivious transfer in the noisy storage model." *Nat. Commun.*, 5, 3418.
 - Caligo implementation: [`caligo/sifting/qber.py`](../../caligo/caligo/sifting/qber.py)
+
+---
+
+[← Return to Main Index](../index.md) | [Next: Security Checks](./security_checks.md)

@@ -147,3 +147,7 @@ $$
 - Bennett, C. H., & Brassard, G. (1984). "Quantum cryptography: Public key distribution and coin tossing." *Proc. IEEE Int. Conf. Computers, Systems and Signal Processing*, 175-179.
 - Halevi, S., & Micali, S. (1996). "Practical and provably-secure commitment schemes from collision-free hashing." *CRYPTO'96*, 201-215.
 - Caligo implementation: [`caligo/sifting/sifter.py`](../../caligo/caligo/sifting/sifter.py)
+
+---
+
+[← Return to Main Index](../index.md) | [Next: QBER Estimation](./qber_estimation.md)

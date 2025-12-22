@@ -106,3 +106,7 @@ if not result.is_feasible:
 
 - König, R., et al. (2012). "The operational meaning of min- and max-entropy." *IEEE Trans. Inf. Theory*, 58(3), 1962-1984.
 - Caligo implementation: [`caligo/sifting/detection_validator.py`](../../caligo/caligo/sifting/detection_validator.py)
+
+---
+
+[← Return to Main Index](../index.md) | [Next: Basis Sifting](../reconciliation/ldpc_framework.md)
