@@ -29,11 +29,11 @@ The input to key derivation is the output of information reconciliation:
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│                     KEY DERIVATION PIPELINE                     │
+│                     KEY DERIVATION PIPELINE                    │
 ├────────────────────────────────────────────────────────────────┤
 │                                                                │
 │  [1] LENGTH CALCULATION                                        │
-│      ℓ = ⌊n·h_min - |Σ| - Δ_sec + 2⌋                          │
+│      ℓ = ⌊n·h_min - |Σ| - Δ_sec + 2⌋                            │
 │      ↓                                                         │
 │  [2] SEED GENERATION (Alice only)                              │
 │      seed ← CSPRNG(256 bits)                                   │

@@ -526,7 +526,7 @@ class LHSSampler:
 
 ### 6.2 Complete Phase 1 Implementation
 
-**Module:** `caligo/exploration/phase1.py`
+**Module:** `caligo/exploration/lhs_executor.py`
 
 ```python
 import h5py
@@ -736,14 +736,14 @@ class Phase1Executor:
 
 **Test Scenario:**
 ```bash
-# Terminal 1: Start exploration
-$ python -m caligo.exploration.phase1
+# Terminal 1: Start exploration (LHS campaign)
+$ python -m caligo.exploration.lhs_executor
 
 # Terminal 2: Simulate crash after 500 samples
 $ pkill -9 python  # Kill process mid-batch
 
 # Terminal 1: Resume
-$ python -m caligo.exploration.phase1
+$ python -m caligo.exploration.lhs_executor
 # Output: "Resuming from checkpoint: 500 samples"
 # Continue from sample 501...
 ```
@@ -974,7 +974,7 @@ class EfficiencyLandscape:
 
 ### 7.3 Phase 2 Executor
 
-**Module:** `caligo/exploration/phase2.py`
+**Module:** `caligo/exploration/surrogate_trainer.py`
 
 ```python
 import h5py
@@ -1328,7 +1328,7 @@ class BayesianOptimizer:
 
 ### 8.3 Main Loop Implementation
 
-**Module:** `caligo/exploration/phase3.py`
+**Module:** `caligo/exploration/active_executor.py`
 
 ```python
 import h5py
@@ -1560,7 +1560,7 @@ class ProtocolHarness:
 
 ## 9. Implementation Roadmap
 
-### Week 1: Infrastructure & Harness (Foundation)
+### Step 1: Infrastructure & Harness (Foundation)
 
 **Milestone: Precomputed EPR Injection Working End-to-End**
 
@@ -1568,7 +1568,7 @@ class ProtocolHarness:
 1. **Create exploration package structure:**
    ```bash
    mkdir -p caligo/exploration
-   touch caligo/exploration/{__init__.py,sampler.py,epr_batcher.py,harness.py,persistence.py}
+   touch caligo/exploration/{__init__.py,sampler.py,epr_batcher.py,harness.py,persistence.py,lhs_executor.py,surrogate_trainer.py,active_executor.py}
    ```
 
 2. **Implement `ExplorationSample` and `ProtocolResult` dataclasses** ([caligo/exploration/sampler.py](caligo/caligo/exploration/sampler.py)):
@@ -1646,7 +1646,7 @@ class ProtocolHarness:
 
 ---
 
-### Week 2: Phase 1 (LHS) & Visualization
+### Step 2: Phase 1 (LHS) & Visualization
 
 **Milestone: 2,000 LHS Samples Collected**
 
@@ -1674,7 +1674,7 @@ class ProtocolHarness:
        assert np.std(hist) < 50  # Roughly uniform in log-space
    ```
 
-2. **Implement `Phase1Executor.run()`** ([caligo/exploration/phase1.py](caligo/caligo/exploration/phase1.py)):
+2. **Implement `Phase1Executor.run()`** ([caligo/exploration/lhs_executor.py](caligo/caligo/exploration/lhs_executor.py)):
    - Integrate `LHSSampler`, `BatchedEPROrchestrator`, `ProtocolHarness`
    - Add batch processing loop with checkpointing
    - Handle protocol failures gracefully (log error, set net_efficiency=0)
@@ -1682,7 +1682,7 @@ class ProtocolHarness:
 3. **Run Production LHS Campaign:**
    ```bash
    # On high-core server (16+ cores)
-   python -m caligo.exploration.phase1 \
+   python -m caligo.exploration.lhs_executor \
        --output exploration_data.h5 \
        --target-samples 2000 \
        --batch-size 50 \
@@ -1705,7 +1705,7 @@ class ProtocolHarness:
 
 ---
 
-### Week 3: Phase 2 & 3 (The Brain)
+### Step 3: Phase 2 & 3 (The Brain)
 
 **Milestone: Active Learning Loop Operational**
 
@@ -1732,7 +1732,7 @@ class ProtocolHarness:
        assert rmse < 0.05, "GP should interpolate training data accurately"
    ```
 
-2. **Implement `Phase2Executor.run()`** ([caligo/exploration/phase2.py](caligo/caligo/exploration/phase2.py)):
+2. **Implement `Phase2Executor.run()`** ([caligo/exploration/surrogate_trainer.py](caligo/caligo/exploration/surrogate_trainer.py)):
    - Load LHS data from HDF5
    - Train twin GPs
    - Log R² and diagnostics
@@ -1758,7 +1758,7 @@ class ProtocolHarness:
        assert 0.75 < np.mean(fidelities) < 0.85, "Should target QBER cliff"
    ```
 
-4. **Implement `Phase3Executor.run()`** ([caligo/exploration/phase3.py](caligo/caligo/exploration/phase3.py)):
+4. **Implement `Phase3Executor.run()`** ([caligo/exploration/active_executor.py](caligo/caligo/exploration/active_executor.py)):
    - Active learning loop
    - Append results to `active_learning` group in HDF5
    - Model update strategy (periodic retraining)
@@ -1766,12 +1766,12 @@ class ProtocolHarness:
 5. **Integration Test: 50-Iteration Loop**
    ```bash
    # Train surrogate on LHS data
-   python -m caligo.exploration.phase2 \
+   python -m caligo.exploration.surrogate_trainer \
        --hdf5 exploration_data.h5 \
        --output-dir models/
    
    # Run active learning
-   python -m caligo.exploration.phase3 \
+   python -m caligo.exploration.active_executor \
        --hdf5 exploration_data.h5 \
        --surrogate models/surrogate_v0.dill \
        --max-iterations 50 \
@@ -1787,7 +1787,7 @@ class ProtocolHarness:
 
 ---
 
-### Week 4: Production Run
+### Step 4: Production Run
 
 **Milestone: 100,000 Protocol Executions**
 
@@ -1799,19 +1799,19 @@ class ProtocolHarness:
 
 2. **Run Extended Active Learning Campaign:**
    ```bash
-   nohup python -m caligo.exploration.phase3 \
+   nohup python -m caligo.exploration.active_executor \
        --hdf5 exploration_data.h5 \
        --surrogate models/surrogate_v0.dill \
        --max-iterations 5000 \
        --batch-size 32 \
-       > phase3.log 2>&1 &
+       > active_executor.log 2>&1 &
    ```
    
    **Expected Runtime:** 48-72 hours continuous execution
 
 3. **Monitor Progress:**
    - Check HDF5 file size growth (`watch -n 60 ls -lh exploration_data.h5`)
-   - Tail logs for errors (`tail -f phase3.log`)
+   - Tail logs for errors (`tail -f active_executor.log`)
    - Generate interim dashboard plots
 
 4. **Final Analysis:**
@@ -1971,8 +1971,8 @@ caligo.exploration (NEW)
 ├── surrogate.py     → sklearn.gaussian_process
 ├── active.py        → scipy.optimize
 ├── phase1.py        → ALL OF THE ABOVE
-├── phase2.py        → persistence + surrogate
-└── phase3.py        → ALL OF THE ABOVE
+├── surrogate_trainer.py        → persistence + surrogate
+└── active_executor.py        → ALL OF THE ABOVE
 
 EXISTING MODULES MODIFIED:
 - caligo.protocol.base (already has PrecomputedEPRData hook) ✓
@@ -2035,7 +2035,7 @@ python -m caligo.exploration.phase1 --config configs/exploration/lhs_campaign.ya
 
 **Integration Tests:**
 - `tests/exploration/test_phase1_integration.py`: Full LHS loop (10 samples)
-- `tests/exploration/test_phase3_integration.py`: Active learning loop (5 iterations)
+- `tests/exploration/test_active_integration.py`: Active learning loop (5 iterations)
 
 **Smoke Test:**
 ```bash

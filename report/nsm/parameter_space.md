@@ -87,20 +87,11 @@ $$
 3. **Probability Constraints**: $0 \leq e_{\text{det}}, P_{\text{dark}}, r, \nu \leq 1$
 4. **Time Positivity**: $\Delta t > 0$
 
-**Soft Constraints** (experimental limitations):
-
-| Parameter | Typical Range | State-of-Art |
-|-----------|--------------|--------------|
-| $F$ | $0.90$–$0.98$ | $0.995$ (trapped ions [3]) |
-| $\eta$ | $0.01$–$0.30$ | $0.90$ (superconducting qubits [4]) |
-| $e_{\text{det}}$ | $0.01$–$0.05$ | $0.001$ (cryogenic detectors) |
-| $P_{\text{dark}}$ | $10^{-6}$–$10^{-3}$ | $10^{-8}$ (SNSPDs [5]) |
-
 ### Security Constraints
 
 **NSM Security Requirements**:
 
-1. **Strictly Less Condition** [6]:
+1. **Strictly Less Condition** [3]:
    $$
    Q_{\text{ch}} < Q_{\text{storage}} = \frac{1 - r}{2}
    $$
@@ -111,7 +102,7 @@ $$
    $$
    where $C_\mathcal{N} = 1 - H_2(r)$ and $H_2(x) = -x \log_2 x - (1-x) \log_2 (1-x)$.
 
-3. **Conservative QBER Threshold** [6]:
+3. **Conservative QBER Threshold** [3]:
    $$
    Q_{\text{ch}} < 0.11
    $$
@@ -152,7 +143,7 @@ $$
 
 ## Experimental Parameter Regimes
 
-### Erven et al. (2014) Configuration [7]
+### Erven et al. (2014) Configuration [4]
 
 The canonical NSM experiment:
 
@@ -338,17 +329,11 @@ params_custom = NSMParameters(
 
 [1] Damgård, I., Fehr, S., Renner, R., Salvail, L., & Schaffner, C. (2007). A tight high-order entropic quantum uncertainty relation with applications. In *Advances in Cryptology—CRYPTO 2007* (pp. 360-378). Springer.
 
-[2] König, R., Wehner, S., & Wullschleger, J. (2012). Unconditional security from noisy quantum storage. *IEEE Transactions on Information Theory*, 58(3), 1962-1984.
+[2] König, R., Wehner, S., & Wullschleger, J. (2012). Unconditional security from noisy quantum storage. *IEEE Transactions on Information Theory*, 58(3), 1962-1984.\
 
-[3] Ballance, C. J., Harty, T. P., Linke, N. M., Sepiol, M. A., & Lucas, D. M. (2016). High-fidelity quantum logic gates using trapped-ion hyperfine qubits. *Physical Review Letters*, 117(6), 060504.
+[3] Schaffner, C., Terhal, B. M., & Wehner, S. (2009). Robust cryptography in the noisy-quantum-storage model. *Quantum Information & Computation*, 9(11-12), 963-996.
 
-[4] Rol, M. A., et al. (2020). Fast, high-fidelity conditional-phase gate exploiting leakage interference in weakly anharmonic superconducting qubits. *Physical Review Letters*, 123(12), 120502.
-
-[5] Marsili, F., et al. (2013). Detecting single infrared photons with 93% system efficiency. *Nature Photonics*, 7(3), 210-214.
-
-[6] Schaffner, C., Terhal, B. M., & Wehner, S. (2009). Robust cryptography in the noisy-quantum-storage model. *Quantum Information & Computation*, 9(11-12), 963-996.
-
-[7] Erven, C., et al. (2014). An experimental implementation of oblivious transfer in the noisy storage model. *Nature Communications*, 5, 3418.
+[4] Erven, C., et al. (2014). An experimental implementation of oblivious transfer in the noisy storage model. *Nature Communications*, 5, 3418.
 
 ---
 

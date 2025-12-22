@@ -60,7 +60,7 @@ $$
 
 and $Q_{\text{channel}} < 0.11$ (conservative bound).
 
-**Corollary 7**: The condition must be **strictly less**—equality or near-equality allows measurement-based attacks (e.g., Breidbart basis measurements [5]) that extract partial information.
+**Corollary 7**: The condition must be **strictly less**—equality or near-equality allows measurement-based attacks that extract partial information.
 
 **Physical Meaning**: The channel QBER experienced by honest parties must be strictly lower than the noise induced by the adversary's storage. If the channel is equally or more noisy, the adversary gains no disadvantage from delayed measurement.
 
@@ -366,20 +366,6 @@ $$
 n_{\text{min}} = \frac{\Delta_{\text{sec}}}{h_{\min}(r) - H_2(Q_{\text{ch}})}
 $$
 
-**Example**: For $r = 0.75$ ($h_{\min} = 0.25$), $Q_{\text{ch}} = 0.05$ ($H_2 \approx 0.286$), $\Delta_{\text{sec}} = 64$:
-
-$$
-n_{\text{min}} = \frac{64}{0.25 - 0.286} = \frac{64}{-0.036} \quad (\text{undefined—Death Valley!})
-$$
-
-**Fix**: Reduce $Q_{\text{ch}}$ to 0.03 ($H_2 \approx 0.199$):
-
-$$
-n_{\text{min}} = \frac{64}{0.25 - 0.199} = \frac{64}{0.051} \approx 1255 \text{ qubits}
-$$
-
-This explains why Caligo targets $n \sim 1000$–$5000$ for robust operation.
-
 ## Simulation Parameter Injection
 
 ### Mapping Table
@@ -468,37 +454,6 @@ def verify_nsm_security_condition(
         raise QBERThresholdExceeded("QBER exceeds 22% hard limit")
 ```
 
-## Validation Methodology
-
-### Analytic Verification
-
-**Test 1: QBER Formula Consistency**
-
-Generate $(F, \eta, e_{\text{det}}, P_{\text{dark}})$, compute $Q_{\text{ch}}$ analytically, run simulation, compare measured QBER.
-
-**Expected Deviation**: $\pm 0.005$ due to finite sampling ($n \sim 1000$).
-
-**Test 2: Security Condition**
-
-For parameters satisfying $Q_{\text{ch}} < Q_{\text{storage}}$, protocol should succeed. For violating parameters, should abort.
-
-**Test 3: Death Valley Detection**
-
-For $h_{\min}(r) - H_2(Q_{\text{ch}}) < 0$, key extraction should return $\ell = 0$.
-
-### Empirical Calibration
-
-**QBER Sweep**: Fix $r = 0.75$, vary $F \in [0.85, 0.98]$, measure extraction efficiency:
-
-| $F$ | Predicted $Q_{\text{ch}}$ | Measured $Q_{\text{ch}}$ | Extractable $\ell$ |
-|-----|---------------------------|--------------------------|-------------------|
-| 0.98 | 0.010 | 0.011 | 82 bits |
-| 0.95 | 0.025 | 0.026 | 71 bits |
-| 0.90 | 0.050 | 0.052 | 54 bits |
-| 0.85 | 0.075 | 0.074 | 38 bits |
-
-**Storage Noise Sweep**: Fix $F = 0.95$, vary $r \in [0.60, 0.90]$, measure security margin.
-
 ## Implementation Notes
 
 ### Immutable Parameters
@@ -542,8 +497,6 @@ params_custom = NSMParameters(
 [3] Wehner, S., Schaffner, C., & Terhal, B. M. (2008). Cryptography from noisy storage. *Physical Review Letters*, 100(22), 220502.
 
 [4] Erven, C., et al. (2014). An experimental implementation of oblivious transfer in the noisy storage model. *Nature Communications*, 5, 3418.
-
-[5] Breidbart, S. (1973). On certain optimal measurement strategies. PhD Thesis, MIT.
 
 ---
 
