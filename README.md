@@ -29,7 +29,7 @@ contents:
 - `caligo/configs/`: Experiment and simulation configuration files.
 - `caligo/tests/`: Unit/integration tests for the `caligo` package.
 
-read the [Technical README](./caligo/README.md) for more information about the `caligo/` project.
+you can find the [Technical README](./caligo/README.md) for more information about the `caligo/` project.
 
 ### `docs/`
 
@@ -44,7 +44,7 @@ contents:
 
 ### `report/`
 
-The written report for the challenge, split into chapters/sections.
+The written report for the challenge, you can find the [Index](./report/index.md) to look through the chapters and sections.
 
 ## Where to Start
 
