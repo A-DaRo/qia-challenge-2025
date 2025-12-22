@@ -145,6 +145,12 @@ class Phase1Metrics:
         Total elapsed time.
     samples_per_second : float
         Throughput rate.
+
+    Notes
+    -----
+    Backwards compatibility: `total_samples` and `completed_samples` are
+    exposed as properties to avoid breaking callers that expect the old
+    attribute names.
     """
 
     target_feasible_samples: int = 0
@@ -166,6 +172,17 @@ class Phase1Metrics:
             "success": f"{self.success_rate:.1%}",
             "rate": f"{self.samples_per_second:.1f}/s",
         }
+
+    # Backwards-compatible aliases
+    @property
+    def total_samples(self) -> int:
+        """Compatibility alias for old `total_samples` attribute."""
+        return int(self.target_feasible_samples)
+
+    @property
+    def completed_samples(self) -> int:
+        """Compatibility alias for old `completed_samples` attribute."""
+        return int(self.feasible_samples)
 
 
 # =============================================================================
@@ -303,6 +320,8 @@ class Phase1Executor:
         if self._hdf5_writer is not None:
             self._hdf5_writer.close()
             self._hdf5_writer = None
+            # Small delay to ensure HDF5 file handle is fully released
+            time.sleep(0.1)
 
     def run(
         self,
@@ -417,7 +436,7 @@ class Phase1Executor:
                 infeasible_results = []
 
                 for sample in raw_samples:
-                    is_feasible, margin = self._is_theoretically_feasible(sample)
+                    is_feasible, margin, q_channel, q_storage = self._is_theoretically_feasible(sample)
                     if is_feasible:
                         feasible_samples.append(sample)
                     else:
@@ -433,8 +452,14 @@ class Phase1Executor:
                                 reconciliation_efficiency=0.0,
                                 leakage_bits=0,
                                 execution_time_seconds=0.0,
-                                error_message=f"Infeasible: Q_channel >= Q_storage (margin={margin:.4f})",
-                                metadata={"infeasibility_margin": margin},
+                                error_message=(
+                                    f"Infeasible: margin={margin:.4f}; q_channel={q_channel:.4f}; q_storage={q_storage:.4f}"
+                                ),
+                                metadata={
+                                    "infeasibility_margin": margin,
+                                    "q_channel": q_channel,
+                                    "q_storage": q_storage,
+                                },
                             )
                         )
 
@@ -491,13 +516,13 @@ class Phase1Executor:
 
     def _is_theoretically_feasible(
         self, sample: ExplorationSample
-    ) -> tuple[bool, float]:
+    ) -> tuple[bool, float, float, float]:
         """
         Check if a sample is theoretically feasible using NSM bounds.
 
-        A sample is infeasible if Q_channel >= Q_storage, which would
-        violate the NSM security proof (noise can't be removed if channel
-        introduces more noise than storage can tolerate).
+        A sample is feasible only if BOTH:
+          1) Q_channel < Q_storage (NSM constraint)
+          2) Q_channel <= 0.22 (Lupo asymptotic bound for positive key rate)
 
         Parameters
         ----------
@@ -506,8 +531,8 @@ class Phase1Executor:
 
         Returns
         -------
-        tuple[bool, float]
-            (is_feasible, margin) where margin = Q_storage - Q_channel.
+        tuple[bool, float, float, float]
+            (is_feasible, margin, q_channel, q_storage) where margin = Q_storage - Q_channel.
             Negative margin means infeasible.
         """
         # Calculate channel QBER using Erven formula
@@ -523,9 +548,9 @@ class Phase1Executor:
 
         # Margin check (with small epsilon for floating point safety)
         margin = q_storage - q_channel
-        is_feasible = margin > 1e-6  # Small tolerance for numerical stability
+        is_feasible = (margin > 1e-6) and (q_channel <= 0.22)
 
-        return is_feasible, margin
+        return is_feasible, margin, q_channel, q_storage
 
     def _execute_batch(
         self,

@@ -396,7 +396,7 @@ def plot_security_volume(
     # Extract 3D coordinates
     r = df["storage_noise_r"].values
     F = df["channel_fidelity"].values
-    dt = df["timing_delta_t"].values
+    dt = df["wait_time_ns"].values  # Using wait_time_ns instead of timing_delta_t
     efficiency = df["net_efficiency"].values
     is_success = df["is_success"].values
     
@@ -442,7 +442,7 @@ def plot_security_volume(
     # Axis labels
     ax.set_xlabel("Storage Noise r", fontsize=PLOT_CONFIG["label_size"])
     ax.set_ylabel("Channel Fidelity F", fontsize=PLOT_CONFIG["label_size"])
-    ax.set_zlabel("Timing Δt (s)", fontsize=PLOT_CONFIG["label_size"])
+    ax.set_zlabel("Wait Time (ns)", fontsize=PLOT_CONFIG["label_size"])
     ax.set_title(title, fontsize=PLOT_CONFIG["title_size"])
     
     ax.legend(loc="upper left")
@@ -514,8 +514,8 @@ def plot_sensitivity_spider(
     if sobol_indices is None:
         sobol_indices = {
             "storage_noise_r": 0.25,
-            "waiting_time_nu": 0.05,
-            "timing_delta_t": 0.08,
+            "storage_rate_nu": 0.05,
+            "wait_time_ns": 0.08,
             "channel_fidelity": 0.35,
             "detection_efficiency": 0.15,
             "detector_error": 0.03,
@@ -645,10 +645,18 @@ def plot_exploration_progress(
     if phase3_metrics:
         iterations = phase3_metrics.get("iterations", [])
         best_y = phase3_metrics.get("best_y_history", [])
-        if iterations and best_y:
+        if iterations and best_y and len(iterations) == len(best_y):
             ax3.plot(iterations, best_y, "o-", color="steelblue")
             ax3.set_xlabel("Iteration")
             ax3.set_ylabel("Best Efficiency")
+        elif iterations or best_y:
+            # If data exists but lengths mismatch, show simple plot
+            if best_y:
+                ax3.plot(range(len(best_y)), best_y, "o-", color="steelblue")
+                ax3.set_xlabel("Sample Index")
+                ax3.set_ylabel("Best Efficiency")
+            else:
+                ax3.text(0.5, 0.5, "No iteration data", ha="center", va="center", transform=ax3.transAxes)
         else:
             ax3.text(0.5, 0.5, "No iteration data", ha="center", va="center", transform=ax3.transAxes)
     else:

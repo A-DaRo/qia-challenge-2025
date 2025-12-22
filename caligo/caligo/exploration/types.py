@@ -237,7 +237,7 @@ class ExplorationSample:
         strategy = ReconciliationStrategy.BASELINE if arr[8] < 0.5 else ReconciliationStrategy.BLIND
         return cls(
             storage_noise_r=float(arr[0]),
-            storage_rate_nu=float(arr[1]),
+            storage_rate_nu=float(10 ** arr[1]),  # Convert from log10 back to linear
             wait_time_ns=float(10 ** arr[2]),
             channel_fidelity=float(arr[3]),
             detection_efficiency=float(10 ** arr[4]),

@@ -353,6 +353,8 @@ class Phase3Executor:
         if self._hdf5_writer is not None:
             self._hdf5_writer.close()
             self._hdf5_writer = None
+            # Small delay to ensure HDF5 file handle is fully released
+            time.sleep(0.1)
 
     def _retrain_surrogate(self) -> bool:
         """
@@ -364,8 +366,17 @@ class Phase3Executor:
             True if retraining succeeded.
         """
         try:
+            # Split training data by strategy (column 8: 0=BASELINE, 1=BLIND)
+            baseline_mask = self._X_train[:, 8] < 0.5
+            blind_mask = self._X_train[:, 8] >= 0.5
+            
+            X_baseline = self._X_train[baseline_mask]
+            y_baseline = self._y_train[baseline_mask]
+            X_blind = self._X_train[blind_mask]
+            y_blind = self._y_train[blind_mask]
+            
             self._landscape = EfficiencyLandscape(config=GPConfig())
-            self._landscape.fit(self._X_train, self._y_train)
+            self._landscape.fit(X_baseline, y_baseline, X_blind, y_blind)
 
             # Update optimizer with new landscape
             self._optimizer = BayesianOptimizer(
@@ -375,6 +386,11 @@ class Phase3Executor:
             )
 
             self._metrics.gp_retrain_count += 1
+            logger.info(
+                "Retrained surrogate: %d baseline, %d blind samples",
+                len(X_baseline),
+                len(X_blind),
+            )
             return True
 
         except Exception as e:

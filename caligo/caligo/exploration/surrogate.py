@@ -8,7 +8,9 @@ evaluation during Bayesian optimization.
 
 from __future__ import annotations
 
+import pickle
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Tuple
 
 import numpy as np
@@ -434,6 +436,41 @@ class EfficiencyLandscape:
             stats["blind_kernel"] = str(self.blind_gp.gp.kernel_)
 
         return stats
+
+    def save(self, path: Path) -> None:
+        """
+        Save the fitted landscape to disk using pickle.
+
+        Parameters
+        ----------
+        path : Path
+            Path to save the model.
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "wb") as f:
+            pickle.dump(self, f)
+        logger.info(f"Saved EfficiencyLandscape to {path}")
+
+    @classmethod
+    def load(cls, path: Path) -> "EfficiencyLandscape":
+        """
+        Load a fitted landscape from disk.
+
+        Parameters
+        ----------
+        path : Path
+            Path to the saved model.
+
+        Returns
+        -------
+        EfficiencyLandscape
+            Loaded model.
+        """
+        with open(path, "rb") as f:
+            landscape = pickle.load(f)
+        logger.info(f"Loaded EfficiencyLandscape from {path}")
+        return landscape
 
 
 def detect_divergence(

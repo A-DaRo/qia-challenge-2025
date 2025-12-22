@@ -324,9 +324,9 @@ class Phase2Executor:
         metrics.n_baseline = int(np.sum(train_baseline_mask)) + int(np.sum(val_baseline_mask))
         metrics.n_blind = int(np.sum(train_blind_mask)) + int(np.sum(val_blind_mask))
 
-        # Compute predictions
-        y_train_pred = landscape.predict(X_train)
-        y_val_pred = landscape.predict(X_val)
+        # Compute predictions (returns tuple of (mean, std))
+        y_train_pred, _ = landscape.predict(X_train, return_std=False)
+        y_val_pred, _ = landscape.predict(X_val, return_std=False)
 
         # Training metrics by strategy
         if np.any(train_baseline_mask):
@@ -403,9 +403,21 @@ class Phase2Executor:
             # Step 2: Split data
             pbar.set_postfix({"step": "Splitting data"})
             X_train, X_val, y_train, y_val = self._split_data(X, y)
+            
+            # Split by strategy (column 8: 0=BASELINE, 1=BLIND)
+            train_baseline_mask = X_train[:, 8] < 0.5
+            train_blind_mask = X_train[:, 8] >= 0.5
+            
+            X_train_baseline = X_train[train_baseline_mask]
+            y_train_baseline = y_train[train_baseline_mask]
+            X_train_blind = X_train[train_blind_mask]
+            y_train_blind = y_train[train_blind_mask]
+            
             logger.info(
-                "Split data: %d train, %d validation",
+                "Split data: %d train (%d baseline, %d blind), %d validation",
                 len(X_train),
+                len(X_train_baseline),
+                len(X_train_blind),
                 len(X_val),
             )
             pbar.update(1)
@@ -413,7 +425,7 @@ class Phase2Executor:
             # Step 3: Train model
             pbar.set_postfix({"step": "Training GPs"})
             landscape = EfficiencyLandscape(config=self.gp_config)
-            landscape.fit(X_train, y_train)
+            landscape.fit(X_train_baseline, y_train_baseline, X_train_blind, y_train_blind)
             pbar.update(1)
 
             # Step 4: Compute metrics

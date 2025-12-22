@@ -1,8 +1,7 @@
 **/__pycache__/**
 
 *:Zone.Identifier
-ehok/configs/ldpc_matrices/
-ehok/configs/test_ldpc_matrices/
+caligo/exploration_results/**
 
 *.py[cod]
 *$py.class
