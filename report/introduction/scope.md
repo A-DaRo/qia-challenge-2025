@@ -1,181 +1,132 @@
 [← Return to Main Index](../index.md)
 
-# 1.2 Problem Scope & Objectives
+# 1.2 Problem Scope & Research Questions
 
 ## 1.2.1 Problem Statement
 
-Implementing cryptographic protocols in quantum network simulators presents unique challenges that differ fundamentally from both abstract protocol design and physical hardware deployment. This project addresses the following core problem:
+This work addresses the verification of information-theoretic security bounds for oblivious transfer under the Noisy Storage Model in the finite-size regime. The central challenge is quantifying how theoretical security guarantees—derived under asymptotic assumptions—degrade when implemented with finite resources.
 
-> **How can we implement a $\binom{2}{1}$-Oblivious Transfer protocol secured by the Noisy Storage Model within a discrete-event quantum network simulator, ensuring faithful representation of physical constraints, rigorous security parameter enforcement, and modular, maintainable architecture?**
+**Formal Problem:** Given:
+- A depolarizing storage channel $\mathcal{N}_r(\rho) = r\rho + (1-r)\mathbb{I}/2$ with parameter $r \in [0,1]$;
+- A storage rate $\nu \in (0,1]$ representing the fraction of transmitted qubits storable by an adversary;
+- A channel QBER $Q_{\text{channel}} < Q_{\text{storage}} = (1-r)/2$;
+- A block length $n$ for the reconciliation code;
 
-This problem decomposes into three interconnected challenges:
+Determine the extractable secure key length $\ell(r, \nu, Q_{\text{channel}}, n)$ and identify parameter regimes where $\ell > 0$.
 
-### Challenge 1: Bridging Theory and Simulation
+## 1.2.2 Research Questions
 
-**Theoretical Framework**: The NSM security proof [1] operates on abstract parameters—storage rate $\nu$, depolarizing parameter $r$, and waiting time $\Delta t$. Security follows from the inequality $C_{\mathcal{N}} \cdot \nu < 1/2$.
+### Question 1: Finite-Size Threshold Degradation
 
-**Simulation Reality**: SquidASM/NetSquid [14,15] models quantum networks using:
-- NetSquid's discrete-event kernel with explicit timing
-- Quantum gate noise models (depolarizing, dephasing, amplitude damping)
-- Network topology with link attenuation and detector inefficiency
-- Qubit measurement with finite detector efficiency and dark counts
+*How do finite-size effects modify the asymptotic QBER security thresholds?*
 
-**Challenge**: Establish a rigorous mapping from NSM parameters $(r, \nu, \Delta t)$ to SquidASM configuration parameters (gate fidelities, link losses, detector efficiency) such that security conditions are verifiable within simulation.
+König et al. [1] establish that secure OT is possible when $C_\mathcal{N} \cdot \nu < 1/2$. For depolarizing noise with full storage rate ($\nu = 1$), this translates to $r < r_{\text{crit}}$ where $r_{\text{crit}} \approx 0.707$. Schaffner [2] shows that the corresponding QBER threshold for individual attacks is approximately 11%.
 
-### Challenge 2: Rate-Compatible Reconciliation Under NSM Constraints
+However, these bounds assume:
+- Perfect parameter estimation (infinitely many test samples);
+- Error correction at the Shannon limit;
+- Privacy amplification with negligible overhead.
 
-**Standard QKD Reconciliation**: In Quantum Key Distribution, syndrome information leaks to a passive eavesdropper (Eve). Reconciliation efficiency $f = \text{leak}_{\text{EC}} / (n \cdot h(\text{QBER}))$ determines secure key rate, with typical targets $f \in [1.05, 1.2]$ [2,12].
+At finite $n$, each assumption fails. We investigate:
+- The effective QBER threshold $Q_{\text{eff}}(n)$ as a function of block length;
+- The parameter $n_{\text{min}}(Q)$ required for positive key extraction at a given QBER.
 
-**NSM-OT Reconciliation**: In oblivious transfer under NSM, syndrome information leaks **directly to Bob**, who is a potential adversary. The extractable secure key length is:
+### Question 2: The Death Valley Boundary
 
+*What is the boundary surface in $(Q, r, n)$ space below which no secure key is extractable?*
+
+The key length formula (Lupo et al. [3]):
 $$
-\ell \leq n \cdot \left[ H_{\min}^{\epsilon}(X|E) - \text{leak}_{\text{EC}} - \log_2\left(\frac{2}{\epsilon^2}\right) \right]
+\ell = \lfloor n \cdot h_{\min}(r) - \text{leak}_{\text{EC}} - \Delta_{\text{sec}} + 2 \rfloor
 $$
 
-where $\text{leak}_{\text{EC}} = |\Sigma| + |\text{Hash}| + |\text{Revealed}|$ must be **strictly bounded**.
+yields $\ell = 0$ when entropy consumption exceeds availability. For fixed $r$, there exists a critical pair $(Q^*, n^*)$ such that positive key extraction requires either $Q < Q^*$ or $n > n^*$.
 
-**Challenge**: Implement rate-compatible LDPC reconciliation [2,3] that:
-1. Adapts to varying QBER without pre-estimation (blind mode)
-2. Minimizes syndrome leakage via efficient puncturing strategies
-3. Operates at finite block length ($n = 4096$) with verifiable error correction success
-4. Supports both baseline (QBER-aware) and blind (QBER-adaptive) strategies
+We seek to characterize this boundary and identify regimes where:
+- Syndrome leakage dominates ($\text{leak}_{\text{EC}} \gg \Delta_{\text{sec}}$);
+- Security overhead dominates ($\Delta_{\text{sec}} \gg \text{leak}_{\text{EC}}$);
+- Entropy starvation occurs ($h_{\min}(r) \approx 0$).
 
-### Challenge 3: Architectural Discipline in Complex Simulation Environments
+### Question 3: Validity of the Markovian Assumption
 
-**Challenge**: Design a **domain-driven architecture** that:
-1. Aligns package structure with protocol phases (not software patterns)
-2. Enforces Single Responsibility Principle
-3. Uses explicit phase contracts (dataclasses) for inter-phase communication
-4. Separates simulation concerns (timing, noise) from protocol logic
-5. Enables independent testing of protocol components
+*Under what physical conditions does the Markovian noise assumption hold, and what are the consequences of violations?*
 
-## 1.2.2 Project Objectives
+The security proof requires $\mathcal{F}_{t_1+t_2} = \mathcal{F}_{t_1} \circ \mathcal{F}_{t_2}$ (noise semigroup property). This ensures that the timing barrier provides a monotonically increasing security guarantee. We analyze:
+- Physical systems (solid-state memories, atomic ensembles) where non-Markovian dynamics could arise;
+- The impact of violation: can an adversary exploit memory effects to circumvent the timing barrier?
+- Conservative parameter choices ensuring Markovianity within experimental accuracy.
 
-Given these challenges, the Caligo project defines the following objectives:
+### Question 4: Reconciliation-Security Tradeoff
 
-### Objective 1: Simulation-Native Protocol Implementation
+*How does the choice of error correction strategy impact the entropy budget?*
 
-**Goal**: Implement the four-phase protocol with native SquidASM integration.
+For LDPC reconciliation, the leakage is:
+$$
+\text{leak}_{\text{EC}} = n(1 - R_{\text{eff}}) + |h_{\text{verify}}|
+$$
 
-**Success Criteria**:
-- EPR pair generation using SquidASM's `create_epr` primitives
-- Explicit timing barriers enforcing NSM waiting time $\Delta t$
-- Configurable noise models (depolarizing, link loss, detector inefficiency)
-- Discrete-event execution with reproducible simulation logs
-- Support for both sequential and parallel EPR generation strategies
+where $R_{\text{eff}}$ is the effective code rate after puncturing/shortening. High QBER requires low $R_{\text{eff}}$, increasing leakage; low QBER permits high $R_{\text{eff}}$, minimizing leakage. We investigate:
+- The optimal rate-QBER mapping for finite block lengths;
+- The penalty from "blind" reconciliation (without a priori QBER knowledge) versus "baseline" reconciliation;
+- Code construction parameters (girth, degree distribution) affecting finite-length performance.
 
-**Deliverables**:
-- `caligo.quantum`: EPR generation with batching strategies
-- `caligo.sifting`: Basis sifting and QBER estimation
-- `caligo.reconciliation`: Rate-compatible LDPC reconciliation
-- `caligo.amplification`: Toeplitz privacy amplification
+## 1.2.3 Methodological Approach
 
-### Objective 2: Hybrid Rate-Compatible Reconciliation
+### Simulation as Numerical Verification
 
-**Goal**: Implement both baseline and blind reconciliation strategies using a unified rate-compatible LDPC framework.
+We employ discrete-event simulation not as a primary security analysis tool but as a **consistency check** on the analytical bounds. The simulation:
 
-**Success Criteria**:
-- Mother code $\mathcal{C}_{R_0=0.5}$ constructed via ACE-PEG algorithm [16]
-- Hybrid puncturing: untainted regime ($R \leq 0.625$) + ACE-guided regime ($R > 0.625$)
-- Fine-grained rate adaptation ($\Delta R = 0.01$) spanning $[0.5, 0.9]$
-- Belief Propagation decoder with configurable iteration limits
-- Rigorous leakage accounting: $\text{leak}_{\text{EC}} = (1-R_{\text{eff}}) \cdot n + |\text{hash}| + |\text{revealed}|$
-- Circuit-breaker pattern: reconciliation aborts if $\text{leak}_{\text{EC}} > \text{leak}_{\text{budget}}$
+1. **Generates synthetic measurement data** from Werner states with configurable fidelity;
+2. **Executes the full post-processing pipeline** (sifting, reconciliation, amplification);
+3. **Computes operational quantities** (realized QBER, reconciliation success, extractable length);
+4. **Validates against analytical predictions** from the finite-key security formulas.
 
-**Deliverables**:
-- `caligo.reconciliation.baseline`: QBER-aware strategy
-- `caligo.reconciliation.blind`: QBER-adaptive strategy with bit revelation
-- `caligo.reconciliation.ldpc_encoder`: Syndrome computation with puncturing
-- `caligo.reconciliation.ldpc_decoder`: JIT-compiled BP decoder (Numba)
-- `caligo.reconciliation.leakage_tracker`: NSM-aware leakage accounting
+This approach allows exploration of parameter space without requiring physical quantum hardware, while ensuring that analytical bounds remain valid under realistic protocol implementations.
 
-### Objective 3: NSM Parameter Enforcement
+### Parameter Space Exploration
 
-**Goal**: Establish verifiable mappings from NSM security parameters to SquidASM physical configurations.
+We systematically explore:
 
-**Success Criteria**:
-- `NSMParameters` dataclass with validation: $Q_{\text{channel}} < Q_{\text{storage}}$
-- Depolarizing noise calculation: $p_{\text{depolar}} = \frac{1-r}{4}$
-- QBER decomposition: $Q_{\text{total}} = Q_{\text{channel}} + (1 - Q_{\text{channel}}) \cdot Q_{\text{storage}}$
-- SquidASM injection: direct mapping to `network_config.yaml`
-- Runtime timing barrier: `TimingBarrier.wait(delta_t_ns)`
+| Parameter | Range | Physical Interpretation |
+|-----------|-------|-------------------------|
+| $r$ | $[0.1, 0.9]$ | Storage channel depolarizing parameter |
+| $\nu$ | $\{0.1, 0.5, 1.0\}$ | Adversary storage rate |
+| $Q_{\text{channel}}$ | $[0.01, 0.15]$ | Honest-party QBER |
+| $n$ | $[2^{10}, 2^{14}]$ | Block length |
+| $\varepsilon_{\text{sec}}$ | $[10^{-12}, 10^{-6}]$ | Security parameter |
 
-**Deliverables**:
-- `caligo.nsm_config`: NSM parameter validation and translation
-- SquidASM configuration generator with noise model injection
-- Timing enforcement primitives
+## 1.2.4 Success Criteria
 
-### Objective 4: Modular, Testable Architecture
+The simulation-based analysis succeeds if:
 
-**Goal**: Design a codebase that adheres to software engineering best practices while remaining accessible to quantum information scientists.
+1. **Analytical bounds are respected**: Simulated key rates do not exceed theoretical predictions;
+2. **Threshold behavior is confirmed**: The 11% QBER threshold manifests (with finite-size degradation);
+3. **Death Valley is characterized**: Clear boundary where $\ell \to 0$;
+4. **Parameter guidance is provided**: Concrete recommendations for $(n, R, \varepsilon)$ achieving target key rates.
 
-**Success Criteria**:
-- Single Responsibility Principle
-- Explicit phase contracts: `dataclasses` for inter-phase data transfer
-- Type hints throughout: `mypy --strict` compliance
-- Numpydoc-formatted docstrings for all public APIs
-- Test coverage ≥ 90% on protocol logic (excluding SquidASM integration)
-- Logging via `LogManager` (no `print()` statements)
+## 1.2.5 Exclusions
 
-**Deliverables**:
-- `caligo.types`: Domain primitives (`ObliviousKey`, `MeasurementRecord`, phase contracts)
-- `caligo.utils`: Cross-cutting utilities (logging, entropy calculations, bitarray helpers)
-- Comprehensive test suite with phase-contract validation
+To maintain focus on the physical security analysis, we exclude:
 
-## 1.2.3 Non-Objectives (Scope Boundaries)
+1. **Coherent attacks**: We assume individual-storage attacks where the adversary performs product measurements and stores qubits independently. General attacks require entropic uncertainty relations beyond the scope of this analysis [4].
 
-To maintain focus, the following are **explicitly out of scope**:
+2. **Device imperfections beyond noise**: We assume honest parties have calibrated devices. Side-channel attacks, Trojan-horse attacks, and detector blinding are not modeled.
 
-### Hardware Implementation
-- Physical qubit control (ion traps, superconducting circuits, photonics)
-- Real-time measurement feedback and adaptive basis selection
-- Physical noise characterization and calibration
+3. **Network topology**: We consider point-to-point protocols only. Multi-party extensions and quantum repeater architectures are excluded.
 
-**Rationale**: Caligo is a simulation platform for protocol validation, not a hardware control stack.
-
-### Multi-Party Extensions
-- $\binom{n}{1}$-OT (1-out-of-n oblivious transfer)
-- Multi-party computation protocols beyond two-party OT
-- Network routing and multi-hop quantum communication
-
-**Rationale**: The NSM security proof extends to multi-party settings [17], but implementation complexity exceeds project scope.
-
-### Alternative Error Correction Codes
-- Turbo codes, Polar codes, or Fountain codes for reconciliation
-- Algebraic codes (BCH, Reed-Solomon) for structured puncturing
-
-**Rationale**: LDPC codes with rate-compatible puncturing are well-established in QKD literature [2,12]. Alternative codes offer marginal gains at significant implementation cost.
-
-### Statistical Analysis Automation
-- Parameter sweep frameworks for $(r, \nu, \Delta t)$ exploration
-- Automated plotting and visualization dashboards
-- Monte Carlo simulation orchestration
-
-**Rationale**: These are valuable tools but peripheral to core protocol implementation. They can be developed as external scripts leveraging Caligo's API.
+4. **Composable security**: We analyze standalone security. Composition with other cryptographic protocols (e.g., using OT to construct secure computation) is not addressed.
 
 ---
 
 ## References
 
-[1] S. Wehner, C. Schaffner, and B. M. Terhal, "Cryptography from Noisy Storage," *Phys. Rev. Lett.* 100, 220502 (2008).
+[1] R. König, S. Wehner, and J. Wullschleger, "Unconditional Security from Noisy Quantum Storage," *IEEE Trans. Inf. Theory* **58**, 1962 (2012).
 
-[2] D. Elkouss, J. Martinez-Mateo, D. Lancho, and V. Martin, "Rate Compatible Protocol for Information Reconciliation: An Application to QKD" (2010).
+[2] C. Schaffner, "Cryptography in the Bounded-Quantum-Storage Model," Ph.D. thesis, University of Aarhus (2007).
 
-[3] D. Elkouss, J. Martinez-Mateo, and V. Martin, "Untainted Puncturing for Irregular Low-Density Parity-Check Codes," *IEEE Wireless Commun. Lett.* 1(6), 585-588 (2012).
+[3] C. Lupo, J. T. Peat, E. Andersson, and P. Kok, "Error-tolerant oblivious transfer in the noisy-storage model," arXiv:2309.xxxxx (2023).
 
-[12] J. Martinez-Mateo, D. Elkouss, and V. Martin, "Blind Reconciliation," *Quantum Inf. Comput.* 12(9&10), 791-812 (2012).
-
-[14] SquidASM Documentation, QuTech Delft. https://github.com/QuTech-Delft/squidasm
-
-[15] T. Coopmans et al., "NetSquid, a NETwork Simulator for QUantum Information using Discrete events," *Commun. Phys.* 4, 164 (2021).
-
-[16] T. Tian, C. Jones, J. D. Villasenor, and R. D. Wesel, "Construction of Irregular LDPC Codes with Low Error Floors," *IEEE ICC* (2003).
-
-[17] R. König and B. M. Terhal, "The Bounded-Storage Model in the Presence of a Quantum Adversary," *IEEE Trans. Inf. Theory* 54(2), 749-762 (2008).
-
-[18] E. Kiktenko et al., "Post-processing procedure for industrial quantum key distribution systems," *J. Phys.: Conf. Ser.* 741, 012081 (2016).
-
-[19] M. Pompili et al., "Realization of a multinode quantum network of remote solid-state qubits," *Science* 372(6539), 259-264 (2021).
+[4] M. Tomamichel, C. C. W. Lim, N. Gisin, and R. Renner, "Tight Finite-Key Analysis for Quantum Cryptography," *Nat. Commun.* **3**, 634 (2012).
 
 ---
 

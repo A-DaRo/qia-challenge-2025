@@ -1,305 +1,231 @@
 [← Return to Main Index](../index.md)
 
-# 6.1 Rate-Compatible LDPC Framework
+# 6.1 LDPC Codes for Information Reconciliation
 
-## Introduction
+## 6.1.1 The Source Coding Problem
 
-Phase III of the Caligo protocol implements information reconciliation—the critical stage where Alice and Bob eliminate discrepancies between their correlated strings using error correction codes. This phase is particularly demanding in the Noisy Storage Model (NSM) context, where syndrome information leaks directly to Bob (the potential adversary), rather than to an external eavesdropper as in traditional QKD protocols.
+### Slepian-Wolf Theorem
 
-The reconciliation framework in Caligo is built on Low-Density Parity-Check (LDPC) codes with **rate-compatible puncturing and shortening**, enabling efficient operation across a wide range of Quantum Bit Error Rates (QBER) without requiring multiple pre-compiled matrices.
+Information reconciliation is an instance of **source coding with side information** [1]. Alice possesses a string $X \in \{0,1\}^n$, and Bob possesses a correlated string $Y = X \oplus E$, where $E$ is the error pattern with Hamming weight $\text{wt}(E) \approx nQ$ for error rate $Q$.
 
-## Theoretical Foundation
-
-### The Channel Model
-
-Information reconciliation addresses the problem of **source coding with side information** [1]. Alice holds a string $\mathbf{x} \in \{0,1\}^m$ and Bob holds a correlated string $\mathbf{y} \in \{0,1\}^m$, where the correlation can be modeled as if $\mathbf{y}$ were received through a Binary Symmetric Channel (BSC) with crossover probability $p = \text{QBER}$.
-
-The Slepian-Wolf theorem establishes that the minimum information Alice must disclose to enable Bob to recover $\mathbf{x}$ is:
-
+**Theorem (Slepian-Wolf, 1973):** The minimum rate at which Alice must communicate to enable Bob to recover $X$ is:
 $$
-I_{\text{opt}} = H(X|Y) = n \cdot h(p)
+R_{\min} = H(X|Y) = h(Q)
 $$
 
-where $h(p) = -p\log_2(p) - (1-p)\log_2(1-p)$ is the binary entropy function.
+where $h(Q) = -Q\log_2 Q - (1-Q)\log_2(1-Q)$ is the binary entropy.
 
-### LDPC Codes as Reconciliation Tools
+**Implications:**
+- For $Q = 0.05$: $h(Q) \approx 0.286$, requiring $\geq 28.6\%$ of $n$ bits
+- For $Q = 0.11$: $h(Q) \approx 0.500$, requiring $\geq 50\%$ of $n$ bits
 
-An LDPC code is defined by a sparse parity-check matrix $H \in \{0,1\}^{m \times n}$, where $m = (1-R_0) \cdot n$ check equations constrain $n$ codeword bits at rate $R_0 = k/n$. The code is represented as a bipartite **Tanner graph**:
-- **Variable nodes** (symbol nodes): represent codeword bits
-- **Check nodes**: represent parity-check constraints
-- **Edges**: connect variables participating in each constraint
+### The Binary Symmetric Channel Model
 
-For information reconciliation via **syndrome coding** [2]:
-1. Alice computes the syndrome $\mathbf{s} = H \cdot \mathbf{x} \mod 2$ and sends it to Bob
-2. Bob uses his received string $\mathbf{y}$ as channel observations to decode
-3. Bob runs belief-propagation (BP) decoding to find $\hat{\mathbf{x}}$ satisfying $H \cdot \hat{\mathbf{x}} = \mathbf{s}$
+The correlation between Alice's and Bob's strings is modeled as a **Binary Symmetric Channel (BSC)** with crossover probability $Q$:
 
-The information disclosed is:
+```
+                    1-Q
+        X_i ────────────────── Y_i = X_i
+             ╲                ╱
+              ╲    Q      Q ╱
+               ╲          ╱
+                ╲────────╱
+                    Q
+        X_i ────────────────── Y_i = 1-X_i
+```
 
+**Channel Transition Probabilities:**
 $$
-|\Sigma| = (1 - R_0) \cdot n \text{ bits (syndrome)} + h \text{ bits (verification hash)}
-$$
-
-### Reconciliation Efficiency
-
-The **reconciliation efficiency** quantifies how close the actual disclosure is to the theoretical optimum:
-
-$$
-f = \frac{|\Sigma| + |H|}{n \cdot h(\text{QBER})} = \frac{(1-R_0) \cdot n + h}{n \cdot h(\text{QBER})}
-$$
-
-For perfect reconciliation, $f = 1$. Practical LDPC-based protocols achieve $f \in [1.05, 1.20]$ for QBER ranges typical in quantum protocols [3, 4].
-
-## Rate Adaptation via Puncturing and Shortening
-
-### The Core Challenge
-
-A fixed-rate code optimized for QBER $= p_0$ performs poorly when the actual QBER deviates from $p_0$. Traditional solutions require maintaining a library of many pre-compiled codes, each optimized for a narrow QBER range [5].
-
-**Rate-compatible coding** solves this by dynamically adapting a single **mother code** to different effective rates using two complementary techniques:
-
-#### Puncturing
-
-**Puncturing** increases the code rate by deleting $p$ symbols from the codeword, converting $\mathcal{C}(n, k) \to \mathcal{C}(n-p, k)$:
-
-$$
-R_{\text{punct}} = \frac{k}{n-p} = \frac{R_0}{1 - \pi}
-$$
-
-where $\pi = p/n$ is the puncturing fraction.
-
-**Operational meaning:** Punctured positions are filled with pseudo-random padding (unknown to the decoder). The decoder initializes these positions with **zero LLR** (erasure), representing complete uncertainty.
-
-#### Shortening
-
-**Shortening** decreases the code rate by fixing the values of $s$ symbols at positions known to both parties, converting $\mathcal{C}(n, k) \to \mathcal{C}(n-s, k-s)$:
-
-$$
-R_{\text{short}} = \frac{k-s}{n-s} = \frac{R_0 - \sigma}{1 - \sigma}
-$$
-
-where $\sigma = s/n$ is the shortening fraction.
-
-**Operational meaning:** Shortened positions are filled with pseudo-random values generated from a synchronized seed. The decoder initializes these positions with **infinite LLR** ($\pm \infty$), representing perfect knowledge.
-
-### Combined Modulation
-
-The **inverse puncturing and shortening** protocol [1] applies both techniques to a frame of fixed length $n$:
-
-1. **Payload positions** ($m = n - d$): filled with the correlated string
-2. **Punctured positions** ($p$): filled with random padding (LLR = 0)
-3. **Shortened positions** ($s$): filled with known values (LLR = $\pm\infty$)
-
-where $d = p + s$ is the **modulation parameter**.
-
-The **effective rate** becomes:
-
-$$
-R_{\text{eff}} = \frac{k - s}{n - p - s} = \frac{R_0 - \sigma}{1 - \pi - \sigma}
-$$
-
-The achievable rate range for modulation fraction $\delta = d/n$ is:
-
-$$
-R_{\min} = \frac{R_0 - \delta}{1 - \delta} \leq R_{\text{eff}} \leq \frac{R_0}{1 - \delta} = R_{\max}
-$$
-
-### Frame Construction Function
-
-The frame construction function $g(\mathbf{x}, \sigma, \pi)$ deterministically maps a payload string $\mathbf{x}$ to a codeword frame $\mathbf{x}^+$ of length $n$:
-
-$$
-\mathbf{x}^+ = g(\mathbf{x}, \sigma, \pi) = 
-\begin{cases}
-x_{\text{payload}[i]} & \text{if } i \in \text{PayloadSet} \\
-\text{PRNG}(i) & \text{if } i \in \text{PunctureSet} \\
-\text{PRNG}_{\text{known}}(i) & \text{if } i \in \text{ShortenSet}
+P(Y=y|X=x) = \begin{cases}
+1-Q & \text{if } y = x \\
+Q & \text{if } y \neq x
 \end{cases}
 $$
 
-**Critical requirement:** The position sets and shortened values must be **reproducible** from a synchronized pseudo-random generator (PRG) to avoid additional communication overhead [1].
+## 6.1.2 LDPC Code Structure
 
-## Leakage Accounting in the NSM Context
+### Parity-Check Matrix
 
-### NSM Security Constraint
+An LDPC code is defined by a sparse **parity-check matrix** $H \in \{0,1\}^{m \times n}$ with:
+- $n$ columns (variable nodes, codeword positions)
+- $m = n - k$ rows (check nodes, parity constraints)
+- Code rate $R = k/n = 1 - m/n$
 
-Under the Noisy Storage Model, the extractable secure key length is bounded by:
-
+**Sparsity Condition:** $H$ has constant or bounded column weight $d_v$ and row weight $d_c$:
 $$
-\ell \leq n \cdot \left[ H_{\min}^{\epsilon}(X|E) - \text{leak}_{\text{EC}} - \log_2\left(\frac{2}{\epsilon^2}\right) \right]
-$$
-
-The reconciliation leakage $\text{leak}_{\text{EC}}$ directly reduces the extractable output. Therefore, **minimizing syndrome length while maintaining decoding reliability** is paramount.
-
-### Leakage Components
-
-For syndrome-based reconciliation:
-
-$$
-\text{leak}_{\text{EC}} = |\Sigma| + |H| + |\text{Revealed}|
+d_v \ll n, \quad d_c \ll m
 $$
 
-where:
-- $|\Sigma| = (1-R_0) \cdot n$: syndrome bits (fixed by mother matrix)
-- $|H|$: verification hash bits (typically 32-128)
-- $|\text{Revealed}|$: additional revealed bits (blind protocol only)
+Typical values: $d_v \in [3, 6]$, $d_c \in [6, 20]$.
 
-**Key observation:** The syndrome length is **independent of the effective rate** because it is computed with the fixed mother matrix. Rate adaptation via puncturing/shortening modifies decoding behavior without changing syndrome size.
+### Tanner Graph Representation
 
-### Circuit Breaker Pattern
+The code is equivalently represented as a **bipartite graph** $G = (V \cup C, E)$:
 
-Caligo implements a **circuit breaker** [6] that immediately aborts reconciliation if the cumulative leakage exceeds the NSM-derived safety cap:
+- **Variable nodes** $V = \{v_1, \ldots, v_n\}$: represent codeword bits
+- **Check nodes** $C = \{c_1, \ldots, c_m\}$: represent parity constraints
+- **Edges** $E$: $(v_j, c_i) \in E$ if $H_{ij} = 1$
 
-```python
-if cumulative_leakage > safety_cap:
-    raise LeakageBudgetExceeded(
-        f"Leakage {cumulative_leakage} exceeds cap {safety_cap}"
-    )
-```
-
-This prevents security violations from propagating through the protocol pipeline.
-
-## Progressive Edge-Growth (PEG) Mother Code Construction
-
-### Graph Construction Algorithm
-
-Caligo uses the PEG algorithm [7] to construct mother codes with maximized local girth (shortest cycle length). The algorithm builds the Tanner graph edge-by-edge, placing each edge to maximize the distance to existing cycles around the current variable node.
-
-**Key properties:**
-1. **Girth maximization**: Longer cycles improve BP convergence
-2. **Irregular degree distributions**: Optimized $\lambda(x)$ and $\rho(x)$ polynomials for specific channels
-3. **Edge-perspective design**: Degrees specified from edge viewpoint for density evolution analysis
-
-### Mother Code Parameters
-
-For Caligo Phase III:
-
-| Parameter | Value | Rationale |
-|-----------|-------|-----------|
-| **Frame size** $n$ | 4096 | Balance between performance and hardware feasibility [2] |
-| **Mother rate** $R_0$ | 0.50 | Symmetric starting point for wide rate coverage |
-| **Variable degree dist.** | Irregular (PEG-optimized) | Threshold optimization for BSC |
-| **Check degree dist.** | Irregular (PEG-optimized) | Balanced connectivity |
-| **Girth** | $\geq 6$ | Avoid 4-cycles that trap BP messages |
-
-### Compilation and Storage
-
-Mother matrices are:
-1. Generated offline using PEG with optimized degree distributions
-2. Stored in compressed sparse row (CSR) format (`.npz` files)
-3. Compiled to adjacency-list representation for fast syndrome computation
-4. Checksum-verified for Alice-Bob synchronization
-
-```python
-# Matrix loading with checksum verification
-matrix = sp.load_npz(matrix_path).tocsr().astype(np.uint8)
-checksum = hashlib.sha256(matrix.data.tobytes()).hexdigest()
-```
-
-## Belief-Propagation Decoding
-
-### Sum-Product Algorithm
-
-Bob decodes using iterative belief propagation in the log-likelihood ratio (LLR) domain. Messages are exchanged between variable and check nodes:
-
-**Variable-to-check messages:**
-
+**Code Definition:** $x \in \{0,1\}^n$ is a codeword if and only if:
 $$
-\mu_{v \to c}^{(t)} = \lambda_v + \sum_{c' \in \mathcal{N}(v) \setminus \{c\}} \mu_{c' \to v}^{(t-1)}
+Hx = 0 \pmod{2}
 $$
 
-where $\lambda_v$ is the channel LLR.
+### Degree Distribution
 
-**Check-to-variable messages** (tanh-domain update):
-
-$$
-\mu_{c \to v}^{(t)} = 2 \cdot \text{arctanh}\left( \prod_{v' \in \mathcal{N}(c) \setminus \{v\}} \tanh\left(\frac{\mu_{v' \to c}^{(t)}}{2}\right) \right)
-$$
-
-**Hard decision:**
+The code performance is characterized by **degree distributions**:
 
 $$
-\hat{x}_v = \begin{cases}
-0 & \text{if } \lambda_v + \sum_{c \in \mathcal{N}(v)} \mu_{c \to v}^{(t)} \geq 0 \\
-1 & \text{otherwise}
-\end{cases}
+\lambda(x) = \sum_i \lambda_i x^{i-1}, \quad \rho(x) = \sum_i \rho_i x^{i-1}
 $$
 
-### Convergence Criteria
+where $\lambda_i$ (resp. $\rho_i$) is the fraction of edges connected to degree-$i$ variable (resp. check) nodes.
 
-Decoding terminates when either:
-1. **Success:** $H \cdot \hat{\mathbf{x}} = \mathbf{s}$ (syndrome match)
-2. **Iteration limit:** Maximum iterations reached without convergence
-3. **Stagnation:** Messages stable but syndrome mismatch persists
+**Design Rate:**
+$$
+R = 1 - \frac{\int_0^1 \rho(x)\,dx}{\int_0^1 \lambda(x)\,dx}
+$$
 
-### Three-State LLR Initialization
+## 6.1.3 Syndrome-Based Reconciliation
 
-The decoder initializes LLRs based on position type:
+### Protocol Description
 
-| Position Type | Initial LLR | Interpretation |
-|---------------|-------------|----------------|
-| **Payload** | $\alpha \cdot (1 - 2y_i)$ where $\alpha = \ln\frac{1-p}{p}$ | Soft channel information |
-| **Punctured** | $0$ | Complete erasure (unknown) |
-| **Shortened** | $\pm 100$ (saturated) | Known value (certain) |
+Rather than transmitting codewords, reconciliation uses **syndrome coding**:
 
-This **three-state initialization** is critical for rate-compatible decoding [1, 2].
+1. Alice computes syndrome: $\Sigma = H \cdot X \in \{0,1\}^m$
+2. Alice sends $\Sigma$ to Bob
+3. Bob decodes: find $\hat{X}$ satisfying $H \cdot \hat{X} = \Sigma$ and $d_H(\hat{X}, Y)$ minimal
 
-## Implementation Architecture
+**Information Leakage:** The syndrome reveals exactly $m = (1-R)n$ bits of information about $X$.
 
-### Module Hierarchy
+### Decoding as Channel Coding
 
-```
-caligo.reconciliation/
-├── matrix_manager.py         # LDPC matrix loading and caching
-├── ldpc_encoder.py           # Syndrome computation (Alice)
-├── ldpc_decoder.py           # Belief-propagation (Bob)
-├── compiled_matrix.py        # Fast adjacency-list representation
-├── rate_selector.py          # (p,s) selection from QBER
-├── hash_verifier.py          # ε-universal hash verification
-├── leakage_tracker.py        # NSM leakage accounting
-└── orchestrator.py           # Phase III coordinator
-```
+Bob's decoding problem is equivalent to decoding $Y$ over a BSC($Q$):
 
-### Key Abstractions
+**Given:** Noisy observation $Y = X \oplus E$, syndrome $\Sigma = HX$
 
-**`MatrixManager`**: Singleton providing thread-safe matrix access with checksum verification
+**Goal:** Find $\hat{X}$ such that $H\hat{X} = \Sigma$
 
-**`CompiledParityCheckMatrix`**: Pre-processed adjacency lists for $O(|\text{edges}|)$ syndrome computation
+**Equivalence:** This is equivalent to decoding $Y$ to find error pattern $\hat{E} = Y \oplus \hat{X}$ satisfying $H\hat{E} = HY \oplus \Sigma$.
 
-**`BeliefPropagationDecoder`**: Optimized BP kernel with message buffer reuse
+## 6.1.4 Belief Propagation Decoding
 
-**`LeakageTracker`**: Circuit-breaker pattern enforcing NSM safety cap
+### Log-Likelihood Ratios
 
-## Performance Considerations
+The decoder operates on **log-likelihood ratios (LLRs)**:
+$$
+L_i = \log \frac{P(X_i = 0 | Y_i)}{P(X_i = 1 | Y_i)} = \log \frac{P(Y_i | X_i = 0)}{P(Y_i | X_i = 1)}
+$$
 
-### Computational Complexity
+For BSC($Q$):
+$$
+L_i^{(0)} = (1 - 2Y_i) \cdot \log \frac{1-Q}{Q}
+$$
 
-- **Syndrome computation** (Alice): $O(|\text{edges}|) \approx O(n \cdot \bar{d}_v)$ where $\bar{d}_v$ is average variable degree
-- **BP decoding** (Bob): $O(I \cdot |\text{edges}|)$ where $I$ is iteration count (typically $I \leq 50$)
-- **Frame construction**: $O(n)$ (linear scan)
+### Message Passing Algorithm
 
-### Memory Footprint
+**Initialization:** Set variable-to-check messages $\mu_{v \to c}^{(0)} = L_v^{(0)}$.
 
-- **Mother matrix** (CSR): $\approx 3 \times |\text{edges}| \times 4$ bytes (indices + data)
-- **Compiled adjacency**: $\approx 2 \times |\text{edges}| \times 4$ bytes
-- **Decoder buffers**: $2 \times |\text{edges}| \times 8$ bytes (float64 messages)
-- **Total** (per mother code): $\approx 100$-$200$ KB for $n=4096$
+**Check-to-Variable Update:**
+$$
+\mu_{c \to v}^{(t)} = 2\tanh^{-1}\left(\prod_{v' \in \mathcal{N}(c) \setminus v} \tanh\left(\frac{\mu_{v' \to c}^{(t-1)}}{2}\right)\right)
+$$
+
+**Variable-to-Check Update:**
+$$
+\mu_{v \to c}^{(t)} = L_v^{(0)} + \sum_{c' \in \mathcal{N}(v) \setminus c} \mu_{c' \to v}^{(t)}
+$$
+
+**Decision:**
+$$
+L_v^{(T)} = L_v^{(0)} + \sum_{c \in \mathcal{N}(v)} \mu_{c \to v}^{(T)}, \quad \hat{X}_v = \mathbf{1}[L_v^{(T)} < 0]
+$$
+
+### Convergence and Performance
+
+**Density Evolution:** For infinite block length, BP threshold $Q^*$ satisfies:
+$$
+Q^* = \sup\{Q : \text{BP converges to zero error}\}
+$$
+
+**Finite-Length Behavior:** For finite $n$, performance degrades due to:
+- **Cycles:** Short cycles in Tanner graph cause message correlation
+- **Stopping Sets:** Subgraphs where BP cannot make progress
+
+**Error Floor:** At low $Q$, residual errors from trapping sets dominate.
+
+## 6.1.5 Rate Adaptation
+
+### The Rate Mismatch Problem
+
+A code designed for $Q_0$ fails when $Q > Q_0$ (under-provisioned) or wastes capacity when $Q < Q_0$ (over-provisioned).
+
+**Solution:** Rate-compatible codes adapt a single **mother code** to varying rates.
+
+### Puncturing (Rate Increase)
+
+**Operation:** Delete $p$ positions from the codeword, yielding rate:
+$$
+R_{\text{punct}} = \frac{R_0}{1 - p/n}
+$$
+
+**Decoder Treatment:** Initialize punctured positions with $L_i = 0$ (maximum uncertainty).
+
+### Shortening (Rate Decrease)
+
+**Operation:** Fix $s$ positions to known values, yielding rate:
+$$
+R_{\text{short}} = \frac{R_0 - s/n}{1 - s/n}
+$$
+
+**Decoder Treatment:** Initialize shortened positions with $L_i = \pm\infty$ (perfect knowledge).
+
+### Effective Rate Range
+
+With modulation parameter $\delta = (p + s)/n$:
+$$
+R_{\text{eff}} \in \left[\frac{R_0 - \delta}{1 - \delta}, \frac{R_0}{1 - \delta}\right]
+$$
+
+## 6.1.6 Reconciliation Efficiency
+
+### Definition
+
+**Reconciliation efficiency** measures how close actual leakage is to the Slepian-Wolf bound:
+$$
+f = \frac{\text{leak}_{\text{EC}}}{n \cdot h(Q)} = \frac{(1-R_{\text{eff}}) \cdot n}{n \cdot h(Q)}
+$$
+
+**Ideal:** $f = 1$ (Shannon limit)
+**Practical:** $f \in [1.05, 1.20]$ for well-designed LDPC codes
+
+### Performance Summary
+
+| QBER | $h(Q)$ | Required Rate | Typical $f$ |
+|------|--------|---------------|-------------|
+| 1% | 0.081 | 0.919 | 1.05 |
+| 5% | 0.286 | 0.714 | 1.08 |
+| 10% | 0.469 | 0.531 | 1.12 |
+| 15% | 0.610 | 0.390 | 1.18 |
+
+### Impact on Security
+
+The reconciliation efficiency directly affects the extractable key length:
+$$
+\ell = n \cdot h_{\min}(r) - n \cdot h(Q) \cdot f - 2\log_2(1/\varepsilon) + 2
+$$
+
+A 10% inefficiency ($f = 1.10$) costs approximately $0.1 \cdot h(Q) \cdot n$ bits of secure key.
+
+---
 
 ## References
 
-[1] D. Elkouss, J. Martinez-Mateo, D. Lancho, and V. Martin, "Rate Compatible Protocol for Information Reconciliation: An Application to QKD," 2010.
+[1] T. M. Cover and J. A. Thomas, *Elements of Information Theory*, 2nd ed. Wiley, 2006.
 
-[2] J. Martinez-Mateo, D. Elkouss, and V. Martin, "Blind Reconciliation," *Quantum Information and Computation*, Vol. 12, No. 9&10, pp. 791-812, 2012.
+[2] D. Elkouss, A. Leverrier, R. Alléaume, and J. J. Boutros, "Efficient reconciliation protocol for discrete-variable quantum key distribution," *ISIT 2009*, arXiv:0901.2140.
 
-[3] D. Elkouss, A. Leverrier, R. Alléaume, and J. J. Boutros, "Efficient reconciliation protocol for discrete-variable quantum key distribution," *arXiv:0901.2140*, 2009.
-
-[4] E. Kiktenko et al., "Post-processing procedure for industrial quantum key distribution systems," *J. Phys.: Conf. Ser.* 741, 012081, 2016.
-
-[5] W. T. Buttler et al., "Winnow reconciliation protocol for quantum key distribution," *Applied Optics*, 2003.
-
-[6] M. Nygard, "Release It! Design and Deploy Production-Ready Software," 2nd ed., 2018.
-
-[7] X. Y. Hu, E. Eleftheriou, and D. M. Arnold, "Regular and irregular progressive edge-growth tanner graphs," *IEEE Trans. Info. Theory*, Vol. 51, No. 1, pp. 386-398, 2005.
+[3] T. Richardson and R. Urbanke, *Modern Coding Theory*. Cambridge University Press, 2008.
 
 ---
 

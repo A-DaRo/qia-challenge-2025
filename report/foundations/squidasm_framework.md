@@ -2,333 +2,195 @@
 
 # 2.3 The SquidASM Simulation Framework
 
-## 2.3.1 Overview: Quantum Network Simulation
+## 2.3.1 Purpose: Simulation as Theoretical Validation
 
-**SquidASM** (Simulator for Quantum Information Distribution, Application-Specific Modules) [1] is a software framework for simulating quantum network applications built atop the **NetSquid** discrete-event simulator [2]. It provides an application-layer abstraction for quantum protocols while maintaining faithful representation of physical quantum network behavior.
+The verification of finite-size security bounds in the Noisy Storage Model requires **experimental access** to quantum channels with controllable noise parameters. Physical experiments face several challenges:
 
-**Design Philosophy**:
-- **Application-First**: Protocol designers write Python code without managing low-level simulation details
-- **Physically Realistic**: Noise models, timing, and network topology reflect real quantum hardware
-- **Modular Architecture**: Separation of concerns (protocol logic vs. network stack)
+1. **Parameter Control:** Quantum hardware provides limited control over noise characteristics
+2. **Statistical Requirements:** Security proofs require $n > 10^5$ samples for tight bounds
+3. **Reproducibility:** Stochastic quantum processes complicate systematic parameter studies
 
-**Stack Hierarchy**:
+SquidASM [1] addresses these challenges by providing a **discrete-event quantum network simulator** that faithfully represents quantum state evolution, noise processes, and timing semantics. The simulation output constitutes **numerical evidence** for theoretical security claims.
 
-```
-┌───────────────────────────────────────────────┐
-│         Caligo Protocol (User Code)           │
-├───────────────────────────────────────────────┤
-│        SquidASM Application Layer             │
-│  - NetQASMConnection (program compilation)    │
-│  - Shared Memory (classical communication)    │
-│  - StackNetworkConfig (topology definition)   │
-├───────────────────────────────────────────────┤
-│            NetQASM SDK Layer                  │
-│  - Quantum Instructions (EPR, H, CNOT, etc.)  │
-│  - Measurement & Classical Registers          │
-│  - Compiler (NetQASM → NetSquid operations)   │
-├───────────────────────────────────────────────┤
-│          netsquid_netbuilder                  │
-│  - Link/Device Configuration                  │
-│  - MagicDistributor (EPR pair sources)        │
-├───────────────────────────────────────────────┤
-│         NetSquid Discrete-Event Core          │
-│  - Event Scheduler (priority queue)           │
-│  - QuantumProcessor (qubits, gates, noise)    │
-│  - Channel (losses, timing)                   │
-└───────────────────────────────────────────────┘
-```
+**Validation Philosophy:** We do not claim that simulations replace physical experiments. Rather, simulations verify that:
+- Theoretical bounds are achievable under ideal implementations
+- Finite-size penalties behave as predicted asymptotically
+- Protocol implementations correctly realize cryptographic definitions
 
-## 2.3.2 NetSquid: Discrete-Event Simulation
-
-### Event-Driven Execution
-
-NetSquid uses a **discrete-event kernel** [2] where simulation time advances through events, not continuous steps:
-
-```python
-# Pseudocode representation
-while event_queue.not_empty():
-    event = event_queue.pop_earliest()
-    simulation_time = event.time
-    event.execute()
-    # Event execution may schedule new events
-```
-
-**Key Concept**: All operations (qubit gates, measurements, channel transmission) are **events** with explicit timestamps. This enables:
-
-1. **Precise Timing**: Protocol delays ($\Delta t$) enforced at nanosecond resolution
-2. **Concurrent Operations**: Multiple parties operate in parallel
-3. **Reproducibility**: Deterministic execution for given random seed
+## 2.3.2 Physical Foundations
 
 ### Quantum State Representation
 
-NetSquid uses **density matrix** formalism:
-
+SquidASM tracks quantum states as **density matrices**:
 $$
-\rho = \sum_{i,j} \rho_{ij} |i\rangle\langle j|
-$$
-
-**Advantages**:
-- Supports **mixed states** (thermal noise, decoherence)
-- Enables **partial trace** for subsystem analysis
-- Allows **CPTP maps** for noise modeling
-
-**State Vectors**: For efficiency, pure states are tracked as $|\psi\rangle$ until entanglement or measurement forces density matrix conversion.
-
-### Noise Models
-
-NetSquid provides **noise model composition** [2, Section III-B]:
-
-| Noise Model | Physical Basis | Parameters |
-|-------------|----------------|------------|
-| `DepolarNoiseModel` | Environmental decoherence | `depolar_rate`, `time_independent` |
-| `DephaseNoiseModel` | Phase damping | `dephase_rate`, `T2_star` |
-| `T1T2NoiseModel` | Amplitude and phase damping | `T1` (relaxation), `T2` (dephasing) |
-| `FibreLossModel` | Photon absorption in fiber | `p_loss_init`, `p_loss_length` (per km) |
-
-**Composition**: Models are applied **sequentially** during qubit operations:
-
-$$
-\rho_{\text{final}} = \mathcal{N}_k \circ \cdots \circ \mathcal{N}_2 \circ \mathcal{N}_1(\rho_{\text{initial}})
+\rho = \sum_{i,j} \rho_{ij} |i\rangle\langle j| \in \mathcal{B}(\mathcal{H})
 $$
 
-## 2.3.3 SquidASM Application Interface
+This representation is essential for:
+- **Mixed States:** Noise processes produce statistical mixtures, not pure states
+- **Partial Traces:** Computing reduced density matrices $\rho_A = \operatorname{Tr}_B(\rho_{AB})$
+- **CPTP Maps:** Applying arbitrary completely positive trace-preserving operations
 
-### NetQASMConnection: Quantum Programs
+**Optimization:** For pure states, SquidASM maintains the state vector $|\psi\rangle$ until decoherence or measurement necessitates density matrix conversion.
 
-Quantum protocols are written as **generator functions** yielding NetQASM instructions:
+### Noise Model Implementation
 
-```python
-from netqasm.sdk import EPRSocket, Qubit
-from squidasm.run.stack.run import run
-
-def alice_program(conn: NetQASMConnection):
-    # Create EPR pair with Bob
-    epr_socket = EPRSocket("Bob")
-    q = epr_socket.recv_keep()[0]  # Receive and keep qubit
-    
-    # Measure in random basis
-    if random.choice([0, 1]) == 0:
-        outcome = q.measure()  # Computational basis
-    else:
-        q.H()  # Hadamard gate
-        outcome = q.measure()  # Hadamard basis
-    
-    yield from conn.flush()  # Execute compiled instructions
-    return int(outcome)
-```
-
-**Key Features**:
-- **Lazy Execution**: Instructions accumulate until `flush()`
-- **Classical Registers**: Store measurement outcomes
-- **Typed Operations**: Compile-time type checking
-
-### Shared Memory: Classical Communication
-
-Parties communicate classically via `SharedMemoryManager`:
-
-```python
-from squidasm.run.stack.context import SharedMemoryManager
-
-# Alice writes
-shared_mem = SharedMemoryManager()
-shared_mem.set("basis_info", basis_list)
-
-# Bob reads
-basis_info = shared_mem.get("basis_info")
-```
-
-**Semantics**:
-- **Blocking Reads**: `get()` waits until data available
-- **Atomic Writes**: No race conditions in single-threaded simulation
-- **Persistent**: Data survives across protocol rounds
-
-### Network Configuration
-
-Topology is defined via `StackNetworkConfig`:
-
-```yaml
-# network_config.yaml
-stacks:
-  - name: Alice
-    qdevice_typ: generic
-    qdevice_cfg:
-      num_qubits: 5
-      T1: 1000000000  # 1 second (ns)
-      T2: 500000000   # 0.5 seconds
-      
-  - name: Bob
-    qdevice_typ: generic
-    qdevice_cfg:
-      num_qubits: 5
-      T1: 1000000000
-      T2: 500000000
-
-links:
-  - stack1: Alice
-    stack2: Bob
-    typ: depolarise
-    cfg:
-      fidelity: 0.95
-      t_cycle: 1000  # 1 microsecond
-```
-
-**Link Types**:
-- `perfect`: Ideal EPR pair generation
-- `depolarise`: Depolarizing noise with fixed fidelity
-- `heralded-double-click`: Detector-based heralding with dark counts
-
-## 2.3.4 NetQASM: Quantum Assembly Language
-
-### Instruction Set
-
-NetQASM compiles high-level operations to **quantum assembly**:
-
-| High-Level (Python) | NetQASM Instruction | Physical Operation |
-|---------------------|---------------------|-------------------|
-| `q.H()` | `rot_z q 4 8; rot_x q 4 8` | Hadamard gate |
-| `q.measure()` | `meas q M0` | Z-basis measurement |
-| `epr_socket.create()` | `create_epr A B M0` | EPR pair generation |
-| `q.cnot(q2)` | `cphase q q2 16; rot_z q2 8` | CNOT gate |
-
-**Compilation**: SquidASM compiler translates NetQASM → NetSquid gate sequences with explicit timing.
-
-### Timing Semantics
-
-Each NetQASM instruction has **duration**:
-
-```python
-# Example: EPR pair creation timing
-t_start = 0 ns
-t_entanglement_ready = t_start + t_cycle  # Link cycle time
-t_measurement = t_entanglement_ready + gate_duration("M")
-```
-
-**NSM Enforcement**: Timing barriers implemented via:
-
-```python
-import time
-time.sleep(delta_t_seconds)  # Real-time wait in simulation
-```
-
-## 2.3.5 netsquid_magic: EPR Pair Distribution
-
-### MagicDistributor
-
-The `MagicDistributor` [3] provides **heralded entanglement generation**:
-
-```python
-from netsquid_magic.magic_distributor import (
-    MagicDistributor, 
-    DoubleClickModelParameters
-)
-
-params = DoubleClickModelParameters(
-    detector_efficiency=0.9,      # η
-    dark_count_probability=1e-6,  # P_dark
-    ...
-)
-
-distributor = MagicDistributor(
-    nodes=["Alice", "Bob"],
-    model_params=params,
-    state_delay=1000,  # ns
-)
-```
-
-**Double-Click Model**: Simulates **polarization-encoded photons** with:
-1. Photon loss (detector inefficiency)
-2. Dark counts (spurious detections)
-3. Which-path information leakage
-
-### Noise Injection
-
-Noise is applied at **multiple layers**:
-
-1. **Source Noise**: Fidelity of generated EPR state $|\Phi^+\rangle$
-2. **Channel Noise**: Depolarization during transmission
-3. **Detector Noise**: Measurement errors, dark counts
-
-**Caligo Mapping**: NSM parameter $r$ maps to source fidelity:
-
+Physical noise processes are implemented as **CPTP maps** via Kraus operators:
 $$
-F_{\text{source}} = \frac{1 + 3r}{4}
+\mathcal{E}(\rho) = \sum_k E_k \rho E_k^\dagger, \quad \sum_k E_k^\dagger E_k = \mathbb{I}
 $$
 
-(Derivation in [Chapter 8.2: NSM-to-Physical Mapping](../nsm/physical_mapping.md))
+| Physical Process | Kraus Operators | Parameter |
+|------------------|-----------------|-----------|
+| Depolarizing | $E_0 = \sqrt{1-3p/4}\,\mathbb{I}$, $E_{1,2,3} = \sqrt{p/4}\,\sigma_{x,y,z}$ | $p \in [0,1]$ |
+| Dephasing | $E_0 = \sqrt{1-\gamma}\,\mathbb{I}$, $E_1 = \sqrt{\gamma}\,|0\rangle\langle 0|$, $E_2 = \sqrt{\gamma}\,|1\rangle\langle 1|$ | $\gamma \in [0,1]$ |
+| Amplitude Damping | $E_0 = \begin{pmatrix}1 & 0 \\ 0 & \sqrt{1-\gamma}\end{pmatrix}$, $E_1 = \begin{pmatrix}0 & \sqrt{\gamma} \\ 0 & 0\end{pmatrix}$ | $\gamma \in [0,1]$ |
 
-## 2.3.6 Caligo Integration Patterns
+**Time Evolution:** For Markovian noise, the decoherence parameter $\gamma(t)$ evolves as:
+$$
+\gamma(t) = 1 - e^{-t/T_2}
+$$
+where $T_2$ is the dephasing time constant.
 
-### Pattern 1: Batched EPR Generation
+### Entanglement Generation
 
-```python
-def generate_epr_batch(conn, remote_name, batch_size):
-    epr_socket = EPRSocket(remote_name)
-    qubits = []
-    
-    for _ in range(batch_size):
-        q = epr_socket.recv_keep()[0]
-        qubits.append(q)
-    
-    yield from conn.flush()  # Single flush for entire batch
-    return qubits
-```
+EPR pairs are produced with controllable **Werner state fidelity**:
+$$
+\rho_W(F) = F|\Phi^+\rangle\langle\Phi^+| + \frac{1-F}{3}\bigl(|\Phi^-\rangle\langle\Phi^-| + |\Psi^+\rangle\langle\Psi^+| + |\Psi^-\rangle\langle\Psi^-|\bigr)
+$$
 
-**Trade-off**: Larger batches amortize compilation overhead but increase memory.
+where $|\Phi^\pm\rangle = (|00\rangle \pm |11\rangle)/\sqrt{2}$ and $|\Psi^\pm\rangle = (|01\rangle \pm |10\rangle)/\sqrt{2}$.
 
-### Pattern 2: Basis-Dependent Measurement
+**QBER from Fidelity:** For Werner states measured in the computational basis:
+$$
+Q = \frac{1-F}{2}
+$$
 
-```python
-def measure_in_basis(qubit, basis):
-    if basis == 0:  # Computational
-        outcome = qubit.measure()
-    else:  # Hadamard
-        qubit.H()
-        outcome = qubit.measure()
-    return outcome
-```
+This relation enables direct mapping between simulation fidelity parameters and protocol QBER.
 
-**Timing**: Hadamard gate adds $\sim$ 10-100 ns (hardware-dependent).
+## 2.3.3 Discrete-Event Semantics
 
-### Pattern 3: Timing Barrier
+### Timing Model
 
-```python
-from squidasm.util.routines import timing_barrier
+All quantum operations are **events** with explicit timestamps. The simulator maintains a priority queue of events, advancing simulation time discontinuously:
 
-def enforce_nsm_delay(conn, delta_t_ns):
-    yield from timing_barrier(delta_t_ns)
-```
+**Event Types:**
+- **Quantum Gate:** Duration $\tau_{\text{gate}}$, typically $10^{-6}$ s
+- **EPR Generation:** Cycle time $t_{\text{cycle}}$, typically $10^{-3}$ s
+- **Measurement:** Duration $\tau_{\text{meas}}$, typically $10^{-6}$ s
+- **Classical Communication:** Delay $\tau_{\text{cc}}$, configurable
 
-**Implementation**: Schedules dummy event at `current_time + delta_t_ns`.
+**NSM Timing Enforcement:** The waiting time $\Delta t$ between quantum transmission and classical revelation is enforced via event scheduling:
+$$
+t_{\text{reveal}} = t_{\text{quantum}} + \Delta t
+$$
 
-## 2.3.7 Simulation Fidelity vs. Reality
+Any quantum state stored by an adversary experiences noise $\mathcal{F}_{\Delta t}$ before classical information becomes available.
 
-### What SquidASM Models Accurately
+### Parallelism Semantics
 
-**Discrete-event timing** (nanosecond precision)  
-**Density matrix evolution** (mixed states, decoherence)  
-**Link losses** (fiber attenuation, detector efficiency)  
-**Gate errors** (depolarization, dephasing)  
-**Parallel execution** (asynchronous protocols)
+Multiple parties execute **concurrently** in simulation time. This enables faithful representation of the adversary's strategy:
+- Measurement immediately after reception ($t = t_{\text{recv}}$)
+- Storage followed by deferred measurement ($t = t_{\text{recv}} + \Delta t$)
+- Partial measurement with storage of unmeasured qubits
 
-### Limitations
+## 2.3.4 Protocol-Relevant Abstractions
 
-**Continuous dynamics**: No master equation integration  
-**Hardware-specific quirks**: Crosstalk, SPAM errors  
-**Photon number resolution**: Assumes single-photon regime  
-**Non-Markovian noise**: Assumes memoryless channels
+### BB84 State Preparation
 
-**Implication**: Caligo results are **upper bounds** on performance—real hardware will exhibit additional degradation.
+The four BB84 states are represented as:
+
+| Bit $x$ | Basis $\theta$ | State | Density Matrix |
+|---------|----------------|-------|----------------|
+| 0 | + (Z) | $|0\rangle$ | $|0\rangle\langle 0|$ |
+| 1 | + (Z) | $|1\rangle$ | $|1\rangle\langle 1|$ |
+| 0 | × (X) | $|+\rangle$ | $|+\rangle\langle +|$ |
+| 1 | × (X) | $|-\rangle$ | $|-\rangle\langle -|$ |
+
+State preparation implements:
+$$
+|x\rangle_\theta = H^\theta X^x |0\rangle
+$$
+where $H$ is the Hadamard gate.
+
+### Measurement Statistics
+
+For a qubit $\rho$ measured in basis $\theta$:
+$$
+P(x | \rho, \theta) = \langle x |_\theta \rho |x\rangle_\theta = \operatorname{Tr}(M_x^\theta \rho)
+$$
+
+with POVM elements $M_x^\theta = |x\rangle_\theta \langle x|_\theta$.
+
+**Error Probability:** When Alice prepares $|x\rangle_{\theta_A}$ and Bob measures in $\theta_B \neq \theta_A$:
+$$
+P(\text{error}) = \frac{1}{2}
+$$
+
+This fundamental 50% error rate for mismatched bases underlies sifting efficiency.
+
+## 2.3.5 Validation Methodology
+
+### Simulation as Numerical Experiment
+
+Each simulation run constitutes a **Monte Carlo sample** from the protocol's probability distribution. Statistical properties are estimated via:
+$$
+\hat{Q} = \frac{1}{N}\sum_{i=1}^N Q_i, \quad \hat{\sigma}^2 = \frac{1}{N-1}\sum_{i=1}^N (Q_i - \hat{Q})^2
+$$
+
+**Confidence Intervals:** For $N$ independent runs, the standard error is:
+$$
+\text{SE}(\hat{Q}) = \frac{\hat{\sigma}}{\sqrt{N}}
+$$
+
+### Theoretical Predictions vs. Simulation
+
+The validation criterion is **consistency** between:
+
+1. **Theoretical Bound:** $H_{\min}^\varepsilon(X|E) \geq n \cdot h_{\min}(r) - O(\sqrt{n})$
+2. **Simulated Rate:** $\hat{\ell} = H_{\min}^{\text{sim}}(X|E) - \text{leak}_{\text{EC}} - 2\log_2(1/\varepsilon)$
+
+Agreement within statistical uncertainty validates both the theory and implementation.
+
+### Parameter Sweeps
+
+Systematic validation requires sweeping:
+- **Block Length:** $n \in \{10^2, 10^3, 10^4, 10^5\}$ to verify finite-size scaling
+- **QBER:** $Q \in [0.01, 0.15]$ to map the security threshold
+- **Noise Parameter:** $r \in [0.2, 0.8]$ to verify min-entropy bounds
+
+## 2.3.6 Limitations and Caveats
+
+### Idealized Assumptions
+
+SquidASM simulations assume:
+1. **Perfect Classical Channels:** No errors in classical communication
+2. **Synchronized Clocks:** Global simulation time without relativistic effects
+3. **Markovian Noise:** Semigroup property $\mathcal{F}_{t_1+t_2} = \mathcal{F}_{t_1} \circ \mathcal{F}_{t_2}$
+4. **Known Noise Model:** Adversary's storage noise is a fixed, known CPTP map
+
+### What Simulation Cannot Verify
+
+Simulations cannot verify:
+- **Device Independence:** Security against adversary-controlled devices
+- **Side Channels:** Timing attacks, power analysis, etc.
+- **Non-Markovian Effects:** Memory effects in realistic quantum storage
+
+### Interpretation Guidelines
+
+Simulation results should be interpreted as:
+> *"Under the assumptions of the NSM framework, with depolarizing storage noise and idealized implementations, the protocol achieves $\varepsilon$-security with the claimed key rate."*
+
+This is a theoretical validation, not an experimental demonstration.
 
 ---
 
 ## References
 
-[1] SquidASM Documentation, QuTech Delft. https://github.com/QuTech-Delft/squidasm
+[1] SquidASM: Simulator for Quantum Information Distribution, https://github.com/QuTech-Delft/squidasm
 
 [2] T. Coopmans et al., "NetSquid, a NETwork Simulator for QUantum Information using Discrete events," *Commun. Phys.* **4**, 164 (2021).
 
-[3] NetSquid Magic Documentation. https://netsquid.org/
-
 ---
 
-[← Return to Main Index](../index.md) | [← Previous: Cryptographic Primitives](./primitives.md) | [Next: Protocol Literature →](./protocol_literature.md)
+[← Return to Main Index](../index.md) | [Next: Protocol Literature →](./protocol_literature.md)

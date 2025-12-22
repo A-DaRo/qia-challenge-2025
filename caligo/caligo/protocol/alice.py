@@ -203,11 +203,6 @@ class AliceProgram(CaligoProgram):
         data_bytes = np.concatenate([bob_outcomes, bob_bases]).astype(np.uint8).tobytes()
         self._commitment.verify(commitment=commitment, nonce=nonce, data=data_bytes)
 
-        logger.error(f"DEBUG: Alice outcomes (first 20): {alice_outcomes[:20]}")
-        logger.error(f"DEBUG: Alice bases (first 20): {alice_bases[:20]}")
-        logger.error(f"DEBUG: Bob outcomes (first 20): {bob_outcomes[:20]}")
-        logger.error(f"DEBUG: Bob bases (first 20): {bob_bases[:20]}")
-
         # Compute sifted keys.
         alice_sift, bob_sift = self._sifter.compute_sifted_key(
             alice_bases=alice_bases,
@@ -319,6 +314,29 @@ class AliceProgram(CaligoProgram):
         alice_arr = bitarray_to_numpy(alice_bits)
         frame_size = int(self.params.reconciliation.frame_size)
 
+        # Early feasibility check: compute safety cap and verify reconciliation is viable
+        # Total leakage = syndrome_bits + hash_bits_per_block × num_blocks
+        # Syndrome leakage at R=0.5 is approximately half the key length
+        num_blocks = max(1, (len(alice_arr) + frame_size - 1) // frame_size)
+        hash_bits_per_block = 64  # Standard verification hash size
+        estimated_syndrome_leakage = len(alice_arr) // 2
+        estimated_hash_leakage = num_blocks * hash_bits_per_block
+        estimated_total_leakage = estimated_syndrome_leakage + estimated_hash_leakage
+        
+        safety_cap = compute_safety_cap(len(alice_arr), qber_adjusted)
+        
+        # Check if reconciliation is feasible
+        # We use exact comparison since estimated_total_leakage already includes
+        # hash bits and syndrome bits at the worst-case rate
+        if safety_cap < estimated_total_leakage:
+            # Reconciliation will exceed leakage budget
+            # Abort early with clear diagnostic
+            raise EntropyDepletedError(
+                f"Key extraction not viable (Death Valley): "
+                f"safety_cap={safety_cap} < estimated_leakage={estimated_total_leakage}, "
+                f"QBER={qber_adjusted:.4f}"
+            )
+
         # 1. Build ReconciliationConfig from protocol parameters
         config = ReconciliationConfig(
             reconciliation_type=self.params.reconciliation.reconciliation_type,
@@ -333,7 +351,6 @@ class AliceProgram(CaligoProgram):
 
         mother_code = MotherCodeManager.from_config()
         codec = LDPCCodec(mother_code)
-        safety_cap = compute_safety_cap(len(alice_arr), qber_adjusted)
         leakage_tracker = LeakageTracker(safety_cap=safety_cap, abort_on_exceed=True)
 
         # 3. Create strategy via factory (P3.1)
@@ -345,7 +362,7 @@ class AliceProgram(CaligoProgram):
             frame_size=frame_size,
             mother_rate=0.5,
             max_iterations=config.max_iterations,
-            hash_bits=64,
+            hash_bits=hash_bits_per_block,
             f_crit=1.16,  # Per Theoretical Report v2 §2.3
             qber_measured=qber_adjusted if strategy.requires_qber_estimation else None,
             qber_heuristic=qber_observed if not strategy.requires_qber_estimation else None,
@@ -478,17 +495,37 @@ class AliceProgram(CaligoProgram):
         key_i0_np = bitarray_to_numpy(key_i0_ba)
         key_i1_np = bitarray_to_numpy(key_i1_ba)
 
+        # Compute per-partition key length.
+        # The total secure key length is divided among partitions.
+        # Each OT key (S₀, S₁) is extracted from its respective partition.
+        # The output key length per partition is limited by:
+        # 1. Half of the total secure key length (fair split)
+        # 2. The actual partition input length (can't output more than input)
+        per_partition_length = detailed.final_length // 2
+        key_length_0 = min(per_partition_length, len(key_i0_np))
+        key_length_1 = min(per_partition_length, len(key_i1_np))
+        
+        # Use the smaller of the two to ensure equal-length OT keys
+        output_key_length = min(key_length_0, key_length_1)
+        
+        if output_key_length <= 0:
+            raise EntropyDepletedError(
+                f"Partition key extraction not viable: "
+                f"I₀={len(key_i0_np)}, I₁={len(key_i1_np)}, "
+                f"target_per_partition={per_partition_length}"
+            )
+
         # Seeds for Toeplitz; must be shared with Bob.
         # Toeplitz needs (n + m - 1) random bits.
         seed_0_bytes = ToeplitzHasher.generate_seed(
-            num_bits=int(len(key_i0_np) + detailed.final_length - 1)
+            num_bits=int(len(key_i0_np) + output_key_length - 1)
         )
         seed_1_bytes = ToeplitzHasher.generate_seed(
-            num_bits=int(len(key_i1_np) + detailed.final_length - 1)
+            num_bits=int(len(key_i1_np) + output_key_length - 1)
         )
 
         formatter = OTOutputFormatter(
-            key_length=int(detailed.final_length),
+            key_length=int(output_key_length),
             seed_0=seed_0_bytes,
             seed_1=seed_1_bytes,
         )
@@ -498,16 +535,16 @@ class AliceProgram(CaligoProgram):
         alice_key = AliceObliviousKey(
             s0=bitarray_from_numpy(alice_out.key_0),
             s1=bitarray_from_numpy(alice_out.key_1),
-            key_length=int(detailed.final_length),
+            key_length=int(output_key_length),
             security_parameter=1e-10,
             entropy_consumed=float(detailed.entropy_consumed),
         )
 
-        entropy_rate = float(detailed.final_length) / float(len(reconciled_arr))
+        entropy_rate = float(output_key_length) / float(len(reconciled_arr))
 
         return (
             alice_key,
-            int(detailed.final_length),
+            int(output_key_length),
             float(detailed.entropy_consumed),
             float(entropy_rate),
             (seed_0_bytes, seed_1_bytes),

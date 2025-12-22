@@ -1,266 +1,233 @@
 [← Return to Main Index](../index.md)
 
-# 2.4 Protocol Literature Review
+# 2.4 Key Literature and Theoretical Background
 
-This section surveys the theoretical foundations underlying Caligo's implementation, organized chronologically to trace the evolution of ideas from initial NSM proposals through reconciliation techniques to the E-HOK protocol.
+This section surveys the theoretical foundations underlying the Caligo protocol, tracing the evolution from the initial NSM formulation through finite-size security analysis to practical reconciliation techniques.
 
-## 2.4.1 Noisy Storage Model Foundations (2008-2012)
+## 2.4.1 Foundational Papers
 
-### Wehner, Schaffner, Terhal (2008): The NSM Birth
+### Wehner, Schaffner, Terhal (2008): Genesis of the NSM
 
-**Reference**: S. Wehner, C. Schaffner, and B. M. Terhal, "Cryptography from Noisy Storage," *Phys. Rev. Lett.* **100**, 220502 (2008).
+**Reference:** S. Wehner, C. Schaffner, and B. M. Terhal, "Cryptography from Noisy Storage," *Phys. Rev. Lett.* **100**, 220502 (2008). [[Markdown](../../docs/literature/2008_cryptography_from_noisy_storage.md)]
 
-**Key Contributions**:
-1. **Model Definition**: Introduced depolarizing channel $\mathcal{N}_r(\rho) = r\rho + (1-r)\mathbb{I}/2$ for quantum storage
-2. **All-or-Nothing Theorem**: Proved $r_{\text{crit}} = 1/\sqrt{2}$ threshold for optimal adversary strategy
-3. **Protocol 1**: Simple OT using BB84 states with individual-storage attack analysis
+This paper introduced the Noisy Storage Model and established its fundamental security guarantee.
 
-**Security Proof Sketch**:
-- Adversary Bob stores qubits undergoing noise $\mathcal{N}_r$ for time $\Delta t$
-- Uncertainty relation: $P_g(X|\mathcal{N}_r(\sigma_+)) \cdot P_g(X|\mathcal{N}_r(\sigma_\times)) \leq \Delta(S)^2$
-- For depolarizing: $\Delta_{\max} = \frac{1}{2} + \frac{r}{2\sqrt{2}}$ (Breidbart basis measurement)
-- Leftover hash lemma bounds nonuniformity: $d(S_{\bar{C}}|S_{C'}\rho_B) \leq 2^{\ell/2 - 1}(\Delta_{\max})^{n\log(4/3)/2}$
+**Key Results:**
 
-**Limitation**: Assumed **perfect operations** for honest parties (no channel noise, detector errors).
+1. **Model Definition:** The adversary's quantum storage is characterized by a depolarizing channel $\mathcal{N}_r$ with preservation probability $r$.
+
+2. **All-or-Nothing Theorem:** The optimal adversary strategy exhibits a phase transition at $r_{\text{crit}} = 1/\sqrt{2}$:
+   - For $r < 1/\sqrt{2}$: Immediate measurement in the Breidbart basis is optimal
+   - For $r \geq 1/\sqrt{2}$: Storing and deferring measurement is optimal
+
+3. **Uncertainty Bound:** For any strategy $\mathcal{S} = \mathcal{N} \circ P$ (partial measurement followed by noise):
+   $$
+   \Delta(\mathcal{S})^2 := P_g(X|\mathcal{S}(\sigma_+)) \cdot P_g(X|\mathcal{S}(\sigma_\times)) \leq \left(\frac{1}{2} + \frac{r}{2\sqrt{2}}\right)^2
+   $$
+
+4. **Security Proof:** For $n$ transmitted qubits and output length $\ell$:
+   $$
+   d(S_{1-C'} | S_{C'}, \rho_B) \leq 2^{\ell/2 - 1} \cdot (\Delta_{\max})^{n \cdot \log(4/3)/2}
+   $$
+
+**Limitation:** Assumed perfect honest operations—no channel noise or detector errors.
 
 ### König, Wehner, Wullschleger (2012): Unconditional Security
 
-**Reference**: R. König, S. Wehner, and J. Wullschleger, "Unconditional Security From Noisy Quantum Storage," *IEEE Trans. Inf. Theory* **58**(3), 1962-1984 (2012).
+**Reference:** R. König, S. Wehner, and J. Wullschleger, "Unconditional Security From Noisy Quantum Storage," *IEEE Trans. Inf. Theory* **58**(3), 1962-1984 (2012). [[Markdown](../../docs/literature/2012_unconditional_security_from_noisy_quantum_storage.md)]
 
-**Advances**:
-1. **General NSM**: Arbitrary noise $\mathcal{F}$ (not just depolarizing), unbounded storage
-2. **Strong Converse**: Used channel capacity $C_{\mathcal{F}}$ and error exponent $\gamma(R)$:
-   $$H_{\min}^{\epsilon}(X|\mathcal{F}(Q)\Theta) \geq -\log P_{\text{succ}}^{\mathcal{F}}(H_{\min}(X|\Theta) - \log(1/\epsilon))$$
-3. **Weak String Erasure**: Introduced WSE primitive as OT building block
-4. **Min-Entropy Bounds**: Rigorous smooth min-entropy analysis for finite-size security
+This paper generalized the NSM to arbitrary noise channels and established the connection to channel capacity.
 
-**Weak String Erasure Protocol**:
-- Alice sends $n$ BB84 states; Bob measures in random basis $C$
-- After delay $\Delta t$, Alice reveals bases $\Theta$
-- Bob learns $X_{I_C}$ (matched bases), erased on $X_{I_{\bar{C}}}$ (mismatched)
+**Key Results:**
 
-**From WSE to OT**:
-1. Interactive hashing for error correction
-2. Privacy amplification with two-universal hash $F_C, F_{\bar{C}}$
-3. Alice outputs $(S_0, S_1) = (F_+(X|_{I_+}), F_\times(X|_{I_\times}))$
+1. **General NSM:** Security for any CPTP storage channel $\mathcal{F}$ satisfying the strong converse property.
 
-### Schaffner, Terhal, Wehner (2009): Robust NSM
+2. **Capacity Condition:** Secure OT is achievable if and only if:
+   $$
+   C_\mathcal{N} \cdot \nu < \frac{1}{2}
+   $$
+   where $C_\mathcal{N}$ is the classical capacity and $\nu$ is the storage rate.
 
-**Reference**: C. Schaffner, B. Terhal, and S. Wehner, "Robust Cryptography in the Noisy-Quantum-Storage Model," *Quantum Inf. Comput.* **9**(11&12), 963-996 (2009).
+3. **Min-Entropy Bound:** The smooth min-entropy satisfies:
+   $$
+   H_{\min}^\varepsilon(X | \mathcal{F}(Q), \Theta) \geq -\log_2 P_{\text{succ}}^\mathcal{F}(H_{\min}(X|\Theta) - \log(1/\varepsilon))
+   $$
+   where $P_{\text{succ}}^\mathcal{F}(R)$ is the strong-converse success probability at rate $R$.
 
-**Breakthrough**: Extended to **noisy honest parties**:
+4. **Weak String Erasure:** Formalized WSE as the minimal quantum primitive for OT construction.
 
+### Schaffner, Terhal, Wehner (2009): Robust Protocols
+
+**Reference:** C. Schaffner, B. Terhal, and S. Wehner, "Robust Cryptography in the Noisy-Quantum-Storage Model," *Quantum Inf. Comput.* **9**(11&12), 963-996 (2009).
+
+Extended the NSM to tolerate noise in honest operations.
+
+**Key Results:**
+
+1. **Strict Inequality Condition:**
+   $$
+   Q_{\text{channel}} < Q_{\text{storage}}
+   $$
+   Security requires the honest channel to be strictly less noisy than the adversary's storage.
+
+2. **11% Threshold:** For depolarizing noise, secure OT is achievable for $Q_{\text{channel}} < 0.11$ provided the strict inequality holds.
+
+3. **Entropy Trade-off:** Characterized the relationship between Shannon entropy and min-entropy in the finite-size regime.
+
+## 2.4.2 Finite-Size Security Analysis
+
+### Lupo, Peat, Andersson, Kok (2023): Error-Tolerant OT
+
+**Reference:** C. Lupo, J. T. Peat, E. Andersson, and P. Kok, "Error-tolerant oblivious transfer in the noisy-storage model," arXiv:2309.xxxxx (2023). [[Markdown](../../docs/literature/2024_lupo_noisy_OT.md)]
+
+This recent work provides tight finite-size bounds for NSM-based OT.
+
+**Key Results:**
+
+1. **Tight Entropic Bound:** For extractable key length $\ell$:
+   $$
+   \ell \geq H_{\min}^{\varepsilon_h}(X_{\bar{B}} | \mathcal{F}(Q), \Theta, B, \Sigma_{\bar{B}}) - 2\log_2(1/\varepsilon_h) + 1
+   $$
+
+2. **22% Hard Limit:** The absolute maximum QBER for any NSM protocol is approximately 22%, arising from the Shannon bound on error correction.
+
+3. **Syndrome Leakage:** Explicit accounting for reconciliation syndrome leakage:
+   $$
+   H_{\min}^\varepsilon(X | E, \Sigma) \geq H_{\min}^\varepsilon(X | E) - |\Sigma|
+   $$
+
+4. **Trusted vs. Untrusted Noise:** Framework for distinguishing channel noise (trusted) from storage noise (adversarial).
+
+**Implication for Caligo:** Minimizing syndrome length $|\Sigma|$ is critical for achieving positive key rates in the finite-size regime.
+
+### The Death Valley Phenomenon
+
+The finite-size regime exhibits a critical phenomenon we term **Death Valley**:
+
+**Definition:** Death Valley is the range of block lengths $n$ where:
+- QBER is below the asymptotic threshold $Q < 0.11$
+- Yet $\ell(n, Q, \varepsilon) \leq 0$ due to finite-size penalties
+
+**Mathematical Origin:** The extractable length scales as:
 $$
-Q_{\text{channel}} < Q_{\text{storage}} \quad (\text{strictly less condition})
-$$
-
-**11% Threshold**: For depolarizing storage and channel noise, secure OT achievable if $Q_{\text{channel}} < 0.11$ and $Q_{\text{channel}} < Q_{\text{storage}}$.
-
-**Entropy Trade-off**:
-- Conditional Shannon entropy $H(X|\mathcal{F}(Q)\Theta B)$ bounds adversary uncertainty
-- Smooth min-entropy related via $H_{\min}^{\epsilon}(X|E) \geq H(X|E) - \Delta$ for small $\Delta$
-
-**Practical Implications**:
-- Tolerates realistic detector inefficiencies ($\eta \sim 10\%$ at telecom, $\sim 70\%$ visible)
-- Enables identification protocols (reusable passwords)
-
-## 2.4.2 Practical Implementation Studies (2010-2023)
-
-### Wehner et al. (2010): Device Characterization
-
-**Reference**: S. Wehner, M. Curty, C. Schaffner, and H.-K. Lo, "Implementation of two-party protocols in the noisy-storage model," *Phys. Rev. A* **81**, 052336 (2010).
-
-**Focus**: Translating NSM theory to **experimental parameters**:
-
-| Parameter | Definition | Impact on Security |
-|-----------|------------|-------------------|
-| $P_{\text{src}}^1$ | Single-photon emission probability | Bounds dishonest Bob's multi-photon attacks |
-| $P_{\text{B,click}}^{h\|1}$ | Honest Bob detection given 1 photon | Sets achievable raw key rate |
-| $P_{\text{B,err}}^h$ | Honest Bob bit-flip error | Determines reconciliation efficiency requirement |
-| $P_{\text{dark}}$ | Dark count rate | Contributes to channel QBER |
-
-**Weak Coherent Pulses**: For Poissonian source with mean photon number $\mu$:
-
-$$
-P_{\text{src}}^k = \frac{\mu^k e^{-\mu}}{k!}
-$$
-
-**Decoy States**: Proposed using multiple intensities $\{\mu_s\}$ to bound multi-photon contributions.
-
-**Loss Handling**: Introduced **erasure channel** model:
-- Bob confirms photon receipt (avoiding positional ambiguity)
-- Only detected photons contribute to raw key
-
-### Lupo et al. (2023): Error-Tolerant OT
-
-**Reference**: C. Lupo, J. T. Peat, E. Andersson, and P. Kok, "Error-tolerant oblivious transfer in the noisy-storage model," *arXiv:2309.xxxxx* (2023).
-
-**Contributions**:
-1. **Tight Entropic Bounds**: Improved uncertainty relations for correlated noise
-2. **22% Hard Limit**: Demonstrated $Q_{\text{total}} < 0.22$ as absolute maximum for unbounded noisy storage
-3. **Trusted vs. Untrusted Noise**: Explicit trade-off between channel and storage noise
-
-**Security Bound** (Equation 2):
-
-$$
-\ell \geq H_{\min}^{\epsilon_h}(X_{\bar{B}}|\mathcal{F}(Q)\Theta B\Sigma_{\bar{B}}) - 2\log(1/\epsilon_h) + 1
+\ell(n) = n \cdot h_{\min}(r) - (1-R) \cdot n - 2\log_2(1/\varepsilon) - O(\sqrt{n})
 $$
 
-**Syndrome Leakage**: Reconciliation syndrome $\Sigma_{\bar{B}}$ reduces extractable length:
+For small $n$, the $O(\sqrt{n})$ and $\log(1/\varepsilon)$ terms dominate, yielding $\ell < 0$.
 
+**Critical Block Length:** The minimum $n$ for positive key rate is approximately:
 $$
-H_{\min}^{\epsilon_h}(X_{\bar{B}}|\mathcal{F}(Q)\Theta B\Sigma_{\bar{B}}) \geq H_{\min}^{\epsilon_h}(X_{\bar{B}}|\mathcal{F}(Q)\Theta B) - |\Sigma_{\bar{B}}|
+n_{\min} \approx \frac{4\log_2^2(1/\varepsilon)}{(h_{\min}(r) - (1-R) - h(Q))^2}
 $$
 
-**Implication for Caligo**: Minimizing $|\Sigma_{\bar{B}}|$ is **critical** for secure key rate.
-
-## 2.4.3 Information Reconciliation (2009-2012)
+## 2.4.3 Information Reconciliation Theory
 
 ### Elkouss et al. (2009): LDPC for QKD
 
-**Reference**: D. Elkouss, A. Leverrier, R. Alléaume, and J. J. Boutros, "Efficient reconciliation protocol for discrete-variable quantum key distribution," *arXiv:0901.2140* (2009).
+**Reference:** D. Elkouss, A. Leverrier, R. Alléaume, and J. J. Boutros, "Efficient reconciliation protocol for discrete-variable quantum key distribution," *ISIT 2009*, arXiv:0901.2140 (2009).
 
-**Innovation**: Replaced interactive Cascade with **one-way LDPC syndrome transmission**.
+**Key Contribution:** Replaced interactive Cascade reconciliation with one-way LDPC syndrome transmission.
 
-**Reconciliation Efficiency**:
-
+**Reconciliation Efficiency:** Defined as:
 $$
-f = \frac{\text{leak}_{\text{EC}}}{n \cdot h(Q)} = \frac{(1-R)n}{n \cdot h(Q)} = \frac{1-R}{h(Q)}
-$$
-
-**Performance**: For $Q = 0.05$:
-- Cascade: $f \approx 1.10$
-- LDPC (optimized): $f \approx 1.05$
-
-**Degree Distribution Optimization**: Used Differential Evolution to find $\lambda(x), \rho(x)$ achieving thresholds near Shannon limit.
-
-### Elkouss et al. (2010): Rate-Compatible Protocol
-
-**Reference**: D. Elkouss, J. Martinez-Mateo, D. Lancho, and V. Martin, "Rate Compatible Protocol for Information Reconciliation: An Application to QKD" (2010).
-
-**Problem**: Single LDPC code only efficient near its design QBER.
-
-**Solution**: **Puncturing and Shortening**:
-
-- **Puncturing**: Remove $p$ parity bits → increase rate $R_0 \to R_0/(1-\pi)$ where $\pi = p/n$
-- **Shortening**: Fix $s$ information bits → decrease rate $R_0 \to (R_0 - \sigma)/(1-\sigma-\pi)$ where $\sigma = s/n$
-
-**Effective Rate**:
-
-$$
-R_{\text{eff}} = \frac{R_0 - \sigma}{1 - \pi - \sigma}
+f = \frac{\text{leak}_{\text{EC}}}{n \cdot h(Q)} = \frac{(1-R) \cdot n}{n \cdot h(Q)} = \frac{1-R}{h(Q)}
 $$
 
-**Rate Adaptation**: By varying $(\pi, \sigma)$ while keeping $\delta = \pi + \sigma$ fixed, a **single mother code** covers QBER range $[Q_{\min}, Q_{\max}]$.
+where $R$ is the LDPC code rate and $h(Q)$ is the binary entropy at error rate $Q$.
 
-### Elkouss et al. (2012): Untainted Puncturing
-
-**Reference**: D. Elkouss, J. Martinez-Mateo, and V. Martin, "Untainted Puncturing for Irregular Low-Density Parity-Check Codes," *IEEE Wireless Commun. Lett.* **1**(6), 585-588 (2012).
-
-**Stopping Set Problem**: Random puncturing can create **stopping sets** (variable nodes disconnected from parity checks) → decoding failure.
-
-**Untainted Definition**: A puncturing pattern is **untainted** if every check node remains connected to $\geq 2$ non-punctured variable nodes.
-
-**Algorithm**:
-1. Compute check-node degrees: $d_c[j] = $ # non-punctured neighbors of check $j$
-2. Select variable $i$ for puncturing only if $\min_{j \in N(i)} d_c[j] > 2$
-3. Update $d_c$ and repeat
-
-**Performance**: Untainted puncturing achieves Frame Error Rate (FER) $\sim 10^{-3}$ at 95% of capacity vs. 85% for random puncturing.
-
-**Saturation**: For finite-length codes, untainted candidates exhaust at moderate rates ($R_{\text{eff}} \sim 0.6$).
+**Performance:** For $Q = 0.05$, LDPC achieves $f \approx 1.05$ versus Cascade's $f \approx 1.10$.
 
 ### Martinez-Mateo et al. (2012): Blind Reconciliation
 
-**Reference**: J. Martinez-Mateo, D. Elkouss, and V. Martin, "Blind Reconciliation," *Quantum Inf. Comput.* **12**(9&10), 791-812 (2012).
+**Reference:** J. Martinez-Mateo, D. Elkouss, and V. Martin, "Blind Reconciliation" (2012). [[Markdown](../../docs/literature/2012_blind_reconciliation.md)]
 
-**Motivation**: Rate-compatible methods require **a priori QBER estimation**, which:
-1. Consumes raw key for sampling
-2. Reveals information to adversary
-3. Introduces statistical error
+**Key Innovation:** Rate-adaptive reconciliation without explicit QBER estimation:
 
-**Blind Protocol**:
-1. Alice sends syndrome for **maximum rate** $R_{\max}$ (all $d$ symbols punctured)
-2. If Bob's decoding fails, Alice reveals $\Delta$ punctured bits (converts to shortened)
-3. Repeat until success or all $d$ symbols shortened
+**Algorithm:**
+1. Initialize with optimistic rate estimate
+2. Iterate: transmit syndrome → attempt decoding → reveal additional bits if needed
+3. Converge when decoding succeeds
 
-**Iterations**: Typically $t = 3$ iterations sufficient for efficiency $f \in [1.05, 1.15]$.
-
-**Average Efficiency** (Equation 9):
-
+**Security Implication:** Each revealed bit reduces extractable entropy by 1 bit:
 $$
-\bar{f} = \frac{1 - \sum_{i=1}^t a_i r_i}{h(Q)}
+H_{\min}^{\text{post-EC}} = H_{\min}^{\text{pre-EC}} - |\Sigma| - |\text{revealed}|
 $$
 
-where $a_i = (F^{(i-1)} - F^{(i)})/(1 - F^{(t)})$ is fraction corrected in iteration $i$, and $F^{(i)}$ is Frame Error Rate.
+### Elkouss et al. (2010): Rate-Compatible Codes
 
-**Advantage**: No QBER estimation leakage; adapts automatically to channel.
+**Reference:** D. Elkouss, J. Martinez-Mateo, D. Lancho, and V. Martin, "Rate Compatible Protocol for Information Reconciliation: An Application to QKD" (2010).
 
-## 2.4.4 Oblivious Key Distribution (2020)
+**Key Techniques:**
 
-### Lemus et al. (2020): E-HOK Protocol
+1. **Puncturing:** Remove $p$ parity bits to increase rate:
+   $$
+   R_{\text{punctured}} = \frac{R_0}{1 - \pi}, \quad \pi = p/n
+   $$
 
-**Reference**: M. Lemus et al., "Generation and Distribution of Quantum Oblivious Keys for Secure Multiparty Computation," *arXiv:1909.11701v2* (2020).
+2. **Shortening:** Fix $s$ information bits to decrease rate:
+   $$
+   R_{\text{shortened}} = \frac{R_0 - \sigma}{1 - \sigma - \pi}, \quad \sigma = s/n
+   $$
 
-**Contribution**: **Hybrid quantum-classical** approach to OT:
+**Application:** Single LDPC code family serves range of QBER values via puncturing/shortening.
 
-1. **Quantum Phase**: EPR-based key distribution (similar to BB84)
-2. **Classical Commitment**: Hash-based commitments instead of quantum memory assumption
-3. **Practical Focus**: Targets 2-party and multi-party secure computation
+## 2.4.4 Theoretical Bounds and Limits
 
-**Protocol $\pi_{\text{QOT}}$** (Figure 2 in paper):
+### Shannon Limit for Reconciliation
 
-1. Alice prepares $|(s_i, a_i)\rangle$ states ($n+m$ qubits)
-   - $(s_i, a_i) \in \{0,1\}^2$: bit value and basis choice
-   - $|(0,0)\rangle = |0\rangle$, $|(0,1)\rangle = |+\rangle$, etc.
+The Slepian-Wolf theorem establishes the minimum communication for source coding with side information:
+$$
+R_{\text{min}} = H(X|Y) = h(Q)
+$$
 
-2. Bob measures in random basis $\bar{a} \in \{0,1\}^{n+m}$
+**Reconciliation Efficiency:** Achieving $f \to 1$ requires approaching the Shannon limit.
 
-3. Bob commits measurement bases and outcomes using hash $h$
+### Security-Efficiency Trade-off
 
-4. Alice challenges $m$ random positions
+There exists a fundamental tension:
 
-5. Bob opens challenged commitments; Alice verifies correlations
+| Objective | Requires | Consequence |
+|-----------|----------|-------------|
+| High security | Low $\ell$ | Large $\varepsilon$ margin |
+| High efficiency | High $R$ | More syndrome leakage |
+| Practical operation | Moderate $n$ | Finite-size penalties |
 
-6. Alice reveals basis choices $a$ for remaining $n$ positions
+**Optimal Operating Point:** For given $Q$ and target $\varepsilon$, there exists an optimal $(n, R)$ pair maximizing throughput.
 
-7. Bob partitions into matched ($I_0$) and mismatched ($I_1$) bases
+### Asymptotic Key Rate
 
-8. Bob sends $(I_c, I_{1-c})$ where $c$ is his choice bit
+In the limit $n \to \infty$, the key rate approaches:
+$$
+r_\infty = h_{\min}(r) - h(Q)
+$$
 
-9. Alice encrypts: $\tilde{b}_0 = b_0 \oplus f(s_{I_0})$, $\tilde{b}_1 = b_1 \oplus f(s_{I_1})$
+For $Q = 0.05$ and $r = 0.3$:
+$$
+r_\infty = (1 - 0.3) - h(0.05) \approx 0.7 - 0.286 \approx 0.414 \text{ bits/qubit}
+$$
 
-10. Bob decrypts: $b_c = \tilde{b}_c \oplus f(\bar{s}_{I_c})$
+### Finite-Size Key Rate
 
-**Security Analysis**:
-- **Computational**: Based on collision-resistant hash (not information-theoretic)
-- **Random Oracle Model**: Hash modeled as truly random function
-- **Efficiency**: $O(n)$ qubit transmissions for $O(\log n)$-bit OT
+For finite $n$, the practical key rate is:
+$$
+r(n) = h_{\min}(r) - h(Q) \cdot f - \frac{2\log_2(1/\varepsilon)}{n} - O(n^{-1/2})
+$$
 
-**Relevance to Caligo**: Demonstrates **feasibility** of OT with current QKD hardware. Caligo extends to NSM setting for information-theoretic security.
-
-## 2.4.5 Synthesis for Caligo
-
-### Design Choices Informed by Literature
-
-| Decision | Justification | Reference |
-|----------|---------------|-----------|
-| **NSM over BSM** | Realistic noise assumption | König et al. (2012) |
-| **11% QBER Threshold** | Proven secure for individual attacks | Schaffner et al. (2009) |
-| **LDPC Reconciliation** | Non-interactive, efficient | Elkouss et al. (2009) |
-| **Hybrid Puncturing** | Untainted + ACE-guided for finite-length | Elkouss et al. (2012) |
-| **Blind Strategy** | No QBER estimation leakage | Martinez-Mateo et al. (2012) |
-| **EPR Pairs** | Native to SquidASM, matches E-HOK | Lemus et al. (2020) |
-| **Toeplitz Hashing** | Two-universal, hardware-efficient | König et al. (2012) |
-
-### Open Research Questions
-
-1. **Coherent Attacks**: Security beyond individual-storage attacks [König et al., Conclusion]
-2. **Non-Markovian Noise**: Time-correlated decoherence models [Lupo et al., Section VII]
-3. **Finite-Length Optimization**: Tighter bounds for $n < 10^4$ [Martinez-Mateo et al., Section 5]
-4. **Composable Security**: UC-secure NSM protocols [Fehr & Schaffner (2009)]
-5. **Multi-Party NSM**: Extending OT to $n > 2$ parties under NSM [König & Terhal (2008)]
+The $O(n^{-1/2})$ term from parameter estimation dominates for $n < 10^4$.
 
 ---
 
-[← Return to Main Index](../index.md) | [← Previous: SquidASM Framework](./squidasm_framework.md) | [Next Chapter: Protocol Architecture →](../architecture/protocol_overview.md)
+## Summary Table
+
+| Paper | Year | Key Contribution | Relevance to Caligo |
+|-------|------|------------------|---------------------|
+| Wehner et al. | 2008 | NSM definition, all-or-nothing theorem | Foundational security model |
+| König et al. | 2012 | General NSM, capacity condition | Min-entropy bounds |
+| Schaffner et al. | 2009 | Robust protocols, 11% threshold | Practical QBER limits |
+| Lupo et al. | 2023 | Tight finite-size bounds, 22% limit | Key length formula |
+| Elkouss et al. | 2009 | LDPC reconciliation | Efficient error correction |
+| Martinez-Mateo et al. | 2012 | Blind reconciliation | Rate-adaptive protocol |
+
+---
+
+[← Return to Main Index](../index.md) | [Next: Protocol Architecture →](../architecture/protocol_overview.md)

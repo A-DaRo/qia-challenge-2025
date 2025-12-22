@@ -1,340 +1,229 @@
 [← Return to Main Index](../index.md)
 
-# 8.1 Parameter Space
+# 8.1 NSM Parameter Space: Security Conditions and Physical Constraints
 
 ## Introduction
 
-The Noisy Storage Model (NSM) operates within a **multidimensional parameter space** that simultaneously captures quantum channel imperfections, detection inefficiencies, and adversarial storage capabilities. Understanding this parameter space is critical for:
+The Noisy Storage Model (NSM) [1] provides information-theoretic security under the physical assumption that an adversary's quantum storage undergoes decoherence during a prescribed waiting period. This section rigorously characterizes the parameter space within which security is achievable, distinguishing between fundamental limits imposed by physics and operational constraints arising from finite-size effects.
 
-1. **Security Analysis**: Determining which parameter regimes enable information-theoretic security
-2. **Experimental Design**: Translating abstract security requirements into physical hardware specifications
-3. **Protocol Optimization**: Balancing extraction efficiency against security margins
+## Formal Definition of NSM
 
-This section provides a comprehensive taxonomy of NSM parameters, their physical interpretations, and the constraints that govern their admissible ranges.
+### Storage Channel Model
 
-## Parameter Taxonomy
-
-### Core NSM Parameters
-
-The fundamental NSM security assumption rests on four key parameters:
-
-| Parameter | Symbol | Domain | Physical Meaning |
-|-----------|--------|--------|------------------|
-| **Storage Noise** | $r$ | $[0, 1]$ | Adversary's qubit preservation probability during $\Delta t$ |
-| **Storage Rate** | $\nu$ | $[0, 1]$ | Fraction of qubits adversary can store |
-| **Wait Time** | $\Delta t$ | $(0, \infty)$ | Time between measurement and basis revelation (ns) |
-| **Storage Dimension** | $d$ | $\{2, 3, \ldots\}$ | Hilbert space dimension (qubits: $d=2$) |
-
-**Storage Noise $r$**: Models a depolarizing channel $\mathcal{N}(\rho) = r\rho + (1-r)\frac{\mathbb{I}}{2}$ acting on the adversary's quantum memory. At $r=1$, storage is perfect (no security); at $r=0$, complete depolarization (maximal security).
-
-**Storage Rate $\nu$**: Quantifies the adversary's **quantum memory capacity**. For $n$ transmitted qubits, the adversary can store at most $\lfloor \nu n \rfloor$ coherently. The remainder must be measured immediately or discarded.
-
-**Wait Time $\Delta t$**: Physical enforcement mechanism. Honest parties delay basis revelation by $\Delta t$, ensuring the adversary's storage experiences decoherence. Typical values: $\Delta t \sim 10^6$ ns ($1$ ms) to $10^9$ ns ($1$ s).
-
-**Storage Dimension $d$**: For qubits, $d=2$ is fixed. Generalized NSM protocols may use qutrits ($d=3$) or higher dimensions [1].
-
-### Channel Parameters
-
-Physical imperfections in quantum communication:
-
-| Parameter | Symbol | Domain | Physical Meaning |
-|-----------|--------|--------|------------------|
-| **Channel Fidelity** | $F$ | $(0.5, 1]$ | Bell state fidelity of generated EPR pairs |
-| **Detection Efficiency** | $\eta$ | $(0, 1]$ | Probability a photon triggers detector |
-| **Detector Error** | $e_{\text{det}}$ | $[0, 1]$ | Intrinsic measurement error rate |
-| **Dark Count Prob.** | $P_{\text{dark}}$ | $[0, 1]$ | Spontaneous detector firing probability |
-
-**Channel Fidelity $F$**: For a maximally entangled state $|\Phi^+\rangle = (|00\rangle + |11\rangle)/\sqrt{2}$, the prepared state $\rho$ satisfies $F = \langle \Phi^+ | \rho | \Phi^+ \rangle$. Depolarizing noise: $F = 1 - \frac{3}{4}p_{\text{depol}}$.
-
-**Detection Efficiency $\eta$**: Combines:
-- **Fiber transmission**: $\eta_{\text{fiber}} = 10^{-\alpha L / 10}$ (where $\alpha \approx 0.2$ dB/km at 1550 nm)
-- **Detector quantum efficiency**: $\eta_{\text{QE}} \sim 0.1$–$0.7$ (silicon APDs at 800 nm)
-- **Coupling losses**: $\eta_{\text{coupling}} \sim 0.5$–$0.9$
-
-Total: $\eta = \eta_{\text{fiber}} \times \eta_{\text{QE}} \times \eta_{\text{coupling}}$.
-
-**Detector Error $e_{\text{det}}$**: Polarization misalignment, imperfect beamsplitters, or waveguide crosstalk contribute to basis-independent errors. Typical: $e_{\text{det}} \sim 0.01$–$0.05$.
-
-**Dark Counts**: Thermal noise or detector afterpulsing. Characterized by rate $R_{\text{dark}}$ (counts/s) and detection window $\tau_{\text{window}}$: $P_{\text{dark}} = R_{\text{dark}} \tau_{\text{window}}$. Silicon APDs: $R_{\text{dark}} \sim 10^2$–$10^4$ Hz.
-
-### Derived Quantities
-
-These are computed from the core parameters:
-
-| Quantity | Formula | Significance |
-|----------|---------|--------------|
-| **Channel QBER** | $Q_{\text{ch}} = \frac{1-F}{2} + e_{\text{det}} + \frac{(1-\eta)P_{\text{dark}}}{2}$ | Measured error rate (Phase II) |
-| **Storage QBER** | $Q_{\text{storage}} = \frac{1-r}{2}$ | Security threshold |
-| **Storage Capacity** | $C_\mathcal{N} = 1 - H_2(r)$ | Classical capacity of storage channel |
-| **Min-Entropy Rate** | $h_{\min}(r)$ | Extractable entropy per bit (Phase IV) |
-
-**Security Condition**: The fundamental NSM requirement is [2]:
+The adversary's quantum storage is modeled as a completely positive trace-preserving (CPTP) map:
 
 $$
-Q_{\text{ch}} < Q_{\text{storage}} \quad \text{and} \quad C_\mathcal{N} \cdot \nu < \frac{1}{2}
+\mathcal{F}: \mathcal{B}(\mathcal{H}_{\text{in}}) \to \mathcal{B}(\mathcal{H}_{\text{out}})
 $$
 
-**Physical Interpretation**: The channel must be **noisier** than the adversary's storage, and the adversary's storage capacity must be **bounded** below $1/2$ bit per qubit.
+where $\mathcal{B}(\mathcal{H})$ denotes bounded operators on Hilbert space $\mathcal{H}$.
 
-## Parameter Constraints
-
-### Physical Feasibility
-
-**Hard Constraints** (enforced by physics):
-
-1. **Fidelity Lower Bound**: $F > 0.5$ (distinguishability from maximally mixed state)
-2. **Efficiency Upper Bound**: $\eta \leq 1$ (cannot exceed 100% detection)
-3. **Probability Constraints**: $0 \leq e_{\text{det}}, P_{\text{dark}}, r, \nu \leq 1$
-4. **Time Positivity**: $\Delta t > 0$
-
-### Security Constraints
-
-**NSM Security Requirements**:
-
-1. **Strictly Less Condition** [3]:
-   $$
-   Q_{\text{ch}} < Q_{\text{storage}} = \frac{1 - r}{2}
-   $$
-
-2. **Storage Capacity Bound** [2]:
-   $$
-   C_\mathcal{N} \cdot \nu < \frac{1}{2}
-   $$
-   where $C_\mathcal{N} = 1 - H_2(r)$ and $H_2(x) = -x \log_2 x - (1-x) \log_2 (1-x)$.
-
-3. **Conservative QBER Threshold** [3]:
-   $$
-   Q_{\text{ch}} < 0.11
-   $$
-   (11% threshold from Schaffner's analysis of depolarizing attacks)
-
-4. **Hard QBER Limit** [2]:
-   $$
-   Q_{\text{ch}} < 0.22
-   $$
-   (22% limit beyond which no NSM protocol can be secure)
-
-**Example**: For $r = 0.75$:
-- $Q_{\text{storage}} = 0.125$
-- $C_\mathcal{N} = 1 - H_2(0.75) \approx 0.189$
-- Storage capacity constraint: $\nu < 0.5 / 0.189 \approx 2.65$ (always satisfied for $\nu \leq 1$)
-
-### Operational Constraints
-
-**Protocol Viability**:
-
-1. **Min-Entropy Positivity**:
-   $$
-   n \cdot h_{\min}(r) > |\Sigma| + \Delta_{\text{sec}}
-   $$
-   Avoids "Death Valley" where no key can be extracted.
-
-2. **QBER Reconciliation Bound**:
-   $$
-   Q_{\text{ch}} < R_{\text{code}} / 2
-   $$
-   For error correction to succeed, QBER must be below the code's error-correcting capacity.
-
-3. **Statistical Significance**:
-   $$
-   n_{\text{test}} \geq \frac{\log(2/\varepsilon_{\text{est}})}{2\delta^2}
-   $$
-   Sample size for QBER estimation within $\pm \delta$ with confidence $1 - \varepsilon_{\text{est}}$.
-
-## Experimental Parameter Regimes
-
-### Erven et al. (2014) Configuration [4]
-
-The canonical NSM experiment:
-
-| Parameter | Value | Justification |
-|-----------|-------|---------------|
-| $r$ | $0.75$ | Achievable with $\Delta t = 1$ ms, room-temperature storage |
-| $\nu$ | $0.002$ | Memory capacity $\sim 2$ qubits per 1000 transmitted |
-| $\Delta t$ | $10^6$ ns ($1$ ms) | Photon time-of-flight + processing delay |
-| $F$ | $0.975$ | PDC source with spatial mode filtering |
-| $\eta$ | $0.06$ | 100 km fiber + silicon APD ($\eta_{\text{QE}} = 0.6$) |
-| $e_{\text{det}}$ | $0.015$ | Polarization analyzer imperfections |
-| $P_{\text{dark}}$ | $5 \times 10^{-6}$ | $R_{\text{dark}} = 500$ Hz, $\tau = 10$ ns |
-
-**Resulting QBER**: $Q_{\text{ch}} \approx 0.029$ (well below $Q_{\text{storage}} = 0.125$).
-
-### Simulation-Optimized Regime
-
-For SquidASM/NetSquid simulations (Caligo default):
-
-| Parameter | Value | Rationale |
-|-----------|-------|-----------|
-| $r$ | $0.75$ | Standard NSM assumption |
-| $\nu$ | $0.002$ | Minimal storage threat |
-| $\Delta t$ | $10^6$ ns | Computationally tractable |
-| $F$ | $0.95$ | Moderate depolarizing noise |
-| $\eta$ | $1.0$ | Perfect detection (isolate fidelity effects) |
-| $e_{\text{det}}$ | $0.0$ | No detector errors |
-| $P_{\text{dark}}$ | $0.0$ | No dark counts |
-
-**Simplified QBER**: $Q_{\text{ch}} = \frac{1-F}{2} = 0.025$.
-
-### High-Noise Regime (Stress Testing)
-
-Exploring protocol robustness:
-
-| Parameter | Value | Stress Factor |
-|-----------|-------|---------------|
-| $r$ | $0.80$ | Higher storage fidelity (adversary advantage) |
-| $\Delta t$ | $10^5$ ns ($100$ μs) | Reduced wait time |
-| $F$ | $0.85$ | Significant depolarization |
-| $\eta$ | $0.10$ | Long-distance fiber (loss-dominated) |
-| $P_{\text{dark}}$ | $10^{-4}$ | High dark count rate |
-
-**Resulting QBER**: $Q_{\text{ch}} \approx 0.095$ (near conservative threshold).
-
-## Parameter Selection Methodology
-
-### Step 1: Define Security Target
-
-Choose security parameter $\varepsilon_{\text{sec}}$ (e.g., $10^{-10}$) and target key length $\ell_{\text{target}}$ (e.g., 256 bits).
-
-### Step 2: Fix NSM Core Parameters
-
-Select $r$ and $\nu$ based on adversary model:
-
-- **Conservative**: $r = 0.75$, $\nu = 0.002$ (Erven regime)
-- **Optimistic**: $r = 0.50$, $\nu = 0.01$ (higher entropy)
-- **Pessimistic**: $r = 0.90$, $\nu = 0.1$ (stronger adversary)
-
-### Step 3: Determine Channel Parameters
-
-**If using physical hardware**: Measure $F$, $\eta$, $e_{\text{det}}$, $P_{\text{dark}}$ via quantum state tomography and detector characterization.
-
-**If simulating**: Choose parameters to match target QBER:
+**Markovian Assumption**: The storage satisfies the semigroup property:
 
 $$
-Q_{\text{target}} = 0.05 \implies F \approx 0.90 \text{ (for $\eta=1$, $e_{\text{det}}=0$)}
+\mathcal{F}_{t_1 + t_2} = \mathcal{F}_{t_1} \circ \mathcal{F}_{t_2} \quad \forall t_1, t_2 > 0
 $$
 
-### Step 4: Compute Minimum $n$
+This implies that delaying readout never improves the adversary's information—a crucial assumption for security.
 
-Use the minimum input length formula:
+### Security Model
 
-$$
-n \geq \frac{\ell_{\text{target}} + \Delta_{\text{sec}}}{h_{\min}(r) - f_{\text{leak}}}
-$$
+**Definition** (NSM Adversary Model) [1]: The adversary possesses:
+- Unlimited classical storage and computation
+- Noise-free quantum operations (preparation, measurement, gates)
+- Noisy quantum storage: at each waiting period $\Delta t$, stored qubits undergo $\mathcal{F} = \mathcal{F}_{\Delta t}$
+- Storage capacity: can store at most $\nu n$ qubits from $n$ transmitted
 
-where $f_{\text{leak}} \approx H_2(Q_{\text{ch}})$ (Shannon entropy of binary channel).
+**Critical constraint**: Only the quantum storage is bounded; all other resources are unlimited.
 
-**Example**: For $\ell = 256$, $r = 0.75$ ($h_{\min} = 0.25$), $Q_{\text{ch}} = 0.05$ ($f_{\text{leak}} \approx 0.29$):
+## Core NSM Parameters
 
-$$
-n \geq \frac{256 + 64}{0.25 - 0.29} = \text{undefined (Death Valley!)}
-$$
+### Storage Noise Parameter $r$
 
-**Adjustment**: Reduce $Q_{\text{ch}}$ to 0.03 ($f_{\text{leak}} \approx 0.20$):
-
-$$
-n \geq \frac{320}{0.05} = 6400 \text{ bits}
-$$
-
-### Step 5: Validate Security Conditions
-
-Check:
-
-1. $Q_{\text{ch}} < \frac{1-r}{2}$ ✓
-2. $C_\mathcal{N} \cdot \nu < 0.5$ ✓
-3. $Q_{\text{ch}} < 0.11$ ✓
-4. $n \cdot h_{\min}(r) > |\Sigma| + \Delta_{\text{sec}}$ ✓
-
-If any fails, iterate parameter selection.
-
-## Parameter Sensitivity Analysis
-
-### Fidelity Sensitivity
-
-**QBER vs. Fidelity** (for $\eta = 1$, $e_{\text{det}} = 0$):
+For the qubit depolarizing channel:
 
 $$
-\frac{\partial Q_{\text{ch}}}{\partial F} = -\frac{1}{2}
+\mathcal{N}_r(\rho) = r\rho + (1-r)\frac{\mathbb{I}}{2}
 $$
 
-A 1% decrease in fidelity increases QBER by 0.5%.
+The parameter $r \in [0,1]$ represents the probability that the stored state survives unchanged:
+- $r = 1$: Perfect storage (no security)
+- $r = 0$: Complete depolarization (maximal security)
 
-**Impact on Extractable Length**: For $n = 1000$, $r = 0.75$:
+**Physical interpretation**: For a memory with $T_1$ (relaxation) and $T_2$ (dephasing) times:
 
-| $F$ | $Q_{\text{ch}}$ | $\ell$ (bits) | Efficiency |
-|-----|-----------------|---------------|------------|
-| 0.98 | 0.010 | 82 | 8.2% |
-| 0.95 | 0.025 | 71 | 7.1% |
-| 0.90 | 0.050 | 54 | 5.4% |
-| 0.85 | 0.075 | 38 | 3.8% |
+$$
+r(\Delta t) \approx e^{-\Gamma \Delta t}, \quad \Gamma = \frac{1}{2}\left(\frac{1}{T_1} + \frac{1}{T_2}\right)
+$$
 
-### Storage Noise Sensitivity
+### Storage Rate $\nu$
 
-**Min-Entropy vs. $r$**:
+The fraction of transmitted qubits the adversary can store coherently:
 
-- **Dupuis-König regime** ($r < 0.25$): $h_{\min} \propto -\log_2(1 + 3r^2)$ (slowly varying)
-- **Lupo regime** ($r \geq 0.25$): $h_{\min} = 1 - r$ (linear)
+$$
+\nu = \frac{|\text{stored qubits}|}{n} \in [0, 1]
+$$
 
-| $r$ | $h_{\min}$ | Δ$h_{\min}$ per 0.05 Δ$r$ |
-|-----|-----------|-------------------------|
-| 0.50 | 0.50 | -0.05 |
-| 0.75 | 0.25 | -0.05 |
-| 0.90 | 0.10 | -0.05 |
+For $n$ transmitted qubits, the adversary's storage acts as $\mathcal{F}^{\otimes \lfloor \nu n \rfloor}$.
 
-**Implication**: In Lupo regime, entropy degrades linearly with storage noise.
+### Waiting Time $\Delta t$
 
-## Caligo Implementation
+The protocol-enforced delay between measurement completion and basis revelation:
 
-### NSMParameters Dataclass
+$$
+t_{\text{reveal}} \geq t_{\text{measure}} + \Delta t
+$$
 
-```python
-@dataclass(frozen=True)
-class NSMParameters:
-    storage_noise_r: float      # ∈ [0, 1]
-    storage_rate_nu: float      # ∈ [0, 1]
-    delta_t_ns: float           # > 0
-    channel_fidelity: float     # ∈ (0.5, 1]
-    detection_eff_eta: float = 1.0
-    detector_error: float = 0.0
-    dark_count_prob: float = 0.0
-    storage_dimension_d: int = 2
-    
-    def __post_init__(self):
-        # Validate all constraints (INV-NSM-001 through INV-NSM-006)
-        validate_nsm_invariants(self)
-```
+During $\Delta t$, any stored quantum information decoheres according to $\mathcal{F}_{\Delta t}$.
 
-### Parameter Factory Methods
+## Security Conditions
 
-```python
-# Erven et al. configuration
-params_erven = NSMParameters.from_erven_2014()
+### Fundamental Security Requirement
 
-# Simulation-optimized
-params_sim = NSMParameters.for_simulation(
-    storage_noise_r=0.75,
-    channel_fidelity=0.95
-)
+**Theorem** (König-Wehner-Wullschleger) [2]: Let $\mathcal{F}$ be the adversary's storage channel with classical capacity $C_\mathcal{F}$. NSM-based $\binom{2}{1}$-OT is secure if:
 
-# Custom
-params_custom = NSMParameters(
-    storage_noise_r=0.70,
-    storage_rate_nu=0.005,
-    delta_t_ns=5e5,
-    channel_fidelity=0.92,
-    detection_eff_eta=0.15
-)
-```
+$$
+\boxed{C_\mathcal{F} \cdot \nu < \frac{1}{2}}
+$$
 
-## References
+**Physical interpretation**: The adversary's total information gain per transmitted qubit is bounded below $1/2$ bit.
 
-[1] Damgård, I., Fehr, S., Renner, R., Salvail, L., & Schaffner, C. (2007). A tight high-order entropic quantum uncertainty relation with applications. In *Advances in Cryptology—CRYPTO 2007* (pp. 360-378). Springer.
+### Depolarizing Channel Capacity
 
-[2] König, R., Wehner, S., & Wullschleger, J. (2012). Unconditional security from noisy quantum storage. *IEEE Transactions on Information Theory*, 58(3), 1962-1984.\
+For the qubit depolarizing channel $\mathcal{N}_r$, the classical capacity is [3]:
 
-[3] Schaffner, C., Terhal, B. M., & Wehner, S. (2009). Robust cryptography in the noisy-quantum-storage model. *Quantum Information & Computation*, 9(11-12), 963-996.
+$$
+C_{\mathcal{N}_r} = 1 - h\left(\frac{1+r}{2}\right) = 1 - h\left(\frac{1-r}{2}\right)
+$$
 
-[4] Erven, C., et al. (2014). An experimental implementation of oblivious transfer in the noisy storage model. *Nature Communications*, 5, 3418.
+where $h(p) = -p\log_2 p - (1-p)\log_2(1-p)$ is the binary entropy.
+
+**Asymptotic expansion** for $r$ near 1:
+
+$$
+C_{\mathcal{N}_r} \approx \frac{(1-r)^2}{2\ln 2} + O((1-r)^3)
+$$
+
+### QBER Thresholds
+
+**Conservative Threshold** (Schaffner) [4]: For individual storage attacks:
+
+$$
+Q < Q_{\text{conservative}} = 0.11 \quad (11\%)
+$$
+
+**Hard Limit** (Lupo) [5]: For general collective attacks:
+
+$$
+Q < Q_{\text{hard}} = 0.22 \quad (22\%)
+$$
+
+**Critical insight**: The 22% threshold corresponds to the point where:
+
+$$
+Q_{\text{hard}} = \frac{1 - r_{\text{crit}}}{2} \implies r_{\text{crit}} = 0.56
+$$
+
+Beyond this, even perfect storage ($\nu = 1$) cannot extract sufficient information.
+
+## Channel Parameter Space
+
+### Source Imperfections
+
+**Bell state fidelity**: For Werner state $\rho_F = F|\Phi^+\rangle\langle\Phi^+| + (1-F)\mathbb{I}/4$:
+
+$$
+Q_{\text{source}} = \frac{1-F}{2}
+$$
+
+**Validity**: This assumes isotropic depolarization. Anisotropic noise (e.g., preferential dephasing) may exhibit different QBER-fidelity relationships.
+
+### Detection Imperfections
+
+The total QBER decomposes as:
+
+$$
+Q = Q_{\text{source}} + Q_{\text{detector}} + Q_{\text{dark}}
+$$
+
+where:
+- $Q_{\text{detector}} = e_{\text{det}}$ (intrinsic detector error)
+- $Q_{\text{dark}} = (1-\eta) P_{\text{dark}} / 2$ (dark count contribution)
+
+### Experimental Parameter Regimes
+
+**Erven et al. (2014)** [6]:
+
+| Parameter | Value | Physical Origin |
+|-----------|-------|-----------------|
+| $r$ | 0.75 | $\Delta t = 1$ ms, room-temperature memory |
+| $\nu$ | 0.002 | Limited storage capacity ($\sim 160$ qubits from $8 \times 10^7$) |
+| $F$ | 0.975 | PDC source with filtering |
+| $\eta$ | 0.015 | Long fiber + detector efficiency |
+| $Q$ | 0.029 | Composite error rate |
+
+**Security verification**: $C_{\mathcal{N}_{0.75}} \cdot 0.002 \approx 0.189 \times 0.002 = 0.0004 \ll 1/2$ ✓
+
+## Finite-Size Constraints
+
+### Minimum Block Length
+
+The extractable key length vanishes when:
+
+$$
+n \cdot h_{\min}(r) < \text{leak}_{\text{EC}} + 2\log_2(1/\varepsilon_{\text{sec}}) - 2
+$$
+
+This defines the **Death Valley** boundary in parameter space.
+
+### Statistical Estimation Requirements
+
+For QBER estimation with precision $\delta$ and confidence $1 - \varepsilon_{\text{PE}}$:
+
+$$
+t \geq \frac{\ln(2/\varepsilon_{\text{PE}})}{2\delta^2}
+$$
+
+The test sample $t$ consumes bits that cannot contribute to the final key.
+
+## Critical Assessment
+
+### Validity of Depolarizing Model
+
+The depolarizing channel is a **worst-case assumption** for symmetric noise. Real storage devices may exhibit:
+
+1. **Anisotropic noise**: Dephasing-dominated ($T_2 \ll T_1$) favors Z-basis storage
+2. **Non-Markovian dynamics**: Memory effects in spin bath environments
+3. **Correlated errors**: Multi-qubit memories with collective decoherence
+
+For dephasing noise $\mathcal{D}_\gamma(\rho) = (1-\gamma)\rho + \gamma Z\rho Z$:
+
+$$
+C_{\mathcal{D}_\gamma} = 1 - h(\gamma) > C_{\mathcal{N}_r} \quad \text{for same error rate}
+$$
+
+The depolarizing assumption may thus *underestimate* the adversary's capability in some physical implementations.
+
+### Collective Attack Considerations
+
+The security proof of [2] considers **individual attacks** where each stored qubit is processed independently. For **collective attacks** with entangled ancillas, tighter bounds apply [5].
 
 ---
 
-[← Return to Main Index](../index.md) | [Next: NSM-to-Physical Mapping](./physical_mapping.md)
+## References
+
+[1] S. Wehner, C. Schaffner, and B. M. Terhal, "Cryptography from Noisy Storage," *Phys. Rev. Lett.*, vol. 100, 220502, 2008.
+
+[2] R. König, S. Wehner, and J. Wullschleger, "Unconditional Security from Noisy Quantum Storage," *IEEE Trans. Inf. Theory*, vol. 58, no. 3, pp. 1962–1984, 2012.
+
+[3] C. King, "The capacity of the quantum depolarizing channel," *IEEE Trans. Inf. Theory*, vol. 49, no. 1, pp. 221–229, 2003.
+
+[4] C. Schaffner, "Cryptography in the Bounded-Quantum-Storage Model," Ph.D. thesis, University of Aarhus, 2007.
+
+[5] C. Lupo, F. Ottaviani, R. Ferrara, and S. Pirandola, "Performance of Practical Quantum Oblivious Key Distribution," *PRX Quantum*, vol. 3, 020353, 2023.
+
+[6] C. Erven et al., "An Experimental Implementation of Oblivious Transfer in the Noisy Storage Model," *Nat. Commun.*, vol. 5, 3418, 2014.
+
+---
+
+[← Return to Main Index](../index.md) | [Next: Noise Models](./noise_models.md)

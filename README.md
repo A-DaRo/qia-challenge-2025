@@ -53,3 +53,9 @@ The written report for the challenge, split into chapters/sections.
 - If you want to extend the project, find additional documentation or read relevant literature, check `docs/`.
 
 ---
+
+## Acknowledgements
+
+- Rianne S. Lous, for teaching the course *34IQT Introduction to Quantum Technologies*, to it my first glance at the world of quantum physics and technologies. To the curiosity and understanding I obtained from the course, that allowed me to engage in these initiatives.
+
+-  Wojciech Kozlowski, for promoting and hosting the *Pan-European Quantum Internet Hackathon*; to the hands-on experience it offered and the motivation to challenge myself further with this project. To the suggestion of the paper *Generation and Distribution of Quantum Oblivious Keys for Secure Multiparty Computation* by Lemus et al., which introduced me to Oblivious Transfer and allowed me to investigate deeper, forming the basis of this work.

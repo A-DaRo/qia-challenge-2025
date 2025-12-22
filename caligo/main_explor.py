@@ -567,29 +567,44 @@ Examples:
     log_level = logging.DEBUG if args.verbose else logging.INFO
     setup_tqdm_logging(log_level)
 
-    # Silence noisy external libraries at INFO level while allowing WARNING+ to pass
-    def _silence_external_info_logs():
-        """Set log level to WARNING for external noisy modules.
+    # Configure logging: only allow logs from caligo.exploration at given level, silence others to WARNING
+    def _silence_external_info_logs(log_level: int = logging.INFO):
+        """Allow logs only from caligo.exploration at `log_level`, set all other loggers to WARNING.
 
-        This silences INFO and DEBUG logs from these modules when running
-        main_explor.py, while still allowing WARNING and above to be shown.
+        This ensures only logs originating from `caligo.exploration` are shown at
+        INFO/DEBUG level, while all other modules are silenced to WARNING.
         """
+        # Set root logger to WARNING to silence other modules by default
+        logging.getLogger().setLevel(logging.WARNING)
+
+        # Ensure existing loggers are set appropriately
+        logger_dict = logging.Logger.manager.loggerDict
+        for name, logger_obj in logger_dict.items():
+            # Skip placeholders in loggerDict
+            if not isinstance(logger_obj, logging.Logger):
+                continue
+            if name.startswith("caligo.exploration"):
+                logger_obj.setLevel(log_level)
+            else:
+                logger_obj.setLevel(logging.WARNING)
+
+        # Also explicitly set commonly noisy external modules to WARNING for robustness
         noisy_modules = ("squidasm", "netsquid", "netqasm")
         for m in noisy_modules:
             try:
                 logging.getLogger(m).setLevel(logging.WARNING)
             except Exception:
-                # Best-effort: ignore if logger cannot be configured
                 pass
-        from squidasm.util.log_manager import LogManager as SquidLogManager # type: ignore
 
+        # Try to set SquidASM internal log manager to WARNING if available
         try:
+            from squidasm.sim.stack.common import LogManager as SquidLogManager  # type: ignore
             SquidLogManager.set_log_level("WARNING")
         except Exception:
             # ignore failures to be robust in environments without squidasm
             pass
 
-    _silence_external_info_logs()
+    _silence_external_info_logs(log_level)
 
     # Banner
     logger.info("=" * 70)

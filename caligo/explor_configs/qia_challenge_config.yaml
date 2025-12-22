@@ -29,7 +29,7 @@ output:
 # ------------------------------------------------------------------------------
 phase1:
   # Total number of LHS samples to generate
-  num_samples: 2000
+  num_samples: 10000
   
   # Batch size for parallel execution
   batch_size: 50
@@ -198,7 +198,8 @@ tables:
   
   # Storage noise levels for Zone of Feasibility table
   storage_noise_levels:
-    - 0.90  # Strong adversary
+    - 0.95  # Strong adversary
+    - 0.90 
     - 0.85
     - 0.80
     - 0.75

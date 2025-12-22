@@ -1,212 +1,209 @@
 [← Return to Main Index](../index.md)
 
-# 7.1 Toeplitz Hashing
+# 7.1 Two-Universal Hashing with Toeplitz Matrices
 
-## Introduction
+## The Privacy Amplification Problem
 
-Privacy amplification is the final cryptographic transformation in the Caligo protocol, converting a partially secure key (about which an adversary has limited information) into a uniformly random key with information-theoretic security. This section examines the use of **Toeplitz matrices** as 2-universal hash functions—a construction that combines theoretical elegance, computational efficiency, and provable security guarantees.
+### Physical Motivation
 
-The challenge addressed by privacy amplification is fundamental: after quantum key distribution and error correction, Alice and Bob share a reconciled bit string, but an adversary may possess correlated quantum information that leaks partial knowledge. Privacy amplification compresses this string to a shorter output where the adversary's residual information is exponentially suppressed.
+After error correction, Alice and Bob share a reconciled string $X \in \{0,1\}^n$. However, an adversary (dishonest Bob) holds quantum side information $\rho_E$ correlated with $X$. The challenge is to extract a shorter string $K$ that is:
 
-## Theoretical Foundation
+1. **Statistically uniform**: $K$ is within trace distance $\varepsilon_{\text{sec}}$ of the uniform distribution
+2. **Independent of $\rho_E$**: The adversary's quantum state provides negligible advantage in guessing $K$
 
-### 2-Universal Hashing
+This is achieved through **privacy amplification**—a compression procedure that destroys the adversary's partial information.
 
-A class $\mathcal{F}$ of hash functions $f: \{0, 1\}^n \to \{0, 1\}^\ell$ is **2-universal** if for all distinct inputs $x \neq y \in \{0, 1\}^n$ and for a randomly selected $f \in \mathcal{F}$:
+---
 
-$$
-\Pr[f(x) = f(y)] \leq 2^{-\ell}
-$$
+## Two-Universal Hash Families
 
-This collision-resistance property is critical for security: it bounds the probability that two different input strings map to the same output, preventing an adversary from exploiting hash collisions.
+### Definition
 
-**Example**: The set of all affine transformations from $\{0, 1\}^n$ to $\{0, 1\}^\ell$ (linear maps plus constants) forms a 2-universal family [1].
-
-### Leftover Hash Lemma
-
-The security of privacy amplification rests on the **Leftover Hash Lemma** (LHL), which quantifies how hashing increases the privacy of a random variable against a quantum adversary. The quantum formulation by Tomamichel et al. [2] establishes:
-
-Let $\rho_{XE}$ be a classical-quantum (cq) state where $X$ is a classical random variable and $E$ is a quantum system held by an adversary. Let $\mathcal{F}$ be a 2-universal hash function family. Then for a uniformly random $F \in \mathcal{F}$, the hashed output $F(X)$ satisfies:
+A family $\mathcal{H}$ of hash functions $h: \{0,1\}^n \to \{0,1\}^\ell$ is **2-universal** if for all distinct $x, y \in \{0,1\}^n$:
 
 $$
-d(F(X) \mid F D \rho_E) \leq 2^{(\ell + k)/2} \cdot \frac{1}{\sqrt{P_g(X \mid \rho_E)}}
+\Pr_{h \leftarrow \mathcal{H}}[h(x) = h(y)] \leq 2^{-\ell}
 $$
 
-where:
-- $d(\cdot)$ is the **nonuniformity** (half the trace distance from uniform)
-- $k$ is additional classical leakage (e.g., syndrome bits)
-- $P_g(X \mid \rho_E)$ is the adversary's maximal guessing probability
-- $\ell$ is the output length
+This collision bound is optimal—it equals the probability that two random $\ell$-bit strings coincide.
 
-**Intuition**: If the adversary's guessing probability is low (high min-entropy), then the hashed output is statistically close to uniform and independent of the adversary's quantum state, even when the hash function and leakage $D$ are revealed.
+### The Leftover Hash Lemma
 
-**Finite-Size Corrections**: Unlike asymptotic proofs, the LHL provides explicit finite-$n$ bounds, crucial for experimental implementations where key lengths are limited ($n \sim 10^3 - 10^6$).
+The security of privacy amplification rests on the **quantum Leftover Hash Lemma** (Tomamichel et al. [1]):
+
+**Theorem**: Let $\rho_{XE}$ be a classical-quantum state where $X$ is classical and $E$ is a quantum register held by an adversary. Let $\mathcal{H}$ be a 2-universal hash family. Then for uniformly random $H \in \mathcal{H}$:
+
+$$
+\frac{1}{2} \left\| \rho_{H(X)HE} - \frac{\mathbb{I}}{2^\ell} \otimes \rho_{HE} \right\|_1 \leq \varepsilon_{\text{sec}}
+$$
+
+provided:
+
+$$
+\ell \leq H_{\min}(X | E) - 2\log_2\left(\frac{1}{\varepsilon_{\text{sec}}}\right) + 2
+$$
+
+**Physical interpretation**: The hashed output $H(X)$ is $\varepsilon_{\text{sec}}$-close to uniform and independent of the adversary's quantum state, even when the hash function description $H$ is publicly revealed.
+
+---
 
 ## Toeplitz Matrix Construction
 
-### Matrix Structure
+### Algebraic Structure
 
-A **Toeplitz matrix** $T \in \{0, 1\}^{m \times n}$ has constant entries along each diagonal:
-
-$$
-T_{i,j} = T_{i-1,j-1} \quad \text{for all valid } i, j
-$$
-
-This constraint means the matrix is fully specified by its first row $r \in \{0, 1\}^n$ and first column $c \in \{0, 1\}^m$:
+A **Toeplitz matrix** $T \in \{0,1\}^{\ell \times n}$ has constant entries along each diagonal:
 
 $$
-T = \begin{bmatrix}
+T_{i,j} = T_{i-1,j-1} \quad \forall i \in [2,\ell], j \in [2,n]
+$$
+
+The matrix is fully determined by its first row $(r_1, \ldots, r_n)$ and first column $(c_1, \ldots, c_\ell)$, requiring only $n + \ell - 1$ random bits rather than $n\ell$.
+
+Explicitly:
+
+$$
+T = \begin{pmatrix}
 c_1 & r_2 & r_3 & \cdots & r_n \\
 c_2 & c_1 & r_2 & \cdots & r_{n-1} \\
 c_3 & c_2 & c_1 & \cdots & r_{n-2} \\
 \vdots & \vdots & \vdots & \ddots & \vdots \\
-c_m & c_{m-1} & c_{m-2} & \cdots & r_{n-m+1}
-\end{bmatrix}
+c_\ell & c_{\ell-1} & c_{\ell-2} & \cdots & r_{n-\ell+1}
+\end{pmatrix}
 $$
 
-**Compact Representation**: Only $n + m - 1$ random bits are required (the combined vector $[c_1, c_2, \ldots, c_m, r_2, r_3, \ldots, r_n]$), compared to $m \times n$ for a general matrix.
+### Hash Function
 
-### Hashing Operation
-
-The hash function maps an input $x \in \{0, 1\}^n$ to an output $h \in \{0, 1\}^m$ via matrix-vector multiplication over $\mathbb{F}_2$ (the binary field):
+The hash of input $x \in \{0,1\}^n$ is:
 
 $$
-h = T \cdot x \pmod{2}
+h_T(x) = T \cdot x \pmod{2}
 $$
 
-Each output bit $h_i$ is the parity (XOR) of input bits selected by the $i$-th row of $T$:
+where arithmetic is over the binary field $\mathbb{F}_2$. Each output bit is a parity check:
 
 $$
-h_i = \bigoplus_{j=1}^{n} T_{i,j} \cdot x_j \pmod{2}
+h_T(x)_i = \bigoplus_{j=1}^{n} T_{i,j} \cdot x_j
 $$
 
-**2-Universality**: Toeplitz matrices form a 2-universal hash family. For any $x \neq y$, the probability that $T \cdot x = T \cdot y$ over uniformly random choice of $T$ is exactly $2^{-m}$ [3].
+### Two-Universality Proof
 
-## Implementation in Caligo
+**Claim**: The set $\{h_T : T \text{ Toeplitz}\}$ is 2-universal.
 
-### Computational Complexity
-
-**Direct Multiplication**: Naïve matrix-vector multiplication requires $O(mn)$ bit operations, feasible for moderate key lengths but potentially expensive for $n \sim 10^6$.
-
-**FFT Acceleration**: Toeplitz matrix multiplication can be embedded into **circulant matrix multiplication**, which is diagonalized by the Discrete Fourier Transform (DFT). Using the Fast Fourier Transform (FFT), this reduces complexity to $O(n \log n)$ [4].
-
-**Algorithm Outline**:
-1. Pad the Toeplitz matrix to a circulant matrix of size $2^k \geq n + m - 1$
-2. Compute FFTs of the first column (defining the circulant) and the input vector
-3. Perform element-wise multiplication in the frequency domain
-4. Apply inverse FFT and extract the first $m$ bits
-
-**Caligo Implementation**: The `ToeplitzHasher` class automatically selects FFT-based computation for $n > 64$, providing significant speedups for practical key lengths:
-
-```python
-class ToeplitzHasher:
-    def __init__(self, input_length: int, output_length: int, 
-                 use_fft: bool = True):
-        self._n = input_length
-        self._m = output_length
-        self._use_fft = use_fft
-        # Generate (n + m - 1) random bits
-        self._random_bits = self._generate_random_bits(
-            input_length + output_length - 1
-        )
-```
-
-### Cryptographic Randomness
-
-**Seed Generation**: The random bits defining the Toeplitz matrix are generated using `secrets.token_bytes()`, which provides cryptographically secure randomness from the operating system's entropy pool (e.g., `/dev/urandom` on Linux).
-
-**Deterministic Replay**: A seed can be specified to enable deterministic hashing (critical for Alice and Bob to use the same hash function):
-
-```python
-hasher = ToeplitzHasher(
-    input_length=1000, 
-    output_length=512, 
-    seed=shared_random_seed
-)
-```
-
-The seed is typically generated by Alice, transmitted to Bob over the authenticated classical channel, and used to reconstruct the identical Toeplitz matrix.
-
-## Security Analysis
-
-### Min-Entropy Requirement
-
-The Leftover Hash Lemma guarantees security provided the input has sufficient **min-entropy**:
-
+**Proof**: For $x \neq y$, let $d = x \oplus y \neq 0$. Then:
 $$
-H_{\min}(X \mid E) \geq \ell + 2 \log_2(1/\varepsilon_{\text{sec}}) + k
+h_T(x) = h_T(y) \iff T \cdot d = 0 \pmod{2}
 $$
 
-where:
-- $H_{\min}(X \mid E)$ is the adversary-conditioned min-entropy
-- $\ell$ is the desired output length
-- $\varepsilon_{\text{sec}}$ is the security parameter (typically $10^{-10}$)
-- $k$ is the syndrome leakage from error correction
-
-**Example**: For $\varepsilon_{\text{sec}} = 10^{-10}$, the security penalty is $2 \log_2(10^{10}) \approx 66$ bits. If the input has 1000 bits with min-entropy rate 0.7 (700 bits available) and syndrome leakage of 120 bits, the extractable length is:
-
+Since $d \neq 0$, there exists $j^*$ with $d_{j^*} = 1$. The $i$-th row of $T \cdot d$ depends linearly on $T_{i,j^*}$, which (in a random Toeplitz matrix) is uniformly distributed over $\{0,1\}$ and independent across rows. Thus:
 $$
-\ell = 700 - 66 - 120 = 514 \text{ bits}
+\Pr[T \cdot d = 0] = 2^{-\ell}
 $$
-
-### NSM-Specific Security
-
-In the Noisy Storage Model, the adversary's min-entropy depends on the storage noise parameter $r$:
-
-$$
-H_{\min}(X_{\bar{C}} \mid \rho_E) \geq n \cdot h_{\min}(r)
-$$
-
-where $h_{\min}(r)$ is the **Max Bound** entropy rate (see [Section 7.2](./extractable_length.md)). For depolarizing storage noise with $r = 0.75$:
-
-$$
-h_{\min}(0.75) = \max\{\Gamma[1 - \log_2(1 + 3 \cdot 0.75^2)], 1 - 0.75\} = 0.25
-$$
-
-Thus, a 1000-bit reconciled key provides $\approx 250$ bits of extractable entropy after accounting for the adversary's quantum storage.
-
-### Composable Security
-
-Toeplitz hashing satisfies the **composable security** framework [5]: the output key can be safely used in subsequent cryptographic protocols (e.g., $\binom{2}{1}$-OT) without degrading security. The $\varepsilon_{\text{sec}}$-secrecy bound ensures the key is:
-
-1. **Statistically uniform**: Within $\varepsilon_{\text{sec}}$ trace distance of the uniform distribution
-2. **Independent of adversary**: The adversary's quantum state $\rho_E$ provides negligible advantage
-
-This eliminates the need for further post-processing (e.g., AES encryption) and enables direct application to information-theoretic primitives.
-
-## Practical Considerations
-
-### Memory Efficiency
-
-The Toeplitz matrix is never explicitly constructed in memory. Only the random bit vector of size $n + m - 1$ is stored, yielding:
-
-- **Storage**: $O(n)$ bits (vs. $O(mn)$ for dense matrix)
-- **Transmission**: The seed (typically 32-256 bytes) is transmitted, from which Alice and Bob independently reconstruct the matrix
-
-### Numerical Stability
-
-Binary operations (XOR) are exact—no floating-point rounding errors arise, unlike continuous-alphabet privacy amplification schemes (e.g., Gaussian modulation). This ensures bit-perfect reproducibility across platforms.
-
-### Parameter Selection
-
-The output length $\ell$ must be chosen conservatively:
-- **Too large**: Insufficient compression, adversary retains significant information ($\varepsilon_{\text{sec}}$ blows up)
-- **Too small**: Over-compression, wasted key material
-
-Caligo uses the `SecureKeyLengthCalculator` to compute optimal $\ell$ from measured QBER, syndrome leakage, and NSM parameters, ensuring $\varepsilon_{\text{sec}} \leq 10^{-10}$ while maximizing efficiency.
-
-## References
-
-[1] Carter, L., & Wegman, M. N. (1979). Universal classes of hash functions. *Journal of Computer and System Sciences*, 18(2), 143-154.
-
-[2] Tomamichel, M., Lim, C. C. W., Gisin, N., & Renner, R. (2012). Tight finite-key analysis for quantum cryptography. *Nature Communications*, 3(1), 634.
-
-[3] Krawczyk, H. (1994). LFSR-based hashing and authentication. In *Advances in Cryptology—CRYPTO '94* (pp. 129-139). Springer.
-
-[4] Shparlinski, I., & Winterhof, A. (2005). Fast multiplication of Toeplitz matrices. *Applicable Algebra in Engineering, Communication and Computing*, 16(1), 5-17.
-
-[5] Renner, R. (2008). Security of Quantum Key Distribution. *International Journal of Quantum Information*, 6(1), 1-127.
+as required. $\square$
 
 ---
 
-[← Return to Main Index](../index.md) | [Next: Extractable Length Calculation](./extractable_length.md)
+## Computational Efficiency
+
+### Direct Multiplication
+
+Naive matrix-vector multiplication requires $O(n\ell)$ bit operations. For $n = 10^6$, $\ell = 10^5$, this is $10^{11}$ operations—prohibitive.
+
+### FFT Acceleration
+
+The Toeplitz structure enables efficient multiplication via the Fast Fourier Transform [2]:
+
+1. **Embed** $T$ into a circulant matrix $C$ of size $2^k \geq n + \ell - 1$
+2. **Compute** FFTs of the defining column of $C$ and the padded input $x$
+3. **Multiply** element-wise in the frequency domain
+4. **Apply** inverse FFT and extract the first $\ell$ bits
+
+**Complexity**: $O(n \log n)$ using FFT, a dramatic improvement for large keys.
+
+### Binary Field Optimization
+
+Over $\mathbb{F}_2$, the FFT-based approach requires careful handling:
+- Use the **Number Theoretic Transform** (NTT) with appropriate prime modulus
+- Alternatively, use **bitwise convolution** with Karatsuba multiplication
+
+In practice, the $O(n\ell)$ direct method suffices for $n \lesssim 10^4$; FFT is essential for $n \gtrsim 10^5$.
+
+---
+
+## Security Analysis in the NSM Context
+
+### Min-Entropy Under Storage Noise
+
+In the Noisy Storage Model, the adversary's min-entropy is determined by the storage channel:
+
+$$
+H_{\min}(X | E) \geq n \cdot h_{\min}(r)
+$$
+
+where $h_{\min}(r) = \max\{\Gamma[1 - \log_2(1 + 3r^2)], 1 - r\}$ is the per-bit bound under depolarizing noise with parameter $r$ (see [§2.1](../foundations/nsm_model.md)).
+
+**Example** ($r = 0.75$, $n = 10^4$):
+$$
+H_{\min}(X|E) \geq 10^4 \times 0.25 = 2500 \text{ bits}
+$$
+
+### Extractable Length
+
+Applying the Leftover Hash Lemma with security parameter $\varepsilon_{\text{sec}} = 10^{-10}$:
+
+$$
+\ell \leq 2500 - 2\log_2(10^{10}) + 2 = 2500 - 66.4 + 2 \approx 2436 \text{ bits}
+$$
+
+After subtracting syndrome leakage $|\Sigma| = n(1-R)$, the final key is:
+$$
+\ell_{\text{final}} = 2436 - |\Sigma| - |\text{hash}|
+$$
+
+---
+
+## Protocol Integration
+
+### Seed Distribution
+
+The Toeplitz matrix is specified by a **seed** of $n + \ell - 1$ random bits. This seed must be:
+
+1. **Cryptographically random**: Generated from `/dev/urandom` or equivalent
+2. **Shared authentically**: Transmitted over the classical authenticated channel
+3. **Public**: The seed is not secret; security relies only on the min-entropy bound
+
+Alice generates the seed and transmits it to Bob after reconciliation. Both parties independently reconstruct the identical Toeplitz matrix.
+
+### Deterministic Reconstruction
+
+For reproducibility and debugging, a **pseudo-random seed** (32-256 bits) can expand to the full $n + \ell - 1$ bits using a cryptographic PRG. This reduces classical communication while maintaining 2-universality.
+
+### Composable Security
+
+Toeplitz hashing achieves **composable security** [3]: the output key can be used in subsequent cryptographic protocols (e.g., OT) without security degradation. The $\varepsilon_{\text{sec}}$-bound composes additively across protocol stages.
+
+---
+
+## Comparison with Alternative Hash Families
+
+| Hash Family | Description | Seed Size | Computation |
+|-------------|-------------|-----------|-------------|
+| **Toeplitz** | Diagonal-constant matrices | $n + \ell - 1$ | $O(n \log n)$ with FFT |
+| **Random linear** | Uniformly random matrices | $n \ell$ | $O(n \ell)$ |
+| **Polynomial** | Evaluation of random polynomial | $O(\ell)$ | $O(n \log^2 n)$ |
+| **Trevisan** | Combinatorial extractor | $O(\log^2 n)$ | $O(n \text{poly}(\log n))$ |
+
+Toeplitz matrices offer the best balance of seed compactness, computational efficiency, and implementation simplicity for practical QKD and NSM applications.
+
+---
+
+## References
+
+[1] M. Tomamichel, C. Schaffner, A. Smith, and R. Renner, "Leftover Hashing Against Quantum Side Information," *IEEE Trans. Inf. Theory*, vol. 57, no. 8, pp. 5524–5535, 2011.
+
+[2] P. Beelen and T. Høholdt, "The decoding of algebraic geometry codes," in *Advances in Algebraic Geometry Codes*, pp. 49–98, 2008.
+
+[3] R. Renner, "Security of Quantum Key Distribution," Ph.D. thesis, ETH Zürich, 2005.
+
+---
+
+[← Return to Main Index](../index.md) | [Next: Extractable Length →](./extractable_length.md)

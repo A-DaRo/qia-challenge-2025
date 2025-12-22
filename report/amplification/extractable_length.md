@@ -1,325 +1,298 @@
 [← Return to Main Index](../index.md)
 
-# 7.2 Extractable Length Calculation
+# 7.2 Extractable Key Length: Finite-Size Security Bounds
 
-## Introduction
+## The Finite-Key Problem
 
-The core challenge of privacy amplification is determining **how much key material** can be securely extracted from a partially secure reconciled string. Extract too much, and the adversary retains exploitable correlations; extract too little, and valuable entropy is wasted. This section derives the **Lupo key length formula** [1]—a finite-size security bound that accounts for both syndrome leakage and adversarial quantum information.
+### Asymptotic vs. Finite Regime
 
-Unlike asymptotic analyses (which assume $n \to \infty$), this formula provides explicit guarantees for finite key lengths ($n \sim 10^3 - 10^6$), making it directly applicable to experimental implementations.
-
-## Entropy-Theoretic Framework
-
-### Min-Entropy
-
-The **min-entropy** quantifies the adversary's maximal guessing probability for a random variable $X$ given quantum side information $E$:
+In the asymptotic limit ($n \to \infty$), the secret key rate approaches the Devetak-Winter bound:
 
 $$
-H_{\min}(X \mid E) = -\log_2 P_g(X \mid E)
+r_\infty = 1 - h(Q) - h(Q_{\text{storage}})
 $$
 
-where $P_g(X \mid E) = \max_M \sum_x P_X(x) \langle M_x \rangle_{\rho_x^E}$ is the success probability of the optimal quantum measurement $M$ for guessing $x$.
+However, real implementations operate with finite block lengths ($n \sim 10^3 - 10^6$), where **statistical penalties** dominate. These penalties arise from:
 
-**Interpretation**: If $H_{\min}(X \mid E) = k$, the adversary's best strategy succeeds with probability at most $2^{-k}$. For a uniformly distributed $n$-bit string with no leakage, $H_{\min}(X) = n$.
+1. **Parameter estimation uncertainty**: QBER is estimated from finite samples
+2. **Smoothing correction**: Min-entropy bounds require $\varepsilon$-smoothing
+3. **Security overhead**: Achieving $\varepsilon_{\text{sec}}$-security costs entropy
 
-### Min-Entropy Rate
+The **Lupo key length formula** [1] provides tight finite-size bounds applicable to NSM protocols.
 
-In the Noisy Storage Model, the adversary stores qubits through a depolarizing channel parameterized by $r \in [0, 1]$. The **min-entropy rate per bit** depends on which bound dominates [2]:
+---
 
-$$
-h_{\min}(r) = \max\{h_{\text{DK}}(r), h_{\text{Lupo}}(r)\}
-$$
+## Min-Entropy Framework
 
-where:
+### Operational Definition
 
-1. **Dupuis-König (Collision) Bound** [3]:
-   $$
-   h_{\text{DK}}(r) = \Gamma \left[1 - \log_2(1 + 3r^2)\right]
-   $$
-   with $\Gamma = 1 - \log_2(2 + \sqrt{2}) \approx 0.228$.
-
-2. **Lupo Virtual Erasure Bound** [1]:
-   $$
-   h_{\text{Lupo}}(r) = 1 - r
-   $$
-
-**Crossover**: The bounds intersect at $r \approx 0.25$. For lower storage noise ($r < 0.25$), Dupuis-König dominates; for higher noise ($r \geq 0.25$), the simpler Lupo bound applies.
-
-**Example**: For $r = 0.75$ (Erven et al. experimental regime [4]):
+The **min-entropy** of $X$ given quantum side information $E$ is:
 
 $$
-\begin{aligned}
-h_{\text{DK}}(0.75) &= 0.228 \times [1 - \log_2(1 + 3 \times 0.5625)] \\
-&\approx 0.228 \times (-0.38) \approx -0.087 \quad (\text{negative, discard})\\
-h_{\text{Lupo}}(0.75) &= 1 - 0.75 = 0.25
-\end{aligned}
+H_{\min}(X | E) = -\log_2 P_g(X | E)
 $$
 
-Thus, $h_{\min}(0.75) = 0.25$ bits per raw bit.
+where $P_g(X | E) = \max_{\{M_x\}} \sum_x p_X(x) \text{Tr}[M_x \rho_E^x]$ is the optimal guessing probability using quantum measurement $\{M_x\}$ on state $\rho_E^x$.
+
+**Physical interpretation**: If $H_{\min}(X|E) = k$, the adversary's best strategy for guessing $X$ succeeds with probability at most $2^{-k}$.
 
 ### Smooth Min-Entropy
 
-The **smooth min-entropy** $H_{\min}^\varepsilon(X \mid E)$ relaxes the strict min-entropy by allowing an $\varepsilon$-close state [5]:
+The **$\varepsilon$-smooth min-entropy** relaxes the worst-case bound by allowing the adversary's state to be $\varepsilon$-close to the actual state [2]:
 
 $$
-H_{\min}^\varepsilon(X \mid E) = \sup_{\bar{\rho}} \left\{ H_{\min}(X \mid \bar{E}) : \frac{1}{2} \|\rho_{XE} - \bar{\rho}_{XE}\|_1 \leq \varepsilon \right\}
+H_{\min}^\varepsilon(X | E) = \max_{\bar{\rho}: \frac{1}{2}\|\rho_{XE} - \bar{\rho}_{XE}\|_1 \leq \varepsilon} H_{\min}(X | \bar{E})
 $$
 
-**Purpose**: Accounts for statistical fluctuations in parameter estimation (e.g., QBER) during finite-length runs. The smoothing parameter $\varepsilon$ quantifies the probability that the actual state deviates from the assumed model.
+This accounts for statistical fluctuations in parameter estimation.
 
-## Lupo Key Length Formula
+---
+
+## Min-Entropy Rate in the NSM
+
+### Storage Channel Characterization
+
+For depolarizing storage with parameter $r$, the per-bit min-entropy rate is bounded by [1, 3]:
+
+$$
+h_{\min}(r) = \max\left\{ h_{\text{DK}}(r), \; h_{\text{Lupo}}(r) \right\}
+$$
+
+**Dupuis-König (Collision) Bound** [3]:
+$$
+h_{\text{DK}}(r) = \Gamma \left[ 1 - \log_2(1 + 3r^2) \right]
+$$
+where $\Gamma = 1 - \log_2(2 + \sqrt{2}) \approx 0.228$.
+
+**Lupo Virtual Erasure Bound** [1]:
+$$
+h_{\text{Lupo}}(r) = 1 - r
+$$
+
+### Bound Crossover
+
+The two bounds intersect at $r^* \approx 0.25$:
+
+| $r$ | $h_{\text{DK}}(r)$ | $h_{\text{Lupo}}(r)$ | $h_{\min}(r)$ |
+|-----|--------------------|-----------------------|---------------|
+| 0.1 | 0.216 | 0.9 | 0.216 |
+| 0.25 | 0.166 | 0.75 | 0.166 |
+| 0.5 | 0.035 | 0.5 | 0.035 |
+| 0.75 | −0.087 | 0.25 | 0.25 |
+| 0.9 | −0.15 | 0.1 | 0.1 |
+
+For the Erven et al. experimental regime ($r = 0.75$), the Lupo bound dominates: $h_{\min}(0.75) = 0.25$.
+
+---
+
+## The Lupo Key Length Formula
 
 ### Derivation from Leftover Hash Lemma
 
-Consider a reconciled key $X \in \{0, 1\}^n$ where:
-- Alice and Bob agree on $X$ after error correction
-- Adversary holds quantum state $\rho_E$ from eavesdropping
-- Syndrome $\Sigma$ of length $|\Sigma|$ bits was transmitted during reconciliation
+Consider a reconciled key $X \in \{0,1\}^n$ with:
+- Syndrome leakage: $|\Sigma|$ bits
+- Adversary side information: $\rho_E$
+- Target security: $\varepsilon_{\text{sec}}$
 
-Applying the quantum Leftover Hash Lemma with a 2-universal hash function $f: \{0, 1\}^n \to \{0, 1\}^\ell$, the secrecy parameter satisfies:
-
-$$
-\varepsilon_{\text{sec}} \leq 2^{(\ell + |\Sigma|)/2} \cdot \frac{1}{\sqrt{2^{H_{\min}^\varepsilon(X \mid E)}}}
-$$
-
-Solving for $\ell$ with target $\varepsilon_{\text{sec}}$:
+Applying the quantum Leftover Hash Lemma (see [§7.1](./toeplitz_hashing.md)):
 
 $$
-\ell \leq H_{\min}^\varepsilon(X \mid E) - |\Sigma| - 2 \log_2(1/\varepsilon_{\text{sec}})
+\varepsilon_{\text{sec}} \geq 2^{(\ell + |\Sigma|)/2 - H_{\min}^\varepsilon(X|E)/2}
 $$
 
-**Floor Function**: Since $\ell$ must be an integer number of bits:
+Solving for the extractable length $\ell$:
 
 $$
-\ell = \left\lfloor H_{\min}^\varepsilon(X \mid E) - |\Sigma| - 2 \log_2(1/\varepsilon_{\text{sec}}) + 2 \right\rfloor
+\ell \leq H_{\min}^\varepsilon(X | E) - |\Sigma| - 2\log_2\left(\frac{1}{\varepsilon_{\text{sec}}}\right) + 2
 $$
 
-The $+2$ term is a minor adjustment from the finite-size correction in Lupo et al. [1] Eq. (43).
+### Complete Formula
 
-### Security Penalty
+Combining with the NSM min-entropy bound:
 
-The term $\Delta_{\text{sec}} = 2 \log_2(1/\varepsilon_{\text{sec}}) - 2$ is the **security penalty**. For standard parameters:
+$$
+\boxed{\ell = \left\lfloor n \cdot h_{\min}(r) - n(1-R) - 2\log_2\left(\frac{1}{\varepsilon_{\text{sec}}}\right) + 2 \right\rfloor}
+$$
+
+where:
+- $n$: reconciled block length
+- $h_{\min}(r)$: per-bit min-entropy rate
+- $R$: reconciliation code rate (syndrome leakage $= n(1-R)$)
+- $\varepsilon_{\text{sec}}$: security parameter
+
+---
+
+## Security Penalty Analysis
+
+### The $\Delta_{\text{sec}}$ Term
+
+The **security penalty** is:
+
+$$
+\Delta_{\text{sec}} = 2\log_2\left(\frac{1}{\varepsilon_{\text{sec}}}\right) - 2
+$$
 
 | $\varepsilon_{\text{sec}}$ | $\Delta_{\text{sec}}$ (bits) |
 |----------------------------|------------------------------|
-| $10^{-6}$                  | 38                           |
-| $10^{-8}$                  | 51                           |
-| $10^{-10}$                 | 64                           |
-| $10^{-12}$                 | 78                           |
+| $10^{-6}$ | 38 |
+| $10^{-8}$ | 51 |
+| $10^{-10}$ | 64 |
+| $10^{-12}$ | 78 |
 
-**Physical Meaning**: This penalty accounts for the statistical distinguishability between the extracted key and a truly uniform key. Cryptographic applications typically require $\varepsilon_{\text{sec}} \leq 10^{-10}$, corresponding to a 64-bit overhead per extraction.
+**Physical interpretation**: This penalty quantifies the entropy cost of achieving distinguishability $\varepsilon_{\text{sec}}$ from the uniform distribution. Cryptographic applications typically require $\varepsilon_{\text{sec}} \leq 10^{-10}$.
 
-### Syndrome Leakage
+### Finite-Size Dominance
 
-Error correction reveals the syndrome $\Sigma$, which leaks information about the reconciled key:
-
-$$
-|\Sigma| = n - k
-$$
-
-where $k$ is the code dimension. For an LDPC code of rate $R$:
+For small blocks ($n \lesssim 10^4$), the security penalty dominates:
 
 $$
-|\Sigma| = n \cdot (1 - R)
+\frac{\Delta_{\text{sec}}}{n \cdot h_{\min}(r)} \sim \frac{64}{2500} = 2.6\%
 $$
 
-**Example**: A rate-0.5 LDPC code on a 1000-bit key leaks $|\Sigma| = 500$ bits. This directly subtracts from extractable entropy.
+For large blocks ($n \gtrsim 10^6$):
 
-**Optimization Trade-off**:
-- **High QBER**: Requires low code rate $R$ → large syndrome leakage
-- **Low QBER**: Can use high $R$ → minimal leakage
+$$
+\frac{\Delta_{\text{sec}}}{n \cdot h_{\min}(r)} \sim \frac{64}{2.5 \times 10^5} = 0.026\%
+$$
 
-Caligo's rate-compatible punctured LDPC codes adapt $R$ dynamically based on measured QBER to minimize leakage while ensuring error-free reconciliation.
+The finite-size penalty becomes negligible in the asymptotic regime.
 
-## Implementation in Caligo
-
-### SecureKeyLengthCalculator Class
-
-The `SecureKeyLengthCalculator` encapsulates the Lupo formula:
-
-```python
-class SecureKeyLengthCalculator:
-    def __init__(self, entropy_calculator: NSMEntropyCalculator, 
-                 epsilon_sec: float = 1e-10):
-        self._entropy_calc = entropy_calculator
-        self._epsilon_sec = epsilon_sec
-    
-    def compute_final_length(self, reconciled_length: int, 
-                             syndrome_leakage: int) -> int:
-        h_min, _ = self._entropy_calc.max_bound_entropy_rate()
-        entropy_available = h_min * reconciled_length
-        security_penalty = 2 * math.log2(1 / self._epsilon_sec) - 2
-        
-        raw_length = entropy_available - syndrome_leakage - security_penalty
-        return max(0, int(math.floor(raw_length)))
-```
-
-### Detailed Result Structure
-
-The `compute_detailed()` method returns a `KeyLengthResult` dataclass with full breakdown:
-
-```python
-@dataclass
-class KeyLengthResult:
-    final_length: int             # Extractable key bits
-    raw_length: int               # Input reconciled length
-    entropy_available: float      # Total min-entropy (n × h_min)
-    entropy_consumed: float       # Used entropy (ℓ + penalty)
-    security_penalty: float       # Δ_sec term
-    syndrome_leakage: int         # |Σ| bits
-    is_viable: bool               # True if final_length > 0
-    efficiency: float             # ℓ / n ratio
-```
-
-**Use Case**: Diagnostics during protocol optimization to identify bottlenecks (e.g., excessive syndrome leakage or insufficient storage noise).
+---
 
 ## Death Valley Phenomenon
 
 ### Definition
 
-"Death Valley" occurs when entropy depletion makes secure key extraction impossible:
+**Death Valley** is the parameter regime where finite-size penalties consume all extractable entropy:
 
 $$
-n \cdot h_{\min}(r) < |\Sigma| + \Delta_{\text{sec}}
+n \cdot h_{\min}(r) < n(1-R) + \Delta_{\text{sec}}
 $$
 
-In this regime, $\ell = 0$—no key can be extracted.
+yielding $\ell \leq 0$—no secure key can be extracted.
 
-### Critical Parameters
+### Critical Threshold
 
-For $r = 0.75$ ($h_{\min} = 0.25$), $\varepsilon_{\text{sec}} = 10^{-10}$ ($\Delta_{\text{sec}} = 64$):
-
-$$
-|\Sigma| < 0.25n - 64
-$$
-
-**Example**: For $n = 1000$:
-- **Available entropy**: $250$ bits
-- **Security penalty**: $64$ bits
-- **Maximum tolerable leakage**: $186$ bits
-- **Corresponding code rate**: $R \geq 0.814$
-
-If QBER necessitates $R < 0.814$ (e.g., $\text{QBER} > 8\%$), extraction fails.
-
-### Mitigations
-
-1. **Increase $n$**: Larger raw keys dilute the fixed penalty
-   - For $n = 10{,}000$: maximum leakage $\approx 2436$ bits ($R \geq 0.76$)
-
-2. **Improve Storage Noise**: Higher $r$ increases $h_{\min}$
-   - At $r = 0.5$: $h_{\min} = 0.5$ → tolerable leakage $\approx 436$ bits for $n = 1000$
-
-3. **Tolerate Higher $\varepsilon_{\text{sec}}$**: Reduces penalty but weakens security
-   - $\varepsilon_{\text{sec}} = 10^{-6}$: $\Delta_{\text{sec}} = 38$ bits (vs. 64)
-
-4. **Advanced Reconciliation**: Blind reconciliation reduces leakage by $\sim 5\%$ relative to rate-adaptive codes
-
-## Finite-Size Corrections
-
-### Statistical Fluctuations
-
-The smooth min-entropy accounts for parameter estimation uncertainty. If QBER is estimated from a sample of size $m$, the Hoeffding bound gives:
+Rearranging the Death Valley condition:
 
 $$
-\Pr[|\hat{Q} - Q| > \delta] \leq 2 e^{-2m\delta^2}
+h_{\min}(r) < 1 - R + \frac{\Delta_{\text{sec}}}{n}
 $$
 
-For confidence $1 - \varepsilon_{\text{est}}$:
+For fixed $(r, \varepsilon_{\text{sec}})$, there exists a **critical block length** $n^*$ below which key extraction fails:
 
 $$
-\delta = \sqrt{\frac{\log(2/\varepsilon_{\text{est}})}{2m}}
+n^* = \frac{\Delta_{\text{sec}}}{h_{\min}(r) - (1 - R)}
 $$
 
-**Example**: Estimating QBER within $\pm 1\%$ with $\varepsilon_{\text{est}} = 10^{-6}$ requires:
+**Example** ($r = 0.75$, $R = 0.5$, $\varepsilon_{\text{sec}} = 10^{-10}$):
 
 $$
-m \geq \frac{\log(2 \times 10^6)}{2 \times 0.01^2} \approx 77{,}000 \text{ bits}
+n^* = \frac{64}{0.25 - 0.5} = \frac{64}{-0.25} < 0
 $$
 
-This motivates using sufficiently large $n$ to avoid underestimating entropy.
+This indicates the code rate is too low—must increase $R$ or accept Death Valley.
 
-### Minimum Input Length
-
-To extract a target key length $\ell_{\text{target}}$, the required reconciled length is:
-
+For $R = 0.8$:
 $$
-n \geq \frac{\ell_{\text{target}} + \Delta_{\text{sec}}}{h_{\min} - f_{\text{leak}}}
+n^* = \frac{64}{0.25 - 0.2} = \frac{64}{0.05} = 1280
 $$
 
-where $f_{\text{leak}} = |\Sigma| / n$ is the fractional leakage rate.
+Blocks smaller than 1280 bits yield no key at these parameters.
 
-**Example**: For $\ell_{\text{target}} = 256$ bits, $h_{\min} = 0.25$, $f_{\text{leak}} = 0.2$ (code rate 0.8):
+### Parameter Space Mapping
 
-$$
-n \geq \frac{256 + 64}{0.25 - 0.2} = \frac{320}{0.05} = 6400 \text{ bits}
-$$
+The Death Valley boundary partitions the $(n, R, r)$ parameter space:
 
-Caligo's `minimum_input_length()` method automates this calculation.
-
-## Security Validation
-
-### Composability
-
-The extracted key $S = f(X)$ satisfies [6]:
-
-$$
-\frac{1}{2} \|\rho_{SE} - \omega_S \otimes \rho_E\|_1 \leq \varepsilon_{\text{sec}}
-$$
-
-where $\omega_S$ is the uniform state. This ensures:
-
-1. **One-Time Pad Security**: $S$ can be used as a OTP key
-2. **Protocol Composition**: $S$ can serve as input to $\binom{2}{1}$-OT without additional privacy amplification
-3. **Non-Adaptive Attacks**: Security holds even if the adversary adaptively queries the key
-
-### Practical Verification
-
-Caligo's `SecurityVerifier` validates:
-
-```python
-class SecurityVerifier:
-    def validate_extractable_length(self, params: NSMParameters,
-                                    reconciled_length: int,
-                                    syndrome_leakage: int) -> ValidationResult:
-        calc = SecureKeyLengthCalculator(...)
-        result = calc.compute_detailed(reconciled_length, syndrome_leakage)
-        
-        return ValidationResult(
-            is_secure=(result.final_length > 0),
-            extractable_bits=result.final_length,
-            efficiency=result.efficiency,
-            entropy_margin=result.entropy_available - result.entropy_consumed
-        )
-```
-
-If `is_secure=False`, the protocol aborts (preferring no key over an insecure key).
-
-## Comparison with QKD
-
-| Aspect | QKD (BB84) | Caligo (NSM) |
-|--------|------------|--------------|
-| **Adversary Model** | Eve controls channel | Eve has noisy storage |
-| **Min-Entropy Source** | Sifted key (post-basis matching) | Full raw key (basis-independent) |
-| **Leakage** | QBER estimation + syndrome | Syndrome only (QBER implicit) |
-| **Typical $h_{\min}$** | $\approx 1 - H_2(Q)$ | $\approx 0.25$ (for $r=0.75$) |
-| **Efficiency** | 70-90% | 20-40% |
-
-The NSM's lower efficiency is offset by its **no-quantum-memory assumption** for honest parties, making it implementally simpler than QKD with quantum storage.
-
-## References
-
-[1] Lupo, C., Peat, J. T., Andersson, E., & Kok, P. (2023). Error-tolerant oblivious transfer in the noisy-storage model. *Physical Review A*, 107(6), 062403.
-
-[2] König, R., Wehner, S., & Wullschleger, J. (2012). Unconditional security from noisy quantum storage. *IEEE Transactions on Information Theory*, 58(3), 1962-1984.
-
-[3] Dupuis, F., Fawzi, O., & Wehner, S. (2013). Entanglement sampling and applications. *IEEE Transactions on Information Theory*, 61(2), 1093-1112.
-
-[4] Erven, C., et al. (2014). An experimental implementation of oblivious transfer in the noisy storage model. *Nature Communications*, 5, 3418.
-
-[5] Renner, R., & Wolf, S. (2005). Simple and tight bounds for information reconciliation and privacy amplification. In *Advances in Cryptology—ASIACRYPT 2005* (pp. 199-216). Springer.
-
-[6] Tomamichel, M., Lim, C. C. W., Gisin, N., & Renner, R. (2012). Tight finite-key analysis for quantum cryptography. *Nature Communications*, 3, 634.
+| $r$ | $h_{\min}(r)$ | Min $R$ for $n=4096$ | Min $R$ for $n=1024$ |
+|-----|---------------|----------------------|----------------------|
+| 0.9 | 0.10 | 0.984 | **Infeasible** |
+| 0.75 | 0.25 | 0.766 | 0.937 |
+| 0.5 | 0.035 | **Infeasible** | **Infeasible** |
 
 ---
 
-[← Return to Main Index](../index.md) | [Previous: Toeplitz Hashing](./toeplitz_hashing.md) | [Next: Key Derivation](./key_derivation.md)
+## Reconciliation Efficiency Impact
+
+### The Efficiency Factor
+
+Define **reconciliation efficiency**:
+
+$$
+f = \frac{1 - R}{h(Q)}
+$$
+
+where $h(Q)$ is the Shannon limit for BSC($Q$). Perfect reconciliation achieves $f = 1$.
+
+### Key Rate with Inefficiency
+
+Incorporating $f > 1$:
+
+$$
+\ell = n \cdot h_{\min}(r) - n \cdot f \cdot h(Q) - \Delta_{\text{sec}}
+$$
+
+**Example** ($Q = 0.05$, $f = 1.08$, $r = 0.75$, $n = 10^4$):
+
+$$
+\begin{aligned}
+\ell &= 10^4 \times 0.25 - 10^4 \times 1.08 \times h(0.05) - 64 \\
+&= 2500 - 10^4 \times 1.08 \times 0.286 - 64 \\
+&= 2500 - 3089 - 64 = -653
+\end{aligned}
+$$
+
+**Death Valley**: These parameters yield negative key length.
+
+### Escaping Death Valley
+
+Options to achieve positive key:
+1. **Increase $n$**: Dilute the $\Delta_{\text{sec}}/n$ term
+2. **Reduce $f$**: Use more efficient reconciliation (longer codes)
+3. **Reduce $Q$**: Improve quantum channel fidelity
+4. **Increase $r$**: Accept less noisy storage (weaker security assumption)
+
+---
+
+## Numerical Implementation
+
+### Algorithm
+
+```
+function ComputeKeyLength(n, R, r, Q, epsilon_sec):
+    h_DK = 0.228 * (1 - log2(1 + 3*r^2))
+    h_Lupo = 1 - r
+    h_min = max(h_DK, h_Lupo)
+    
+    entropy_available = n * h_min
+    syndrome_leak = n * (1 - R)
+    security_penalty = 2 * log2(1/epsilon_sec) - 2
+    
+    raw_length = entropy_available - syndrome_leak - security_penalty
+    return max(0, floor(raw_length))
+```
+
+### Sensitivity Analysis
+
+The key length is most sensitive to:
+1. **Block length $n$**: Linear dependence
+2. **Storage noise $r$**: Nonlinear through $h_{\min}(r)$
+3. **Code rate $R$**: Linear through $(1-R)$
+
+Least sensitive to $\varepsilon_{\text{sec}}$ due to logarithmic dependence.
+
+---
+
+## References
+
+[1] C. Lupo, F. Ottaviani, R. Ferrara, and S. Pirandola, "Performance of Practical Quantum Oblivious Key Distribution," *PRX Quantum*, vol. 3, 020353, 2023.
+
+[2] R. Renner and R. König, "Universally Composable Privacy Amplification Against Quantum Adversaries," *TCC 2005*, LNCS 3378, pp. 407–425.
+
+[3] F. Dupuis, O. Fawzi, and S. Wehner, "Entanglement Sampling and Applications," *IEEE Trans. Inf. Theory*, vol. 61, no. 2, pp. 1093–1112, 2015.
+
+[4] R. König, S. Wehner, and J. Wullschleger, "Unconditional Security from Noisy Quantum Storage," *IEEE Trans. Inf. Theory*, vol. 58, no. 3, pp. 1962–1984, 2012.
+
+---
+
+[← Return to Main Index](../index.md) | [← Previous: Toeplitz Hashing](./toeplitz_hashing.md) | [Next: Key Derivation →](./key_derivation.md)

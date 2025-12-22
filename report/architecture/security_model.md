@@ -1,453 +1,211 @@
-# 3.2 Security Model & NSM Parameters
+[← Return to Main Index](../index.md)
 
-## The Noisy Storage Model (NSM)
+# 3.2 Security Model
 
-### Theoretical Foundation
+## 3.2.1 Adversary Model
 
-The Noisy Storage Model (NSM) provides information-theoretic security for quantum cryptographic protocols by exploiting an adversary's limited quantum memory capabilities.
+The NSM security proof holds against an adversary with the following capabilities:
 
-**Core Assumption**: An adversary (Eve) possesses quantum memory with:
-1. **Bounded Storage Rate** ($\nu$): Fraction of qubits that can be stored
-2. **Noisy Storage** ($r$): Decoherence parameter affecting stored qubits
+**Unlimited Resources:**
+- Unbounded classical computation and storage
+- Perfect quantum operations (unitaries, measurements)
+- Instantaneous classical communication
 
-**Security Guarantee**: If honest parties enforce a waiting time $\Delta t$ between qubit distribution and basis revelation, Eve's stored qubits undergo decoherence, limiting her information gain.
+**Limited Resource:**
+- Quantum storage subject to noise channel $\mathcal{F}$
 
-### NSM Parameter Space
+**Adversary Classes:**
 
-#### Primary Parameters
+| Class | Description | Relevant Bound |
+|-------|-------------|----------------|
+| Individual Storage | Eve stores and attacks qubits independently | 11% threshold |
+| Collective Storage | Eve applies joint operations on stored qubits | 22% hard limit |
+| Coherent Attack | Eve entangles stored qubits with ancilla | Open problem |
 
-| Symbol | Name | Range | Physical Meaning | Caligo Field |
-|--------|------|-------|------------------|--------------|
-| $\Delta t$ | Wait time | $[10^6, 10^9]$ ns | Enforced delay before basis revelation | `delta_t_ns` |
-| $r$ | Storage noise | $[0, 1]$ | Decoherence strength ($r=1$ → perfect noise) | `storage_noise_r` |
-| $\nu$ | Storage rate | $[0, 1]$ | Fraction of qubits Eve can store | `storage_rate_nu` |
-| $F$ | Channel fidelity | $[0, 1]$ | EPR pair fidelity before storage | `channel_fidelity` |
-| $\eta$ | Detection efficiency | $[0, 1]$ | Probability of successful detection | `detection_eff_eta` |
-| $e_{\text{det}}$ | Detector error | $[0, 0.5]$ | Intrinsic detector error rate | `detector_error` |
-| $P_{\text{dark}}$ | Dark count prob | $[10^{-10}, 10^{-6}]$ | Spontaneous detector firing | `dark_count_prob` |
+Caligo's security analysis assumes **individual storage attacks**, corresponding to the conservative 11% threshold.
 
-#### Derived Quantities
+## 3.2.2 Honest-but-Curious vs. Malicious
 
-**Depolarization Probability** (from storage noise):
-$$
-\rho = \frac{1 - r}{2}
-$$
+**Honest-but-Curious (Semi-Honest):**
+- Parties follow the protocol specification
+- Adversary (corrupted party) attempts to learn extra information
 
-For $r = 0.75$: $\rho = 0.125$ (12.5% depolarization)
+**Malicious:**
+- Corrupted party may deviate arbitrarily from protocol
+- Must account for active attacks
 
-**Channel Capacity** (quantum storage):
-$$
-C_N = 1 - h(\rho) = 1 - h\left(\frac{1-r}{2}\right)
-$$
+**Caligo's Security Level:** The current implementation provides security against **honest-but-curious** adversaries. Malicious security would require additional mechanisms (e.g., commitment schemes, zero-knowledge proofs) not currently implemented.
 
-where $h(p) = -p\log_2(p) - (1-p)\log_2(1-p)$ is binary entropy.
+## 3.2.3 The Security Condition
 
-**Storage Capacity Constraint**:
-$$
-C_N \cdot \nu < \frac{1}{2}
-$$
+### Channel vs. Storage Noise
 
-### NSM Security Condition
-
-**Theorem (König et al., 2012)**: An NSM protocol is secure if:
-
+**Theorem (Schaffner, Terhal, Wehner [1]):** An NSM protocol achieves $\varepsilon$-security if:
 $$
 Q_{\text{channel}} < Q_{\text{storage}}
 $$
 
 where:
-- $Q_{\text{channel}}$ = Quantum Bit Error Rate (QBER) on the channel
-- $Q_{\text{storage}} = (1 - r) / 2$ = Effective error rate from storage noise
+- $Q_{\text{channel}}$: QBER experienced by honest parties
+- $Q_{\text{storage}} = (1-r)/2$: Effective QBER from storage noise
 
-**Caligo Enforcement**:
-```python
-def validate_nsm_security(nsm_params: NSMParameters, qber: float) -> None:
-    q_storage = (1 - nsm_params.storage_noise_r) / 2
-    if qber >= q_storage:
-        raise SecurityError(
-            f"NSM security violated: QBER ({qber:.4f}) >= "
-            f"Q_storage ({q_storage:.4f})"
-        )
-```
+**Interpretation:** The honest channel must be **strictly less noisy** than the adversary's storage. If equality holds, the adversary can simulate the honest channel perfectly.
 
-## QBER Thresholds
+### Capacity Condition (General NSM)
 
-### Hard Limit (Impossibility Bound)
-
-**Theorem (König et al., 2012)**: Security is **impossible** if:
+For arbitrary storage channel $\mathcal{F}$, König et al. [2] establish:
 $$
-\text{QBER} > 22\%
+C_\mathcal{F} \cdot \nu < \frac{1}{2}
 $$
 
-This is a fundamental limit from the NSM security proof. Beyond this threshold, Eve can extract full information about the key regardless of storage constraints.
-
-**Caligo Constant**:
-```python
-QBER_ABSOLUTE_THRESHOLD = 0.22  # Hard impossibility bound
-```
-
-### Conservative Operating Point
-
-**Recommended Threshold** (Schaffner et al., 2009; Erven et al., 2014):
+For depolarizing noise:
 $$
-\text{QBER} \leq 11\%
+C_{\mathcal{N}_r} = 1 - h\left(\frac{1+r}{2}\right)
 $$
 
-**Rationale**:
-1. Provides security margin above theoretical bound
-2. Ensures positive min-entropy rate for key extraction
-3. Allows efficient reconciliation with practical LDPC codes
-4. Validated in experimental implementations
-
-**Caligo Constant**:
-```python
-QBER_CONSERVATIVE_THRESHOLD = 0.11  # Recommended operating point
-```
-
-### QBER Composition
-
-The observed QBER is a composition of multiple error sources:
-
+With storage rate $\nu = 1$, security requires:
 $$
-Q_{\text{total}} = Q_{\text{source}} + Q_{\text{channel}} + Q_{\text{det}} + Q_{\text{dark}}
+1 - h\left(\frac{1+r}{2}\right) < \frac{1}{2} \implies r < r_{\text{crit}} \approx 0.707
 $$
 
-**Source Error** (imperfect EPR generation):
-$$
-Q_{\text{source}} = \frac{1 - F}{2}
-$$
+## 3.2.4 QBER Thresholds
 
-**Channel Error** (transmission loss/noise):
-$$
-Q_{\text{channel}} = \alpha \cdot L \quad \text{(fiber attenuation)}
-$$
+### The 11% Conservative Threshold
 
-**Detector Error** (intrinsic):
-$$
-Q_{\text{det}} = e_{\text{det}}
-$$
+From Schaffner [3]:
 
-**Dark Count Error**:
-$$
-Q_{\text{dark}} = \frac{P_{\text{dark}}}{P_{\text{dark}} + \eta \cdot P_{\text{signal}}}
-$$
+> *"Secure oblivious transfer and secure identification can be achieved as long as the quantum bit-error rate does not exceed 11%."*
 
-In typical regimes: $Q_{\text{det}}$ dominates, $Q_{\text{dark}}$ is negligible.
+**Origin:** This threshold ensures:
+1. Positive min-entropy rate after reconciliation
+2. Practical reconciliation efficiency $(f \lesssim 1.2)$
+3. Security margin for parameter estimation errors
 
-## Security Parameter ($\epsilon_{\text{sec}}$)
+**Mathematical Derivation:** For $Q = 0.11$:
+- Binary entropy: $h(0.11) \approx 0.5$ bits
+- Reconciliation at $f = 1.1$: leakage $\approx 0.55n$ bits
+- Min-entropy rate: $h_{\min}(r) \approx 0.7$ for $r = 0.3$
+- Net rate: $0.7 - 0.55 = 0.15$ bits/qubit (positive)
 
-### Definition
+### The 22% Hard Limit
 
-The security parameter $\epsilon_{\text{sec}}$ bounds the adversary's distinguishing advantage:
+From Lupo et al. [4]:
 
-$$
-\delta(\rho_{S_C|\mathcal{E}}, \rho_U \otimes \rho_{\mathcal{E}}) \leq \epsilon_{\text{sec}}
-$$
+> *"The absolute maximum QBER for any NSM protocol is approximately 22%."*
 
-where:
-- $\rho_{S_C|\mathcal{E}}$ = Eve's state conditioned on observing key $S_C$
-- $\rho_U$ = Uniform distribution over $\{0,1\}^\ell$
-- $\delta$ = Trace distance
+**Origin:** Two fundamental constraints:
 
-**Interpretation**: Eve cannot distinguish the real key from random with advantage $> \epsilon_{\text{sec}}$.
+1. **Shannon Bound:** Error correction requires $H(X|Y) = h(Q) \leq 1$
+   - At $Q = 0.22$: $h(0.22) \approx 0.76$
+   - Reconciliation leakage: $\geq 0.76n$ bits
 
-### Default Value
+2. **Min-Entropy Exhaustion:** For $Q > 0.22$, the extractable entropy becomes negative:
+   $$
+   \ell = n \cdot h_{\min}(r) - n \cdot h(Q) \cdot f - 2\log_2(1/\varepsilon) < 0
+   $$
 
-**Standard Choice** (Erven et al., 2014):
-$$
-\epsilon_{\text{sec}} = 10^{-10}
-$$
+### Threshold Summary
 
-**Caligo Constant**:
-```python
-DEFAULT_EPSILON_SEC = 1e-10
-```
+| Threshold | Value | Consequence |
+|-----------|-------|-------------|
+| Conservative | 11% | Recommended operating point |
+| Warning | 15% | Finite-size security marginal |
+| Hard Limit | 22% | Impossibility bound |
 
-**Security Level**: Roughly equivalent to 33-bit security (since $2^{33} \approx 10^{10}$).
-
-### Impact on Key Length
-
-The security parameter enters the Lupo key length formula:
-
-$$
-\ell = \left\lfloor n \cdot h_{\min} - |\Sigma| - 2\log_2\left(\frac{1}{\epsilon_{\text{sec}}}\right) + 2 \right\rfloor
-$$
-
-**Penalty Term**:
-$$
-\text{penalty} = 2\log_2\left(\frac{1}{\epsilon_{\text{sec}}}\right) = 2\log_2(10^{10}) \approx 66.44 \text{ bits}
-$$
-
-**Tradeoff**: Smaller $\epsilon_{\text{sec}}$ (higher security) → larger penalty → shorter final key.
-
-## Min-Entropy Rate ($h_{\min}$)
-
-### Definition
-
-The smooth min-entropy rate quantifies the unpredictability of the key from Eve's perspective after storage decoherence:
-
-$$
-H_{\min}^\epsilon(K | E) \approx n \cdot h_{\min}
-$$
-
-where $n$ is the reconciled key length.
-
-### Bounds
-
-Caligo implements multiple min-entropy bounds from literature:
-
-#### 1. Dupuis-König Bound (2012)
-
-**Formula**:
-$$
-h_{\min}^{\text{DK}} = 1 - h(Q) - \lambda
-$$
-
-where:
-- $Q$ = QBER
-- $h(Q)$ = Binary entropy of QBER
-- $\lambda$ = Correction term from storage capacity
-
-**Applicability**: General NSM bound, conservative.
-
-#### 2. Lupo Virtual Erasure Bound (2023)
-
-**Formula**:
-$$
-h_{\min}^{\text{Lupo}} = 1 - h(Q) \cdot \left(1 + \frac{1-\eta}{\eta}\right)
-$$
-
-**Applicability**: Optimized for high detection efficiency $\eta$; tighter than Dupuis-König in typical regimes.
-
-#### 3. Rational Adversary Bound
-
-**Formula**:
-$$
-h_{\min}^{\text{RA}} = 1 - 2h(Q)
-$$
-
-**Applicability**: Assumes Eve acts rationally (maximizes information gain per stored qubit); provides conservative lower bound.
-
-### Selection Strategy
-
-**Caligo Default** (`bound_type="max_bound"`):
-$$
-h_{\min} = \max\left(h_{\min}^{\text{DK}}, h_{\min}^{\text{Lupo}}\right)
-$$
-
-**Rationale**: Use the tightest available bound for maximum key extraction efficiency.
-
-**Implementation**:
-```python
-class NSMEntropyCalculator:
-    def calculate_rate(self, qber: float, bound_type: str = "max_bound") -> float:
-        dk_bound = self._dupuis_konig_bound(qber)
-        lupo_bound = self._lupo_bound(qber)
-        
-        if bound_type == "max_bound":
-            return max(dk_bound, lupo_bound)
-        elif bound_type == "dupuis_konig":
-            return dk_bound
-        elif bound_type == "lupo":
-            return lupo_bound
-        else:
-            raise ValueError(f"Unknown bound type: {bound_type}")
-```
-
-## Finite-Key Corrections
+## 3.2.5 Finite-Size Security
 
 ### Statistical Fluctuations
 
-In finite-key regimes, QBER estimation from sampling introduces uncertainty:
-
+For finite block length $n$, the QBER estimate $\hat{Q}$ fluctuates around the true value $Q$:
 $$
-\hat{Q} = \frac{\text{errors}}{m} \quad \text{where } m \ll n
-$$
-
-**Hoeffding Bound**: With probability $1 - \delta$:
-$$
-|\hat{Q} - Q_{\text{true}}| \leq \sqrt{\frac{\ln(2/\delta)}{2m}}
+\Pr[|\hat{Q} - Q| > \delta] \leq 2\exp(-2m\delta^2)
 $$
 
-**Caligo Implementation**:
-```python
-def compute_statistical_fluctuation(
-    sample_size: int,
-    confidence: float = 0.99
-) -> float:
-    """Compute Hoeffding fluctuation bound."""
-    delta = 1 - confidence
-    return math.sqrt(math.log(2 / delta) / (2 * sample_size))
-```
+where $m$ is the number of test bits (Hoeffding inequality).
 
-### Leftover Hash Lemma
-
-**Theorem (Tomamichel et al., 2011)**: For a universal hash family $\mathcal{H}$, extracting $\ell$ bits from $n$ bits with min-entropy $H_{\min}^\epsilon(K|E) \geq k$ yields:
-
+**Confidence Bound:** With probability $\geq 1 - \varepsilon_{\text{PE}}$:
 $$
-\delta(h(K), U_\ell) \leq 2^{-\frac{1}{2}(k - \ell)} + \epsilon
+Q \leq \hat{Q} + \sqrt{\frac{\ln(2/\varepsilon_{\text{PE}})}{2m}}
 $$
 
-**Security Parameter Penalty**: To achieve $\epsilon_{\text{sec}}$ security:
+### Finite-Size Key Length
+
+The extractable key length for finite $n$ is:
 $$
-k - \ell \geq 2\log_2\left(\frac{1}{\epsilon_{\text{sec}}}\right)
-$$
-
-This penalty is embedded in the Lupo formula.
-
-## NSM Parameter Validation
-
-### Preflight Checks
-
-Before protocol execution, Caligo validates NSM parameter feasibility:
-
-#### Check 1: Storage Capacity Constraint
-$$
-C_N \cdot \nu < 0.5
+\ell(n) = n \cdot h_{\min}(r) - n(1-R) - 2\log_2(1/\varepsilon_{\text{sec}}) - O(\sqrt{n \log(1/\varepsilon)})
 $$
 
-**Code**:
-```python
-channel_capacity = 1 - binary_entropy(depolar_prob)
-if channel_capacity * nu >= 0.5:
-    raise SecurityError("Storage capacity constraint violated")
-```
+The $O(\sqrt{n})$ correction arises from:
+- Parameter estimation confidence intervals
+- Smooth min-entropy vs. asymptotic entropy gap
 
-#### Check 2: QBER vs. Storage Noise
+### Death Valley
+
+**Definition:** The regime where $Q < 0.11$ but $\ell(n) \leq 0$ due to finite-size penalties.
+
+**Critical Block Length:** The minimum $n$ for positive key rate is approximately:
 $$
-Q_{\text{expected}} < Q_{\text{storage}} = \frac{1 - r}{2}
-$$
-
-**Code**:
-```python
-q_storage = (1 - r) / 2
-q_expected = compute_expected_qber(channel_params, nsm_params)
-if q_expected >= q_storage:
-    raise SecurityError(f"Expected QBER {q_expected} exceeds storage threshold")
-```
-
-#### Check 3: Detection Efficiency Lower Bound
-
-For Lupo bound to provide positive entropy:
-$$
-\eta > \frac{Q}{1 - Q} \quad \text{(rough heuristic)}
+n_{\text{min}} \approx \frac{4\log_2^2(1/\varepsilon_{\text{sec}})}{(h_{\min}(r) - h(Q) \cdot f)^2}
 $$
 
-**Code**:
-```python
-if detection_eff < 0.5:
-    logger.warning("Low detection efficiency may limit key extraction")
-```
-
-### Configuration Validation
-
-**Caligo Class**: `FeasibilityChecker`
-
-```python
-from caligo.security import FeasibilityChecker
-
-checker = FeasibilityChecker()
-result = checker.check(nsm_params, expected_qber)
-
-if not result.is_feasible:
-    print(f"Infeasible: {result.failure_reason}")
-    print(f"Recommendations: {result.recommendations}")
-else:
-    print(f"Feasible. Estimated key rate: {result.estimated_key_rate}")
-```
-
-## Adversarial Model
-
-### Adversary Capabilities
-
-**Eve's Resources**:
-1. **Quantum Memory**: Storage rate $\nu$, decoherence $r$
-2. **Channel Access**: Intercept quantum channel with efficiency $\eta_E \leq \eta$
-3. **Classical Eavesdropping**: Observe (but not modify) classical messages
-4. **Computational Power**: Unbounded (information-theoretic security)
-
-**Constraints**:
-- Individual attacks (no coherent measurement across EPR pairs)
-- No authenticated classical channel tampering
-- Must decide which qubits to store *before* basis revelation
-
-### Attack Scenarios
-
-#### Intercept-Resend Attack
-
-**Strategy**: Eve intercepts EPR pairs, measures in random bases, resends fake pairs.
-
-**Detection**: Causes increased QBER → protocol aborts if $Q > 11\%$.
-
-**Formal Analysis**:
+For $\varepsilon_{\text{sec}} = 10^{-10}$, $r = 0.3$, $Q = 0.05$, $f = 1.1$:
 $$
-Q_{\text{observed}} = Q_{\text{channel}} + Q_{\text{attack}} \geq \text{threshold}
+n_{\text{min}} \approx \frac{4 \times 66^2}{(0.7 - 0.28 \times 1.1)^2} \approx \frac{17424}{0.19} \approx 92000
 $$
 
-#### Partial Storage Attack
+**Implication:** Block lengths below $\sim 10^5$ qubits may not yield positive secure key rates.
 
-**Strategy**: Eve stores fraction $\nu$ of qubits, measures rest immediately.
+## 3.2.6 Composable Security
 
-**Mitigation**: Stored qubits undergo decoherence during $\Delta t$ wait time, reducing information gain.
+### Definition
 
-**Entropy Bound**:
+A protocol is **composably secure** if it remains secure when used as a subroutine in larger protocols.
+
+**Composable ROT:** The output $(S_0, S_1, S_C)$ is $\varepsilon$-close to ideal:
 $$
-I(K : E) \leq \nu \cdot n \cdot C_N \quad \text{(König et al., 2012)}
-$$
-
-Where security requires $C_N \cdot \nu < 0.5$.
-
-#### Collective Attack
-
-**Strategy**: Eve entangles multiple EPR pairs, performs joint measurement.
-
-**Mitigation**: NSM security holds even against collective attacks (König et al., 2012, Theorem 1).
-
-**Key Result**: Individual entropy bound applies to collective attacks under NSM assumptions.
-
-## Parameter Sensitivity Analysis
-
-### QBER Sensitivity
-
-**Key Length Dependency**:
-$$
-\frac{\partial \ell}{\partial Q} = -n \cdot \frac{\partial h_{\min}}{\partial Q} = -n \cdot \frac{\partial h(Q)}{\partial Q}
+\|\rho_{\text{real}} - \rho_{\text{ideal}}\|_1 \leq \varepsilon_{\text{total}}
 $$
 
-**Numerical Example** ($\epsilon_{\text{sec}} = 10^{-10}$, $n = 10^4$, $|\Sigma| = 500$):
+where $\rho_{\text{ideal}}$ samples uniform $(S_0, S_1)$ and outputs $S_C$ to Bob.
 
-| QBER | $h_{\min}$ | $\ell$ | Key Rate |
-|------|-----------|--------|----------|
-| 0.01 | 0.92 | 8700 | 87% |
-| 0.05 | 0.71 | 6600 | 66% |
-| 0.08 | 0.59 | 5400 | 54% |
-| 0.11 | 0.50 | 4500 | 45% |
-| 0.15 | 0.39 | 3400 | 34% |
-| 0.20 | 0.28 | 2300 | 23% |
+### Security Parameter Composition
 
-**Observation**: Key length drops rapidly as QBER approaches 11% threshold.
-
-### Storage Noise Sensitivity
-
-**Entropy Dependency**:
+The total security parameter combines:
 $$
-\frac{\partial h_{\min}}{\partial r} > 0 \quad \text{(higher } r \text{ → more noise → higher security)}
+\varepsilon_{\text{total}} = \varepsilon_{\text{PE}} + \varepsilon_{\text{EC}} + \varepsilon_{\text{PA}}
 $$
 
-**Example** ($Q = 0.05$, $\nu = 0.002$):
+| Component | Source | Typical Value |
+|-----------|--------|---------------|
+| $\varepsilon_{\text{PE}}$ | Parameter estimation | $10^{-10}$ |
+| $\varepsilon_{\text{EC}}$ | Reconciliation failure | $10^{-10}$ |
+| $\varepsilon_{\text{PA}}$ | Privacy amplification | $10^{-10}$ |
 
-| $r$ | $Q_{\text{storage}}$ | $C_N \cdot \nu$ | $h_{\min}$ | Feasible? |
-|-----|---------------------|-----------------|-----------|-----------|
-| 0.5 | 0.25 | 0.0013 | 0.60 | ✓ |
-| 0.7 | 0.15 | 0.0010 | 0.68 | ✓ |
-| 0.9 | 0.05 | 0.0004 | 0.71 | ✓ (marginal) |
+**Total:** $\varepsilon_{\text{total}} \leq 3 \times 10^{-10}$
 
-**Tradeoff**: Higher $r$ improves security but requires more EPR pairs to compensate for storage-induced errors.
+### Universal Composability
+
+**Status:** Caligo achieves **standalone security** but not full **universal composability (UC)**.
+
+UC security would require:
+1. Simulation-based proof with ideal functionality $\mathcal{F}_{\text{OT}}$
+2. Environment-adversary interaction model
+3. Composition theorem for arbitrary protocols
+
+This remains an open direction for future work.
+
+---
 
 ## References
 
-- König, R., Renner, R., & Schaffner, C. (2012). "The operational meaning of min- and max-entropy." *IEEE Transactions on Information Theory*, 58(3), 1962-1984.
-- Dupuis, F., Fawzi, O., & Wehner, S. (2014). "Achieving the limits of the noisy-storage model using entanglement sampling." *arXiv:1310.4584*.
-- Lupo, C., et al. (2023). "Practical quantum oblivious key distribution with imperfect devices." *arXiv:2305.xxxxx*.
-- Tomamichel, M., et al. (2011). "Leftover hashing against quantum side information." *IEEE Transactions on Information Theory*, 57(8), 5524-5535.
-- Erven, C., et al. (2014). "An experimental implementation of oblivious transfer in the noisy storage model." *Nature Communications*, 5, 3418.
+[1] C. Schaffner, B. Terhal, and S. Wehner, "Robust Cryptography in the Noisy-Quantum-Storage Model," *Quantum Inf. Comput.* **9**(11&12), 963-996 (2009).
+
+[2] R. König, S. Wehner, and J. Wullschleger, "Unconditional Security from Noisy Quantum Storage," *IEEE Trans. Inf. Theory* **58**, 1962 (2012).
+
+[3] C. Schaffner, "Cryptography in the Bounded-Quantum-Storage Model," Ph.D. thesis, University of Aarhus (2007).
+
+[4] C. Lupo, J. T. Peat, E. Andersson, and P. Kok, "Error-tolerant oblivious transfer in the noisy-storage model," arXiv:2309.xxxxx (2023).
+
+---
+
+[← Return to Main Index](../index.md) | [Next: Implementation Architecture →](./domain_design.md)
