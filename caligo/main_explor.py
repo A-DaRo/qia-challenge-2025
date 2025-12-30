@@ -31,7 +31,10 @@ Notes
 from __future__ import annotations
 
 import argparse
+import atexit
+import gc
 import logging
+import signal
 import sys
 import time
 from dataclasses import dataclass
@@ -57,6 +60,7 @@ from caligo.exploration.persistence import (
     HDF5Writer,
     hdf5_arrays_to_training_data,
 )
+from caligo.exploration.shared_memory import cleanup_shared_memory_orphans
 
 # Visualization and table utilities
 from caligo.vis_tables import (
@@ -67,6 +71,120 @@ from caligo.vis_tables import (
 from caligo.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+# =============================================================================
+# Production Orchestration Utilities
+# =============================================================================
+
+
+def _reset_seed(seed: int) -> None:
+    """
+    Re-assert global random seed for reproducibility.
+
+    Ensures deterministic behavior by resetting NumPy's RNG state
+    before each phase execution.
+
+    Parameters
+    ----------
+    seed : int
+        Random seed value to set.
+    """
+    np.random.seed(seed)
+    logger.debug(f"Random seed re-asserted: {seed}")
+
+
+def _gc_between_phases() -> int:
+    """
+    Force garbage collection between phases.
+
+    Explicitly triggers full GC to release large simulation objects
+    and reduce memory pressure before next phase.
+
+    Returns
+    -------
+    int
+        Number of unreachable objects collected.
+    """
+    collected = gc.collect()
+    logger.debug(f"Inter-phase GC: collected {collected} objects")
+    return collected
+
+
+def _preflight_check_phase1_data(config: "CampaignConfig") -> None:
+    """
+    Verify Phase 1 data exists when --skip-phase1 is used.
+
+    Parameters
+    ----------
+    config : CampaignConfig
+        Campaign configuration.
+
+    Raises
+    ------
+    FileNotFoundError
+        If required warmup data file does not exist.
+    """
+    data_path = config.output_dir / "exploration_data.h5"
+    if not data_path.exists():
+        raise FileNotFoundError(
+            f"Cannot skip Phase 1: warmup data not found at {data_path}\n"
+            "Run Phase 1 first or provide existing data."
+        )
+    logger.info(f"Pre-flight check passed: Phase 1 data exists at {data_path}")
+
+
+def _preflight_check_phase2_data(config: "CampaignConfig") -> None:
+    """
+    Verify Phase 2 surrogate model exists when --skip-phase2 is used.
+
+    Parameters
+    ----------
+    config : CampaignConfig
+        Campaign configuration.
+
+    Raises
+    ------
+    FileNotFoundError
+        If required surrogate model file does not exist.
+    """
+    surrogate_path = config.output_dir / "surrogate.pkl"
+    if not surrogate_path.exists():
+        raise FileNotFoundError(
+            f"Cannot skip Phase 2: surrogate model not found at {surrogate_path}\n"
+            "Run Phase 2 first or provide existing model."
+        )
+    logger.info(f"Pre-flight check passed: Phase 2 surrogate exists at {surrogate_path}")
+
+
+def _setup_cleanup_handlers() -> None:
+    """
+    Register emergency cleanup handlers for shared memory.
+
+    Sets up atexit and signal handlers to ensure shared memory
+    segments are cleaned up on abnormal termination.
+    """
+    def _emergency_cleanup():
+        """Emergency cleanup for shared memory orphans."""
+        try:
+            cleanup_shared_memory_orphans()
+            logger.debug("Emergency shared memory cleanup completed")
+        except Exception as e:
+            # Log but don't raise - we're in cleanup
+            logger.warning(f"Emergency cleanup encountered error: {e}")
+
+    # Register atexit handler
+    atexit.register(_emergency_cleanup)
+
+    # Register signal handlers for common termination signals
+    def _signal_handler(signum, frame):
+        logger.warning(f"Received signal {signum}, initiating cleanup...")
+        _emergency_cleanup()
+        sys.exit(128 + signum)
+
+    # Only register SIGTERM - SIGINT is handled by KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _signal_handler)
+    logger.debug("Emergency cleanup handlers registered")
 
 
 # =============================================================================
@@ -109,7 +227,7 @@ class CampaignConfig:
     tables: Dict[str, Any]
 
 
-def load_config(config_path: Path, num_workers: int) -> CampaignConfig:
+def load_config(config_path: Path, num_workers: Optional[int]) -> CampaignConfig:
     """
     Load campaign configuration from YAML file.
 
@@ -179,7 +297,7 @@ def load_config(config_path: Path, num_workers: int) -> CampaignConfig:
     # Execution settings
     exec_cfg = raw_config.get("execution", {})
     execution = {
-        "num_workers": num_workers if num_workers > 0 else exec_cfg.get("num_workers", 16),
+        "num_workers": num_workers if (num_workers is not None and num_workers > 0) else exec_cfg.get("num_workers", 16),
         "timeout_seconds": exec_cfg.get("timeout_seconds", 300.0),
         "random_seed": exec_cfg.get("random_seed", 42),
         "log_level": exec_cfg.get("log_level", "INFO"),
@@ -531,8 +649,8 @@ Examples:
     parser.add_argument(
         "--workers",
         type=int,
-        default=16,
-        help="Number of parallel workers (default: 16, overrides config)",
+        default=None,
+        help="Number of parallel workers (overrides config when provided)",
     )
     parser.add_argument(
         "--skip-phase1",
@@ -583,7 +701,7 @@ Examples:
             # Skip placeholders in loggerDict
             if not isinstance(logger_obj, logging.Logger):
                 continue
-            if name.startswith("caligo.exploration"):
+            if name.startswith("caligo"):
                 logger_obj.setLevel(log_level)
             else:
                 logger_obj.setLevel(logging.WARNING)
@@ -606,6 +724,9 @@ Examples:
 
     _silence_external_info_logs(log_level)
 
+    # Register emergency cleanup handlers for shared memory
+    _setup_cleanup_handlers()
+
     # Banner
     logger.info("=" * 70)
     logger.info("   CALIGO EXPLORATION SUITE")
@@ -624,11 +745,19 @@ Examples:
         logger.info(f"Random seed: {config.execution['random_seed']}")
         config.output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Pre-flight existence checks for skip flags
+        if args.skip_phase1:
+            _preflight_check_phase1_data(config)
+        if args.skip_phase2:
+            _preflight_check_phase2_data(config)
+
         # Track phase metrics for post-processing
         phase_metrics = {}
+        random_seed = config.execution["random_seed"]
 
         # Phase 1: LHS Warmup
         if not args.skip_phase1:
+            _reset_seed(random_seed)
             metrics1 = run_phase1(config)
             phase_metrics["phase1"] = {
                 "total_samples": metrics1.total_samples,
@@ -636,11 +765,15 @@ Examples:
                 "success_rate": metrics1.success_rate,
                 "elapsed_seconds": metrics1.elapsed_seconds,
             }
+            # GC between phases to release simulation objects
+            del metrics1
+            _gc_between_phases()
         else:
             logger.info("Skipping Phase 1 (--skip-phase1)")
 
         # Phase 2: Surrogate Training
         if not args.skip_phase2:
+            _reset_seed(random_seed)
             metrics2 = run_phase2(config)
             phase_metrics["phase2"] = {
                 "n_samples": metrics2.n_samples,
@@ -648,11 +781,15 @@ Examples:
                 "rmse": (metrics2.val_rmse_baseline + metrics2.val_rmse_blind) / 2,
                 "training_time": metrics2.training_time_seconds,
             }
+            # GC between phases
+            del metrics2
+            _gc_between_phases()
         else:
             logger.info("Skipping Phase 2 (--skip-phase2)")
 
         # Phase 3: Active Learning
         if not args.skip_phase3:
+            _reset_seed(random_seed)
             metrics3 = run_phase3(config)
             phase_metrics["phase3"] = {
                 "iterations": list(range(metrics3.iteration)),
@@ -660,6 +797,9 @@ Examples:
                 "samples_acquired": metrics3.samples_acquired,
                 "best_cliff": metrics3.best_cliff_efficiency,
             }
+            # GC before post-processing
+            del metrics3
+            _gc_between_phases()
         else:
             logger.info("Skipping Phase 3 (--skip-phase3)")
 
@@ -684,9 +824,13 @@ Examples:
         return 1
     except KeyboardInterrupt:
         logger.warning("Campaign interrupted by user")
+        # Emergency cleanup on interrupt
+        cleanup_shared_memory_orphans()
         return 130
     except Exception as e:
         logger.exception(f"Campaign failed: {e}")
+        # Emergency cleanup on failure
+        cleanup_shared_memory_orphans()
         return 1
 
 

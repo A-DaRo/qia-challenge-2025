@@ -115,8 +115,8 @@ class TestStateManager:
 
         loaded = manager.load(Phase1State)
         assert loaded is not None
-        assert loaded.total_samples == phase1_state_partial.total_samples
-        assert loaded.completed_samples == phase1_state_partial.completed_samples
+        assert loaded.target_feasible_samples == phase1_state_partial.target_feasible_samples
+        assert loaded.feasible_samples_collected == phase1_state_partial.feasible_samples_collected
 
     def test_load_nonexistent_returns_none(self, temp_dir):
         """Test loading from empty directory returns None."""
@@ -150,8 +150,9 @@ class TestStateManager:
         
         # Save again (should create backup)
         updated_state = Phase1State(
-            total_samples=100,
-            completed_samples=50,
+            target_feasible_samples=100,
+            feasible_samples_collected=50,
+            total_samples_processed=50,
             current_batch_start=50,
             rng_state={},
         )
@@ -159,7 +160,7 @@ class TestStateManager:
 
         # Load should return updated state
         loaded = manager.load(Phase1State)
-        assert loaded.total_samples == 100
+        assert loaded.target_feasible_samples == 100
 
 
 class TestResultToHdf5Arrays:

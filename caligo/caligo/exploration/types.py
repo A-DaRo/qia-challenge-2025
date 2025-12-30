@@ -14,6 +14,17 @@ The exploration uses a strict type hierarchy:
 
 All types are frozen dataclasses to ensure immutability and hashability
 where required for caching.
+
+Performance Notes
+-----------------
+**Float32 Quantization:** All numerical arrays use `numpy.float32` for:
+- 50% memory footprint reduction vs. float64
+- 2x SIMD throughput (AVX processes more 32-bit values per cycle)
+- GPU Tensor Core compatibility
+
+**JIT-Friendly Design:** `ExplorationSample` is designed for just-in-time
+inflation from raw Float32 arrays. Heavy object creation is deferred until
+protocol execution.
 """
 
 from __future__ import annotations
@@ -21,9 +32,28 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
+from numpy.typing import NDArray
+
+
+# =============================================================================
+# Type Aliases (Float32-Int8 Enforcement)
+# =============================================================================
+
+# Canonical floating-point dtype for all numerical operations
+DTYPE_FLOAT = np.float32
+
+# Canonical integer dtype for all integer operations (e.g., LDPC syndromes, Quantum bits)
+DTYPE_INT = np.int8
+
+# Array type hints for Float32 arrays
+Float32Array = NDArray[np.float32]
+
+# Array type hints for Int8 arrays 
+Int8Array = NDArray[np.int8]
+
 
 
 # =============================================================================
@@ -95,6 +125,7 @@ class ProtocolOutcome(Enum):
     FAILURE_TIMEOUT = "failure_timeout"
     FAILURE_ERROR = "failure_error"
     SKIPPED_INFEASIBLE = "skipped_infeasible"
+    SKIPPED_PREDICTED_FAILURE = "skipped_predicted_failure"
 
 
 # =============================================================================
@@ -192,24 +223,25 @@ class ExplorationSample:
         if not 1e4 <= self.num_pairs <= 1e6:
             raise ValueError(f"num_pairs must be in [1e4,1e6], got {self.num_pairs}")
 
-    def to_array(self) -> np.ndarray:
+    def to_array(self) -> Float32Array:
         """
         Convert sample to numpy array for GP training.
 
         Returns
         -------
-        np.ndarray
+        Float32Array
             Shape (9,) array with normalized continuous parameters and
             strategy encoded as 0 (BASELINE) or 1 (BLIND).
 
         Notes
         -----
         Parameter order matches Table 1 in the design document.
+        Uses Float32 for memory efficiency and SIMD optimization.
         """
         strategy_encoded = 0.0 if self.strategy == ReconciliationStrategy.BASELINE else 1.0
         return np.array([
             self.storage_noise_r,
-            self.storage_rate_nu,
+            np.log10(self.storage_rate_nu),  # Log-transform for uniform sampling
             np.log10(self.wait_time_ns),  # Log-transform for uniform sampling
             self.channel_fidelity,
             np.log10(self.detection_efficiency),
@@ -217,22 +249,27 @@ class ExplorationSample:
             np.log10(self.dark_count_prob),
             np.log10(self.num_pairs),
             strategy_encoded,
-        ], dtype=np.float64)
+        ], dtype=DTYPE_FLOAT)
 
     @classmethod
-    def from_array(cls, arr: np.ndarray) -> "ExplorationSample":
+    def from_array(cls, arr: Union[Float32Array, NDArray]) -> "ExplorationSample":
         """
         Reconstruct sample from numpy array.
 
         Parameters
         ----------
-        arr : np.ndarray
+        arr : Union[Float32Array, NDArray]
             Shape (9,) array as produced by `to_array()`.
 
         Returns
         -------
         ExplorationSample
             Reconstructed sample.
+
+        Notes
+        -----
+        This is a JIT-friendly inflation point - only call when the full
+        object is needed for protocol execution.
         """
         strategy = ReconciliationStrategy.BASELINE if arr[8] < 0.5 else ReconciliationStrategy.BLIND
         return cls(
@@ -244,6 +281,64 @@ class ExplorationSample:
             detector_error=float(arr[5]),
             dark_count_prob=float(10 ** arr[6]),
             num_pairs=int(round(10 ** arr[7])),
+            strategy=strategy,
+        )
+
+    @staticmethod
+    def from_raw_params(
+        r: float,
+        nu: float,
+        dt: float,
+        f: float,
+        eta: float,
+        e_det: float,
+        p_dark: float,
+        n: int,
+        strategy: ReconciliationStrategy,
+    ) -> "ExplorationSample":
+        """
+        Create sample from raw parameter values (non-log space).
+
+        Parameters
+        ----------
+        r : float
+            Storage noise parameter r.
+        nu : float
+            Storage rate ν (linear, not log).
+        dt : float
+            Wait time Δt in nanoseconds.
+        f : float
+            Channel fidelity F.
+        eta : float
+            Detection efficiency η.
+        e_det : float
+            Detector error.
+        p_dark : float
+            Dark count probability.
+        n : int
+            Number of EPR pairs.
+        strategy : ReconciliationStrategy
+            Reconciliation strategy.
+
+        Returns
+        -------
+        ExplorationSample
+            Validated exploration sample.
+
+        Notes
+        -----
+        This factory method provides a fast path for sample creation
+        from raw parameters without array intermediary.
+        """
+        return ExplorationSample(
+            storage_noise_r=r,
+            storage_rate_nu=nu,
+            wait_time_ns=dt,
+            channel_fidelity=f,
+            detection_efficiency=eta,
+            detector_error=e_det,
+            dark_count_prob=p_dark,
+            num_pairs=n,
             strategy=strategy,
         )
 

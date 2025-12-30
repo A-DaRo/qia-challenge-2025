@@ -166,8 +166,9 @@ class TestPhase1Integration:
         # Save checkpoint
         rng = np.random.default_rng(42)
         state = Phase1State(
-            total_samples=n_samples,
-            completed_samples=checkpoint_at,
+            target_feasible_samples=n_samples,
+            feasible_samples_collected=checkpoint_at,
+            total_samples_processed=checkpoint_at,
             current_batch_start=checkpoint_at,
             rng_state={"state": rng.bit_generator.state},
         )
@@ -176,7 +177,7 @@ class TestPhase1Integration:
         # Resume (new sampler, load checkpoint)
         loaded_state = state_manager.load(Phase1State)
         assert loaded_state is not None
-        assert loaded_state.completed_samples == checkpoint_at
+        assert loaded_state.feasible_samples_collected == checkpoint_at
         
         # Complete remaining samples
         results_part2 = [mock_protocol_execution(s) for s in samples[checkpoint_at:]]

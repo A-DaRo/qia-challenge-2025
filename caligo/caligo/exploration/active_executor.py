@@ -431,7 +431,22 @@ class Phase3Executor:
         for sample, epr_result in zip(samples, epr_results):
             if epr_result.is_success():
                 result = self._harness.execute(sample, epr_data=epr_result.epr_data)
+                # CRITICAL VISIBILITY: Escalate to WARNING to force visibility
+                if not result.is_success():
+                    logger.warning(
+                        "Protocol FAILED (active) | Sample %s | Error: %s | Eff: %.4f | KeyLen: %d | QBER: %.4f", 
+                        epr_result.batch_id, 
+                        result.error_message,
+                        result.net_efficiency,
+                        result.final_key_length,
+                        result.qber_measured if not np.isnan(result.qber_measured) else -1.0
+                    )
             else:
+                logger.error(
+                    "EPR Generation failed (active) for sample (batch=%s): %s",
+                    epr_result.batch_id,
+                    epr_result.error
+                )
                 result = ProtocolResult(
                     sample=sample,
                     outcome=ProtocolOutcome.FAILURE_ERROR,
@@ -449,6 +464,129 @@ class Phase3Executor:
 
         return results
 
+    def _execute_batch_streaming(
+        self,
+        candidates: np.ndarray,
+        inner_pbar: tqdm,
+        guardrail_classifier: Optional[Any] = None,
+    ) -> List[ProtocolResult]:
+        """
+        Execute a batch using streaming EPR generation with optional guardrail.
+
+        This method uses generator-based pipelining for improved throughput:
+        - EPR data streams as workers complete (no batch synchronization)
+        - Optional guardrail classifier can skip predicted-zero-rate samples
+        - Memory is released immediately after each protocol execution
+
+        Parameters
+        ----------
+        candidates : np.ndarray
+            Candidate points, shape (batch_size, 9).
+        inner_pbar : tqdm
+            Inner progress bar.
+        guardrail_classifier : Optional[Any]
+            Binary classifier that predicts feasibility. If provided,
+            samples predicted as infeasible are skipped immediately.
+            Should implement `predict(X) -> np.ndarray[bool]`.
+
+        Returns
+        -------
+        List[ProtocolResult]
+            Execution results (order may differ from input).
+        """
+        from typing import Generator
+
+        samples = array_to_samples(candidates)
+        n_samples = len(samples)
+
+        # Apply guardrail if available
+        if guardrail_classifier is not None:
+            inner_pbar.set_postfix({"step": "Guardrail check"})
+            feasibility = guardrail_classifier.predict(candidates)
+            samples_to_run = [s for s, f in zip(samples, feasibility) if f]
+            skipped_samples = [s for s, f in zip(samples, feasibility) if not f]
+
+            # Create immediate results for skipped samples
+            skipped_results = [
+                ProtocolResult(
+                    sample=sample,
+                    outcome=ProtocolOutcome.SKIPPED_PREDICTED_FAILURE,
+                    net_efficiency=0.0,
+                    raw_key_length=0,
+                    final_key_length=0,
+                    qber_measured=float("nan"),
+                    reconciliation_efficiency=0.0,
+                    leakage_bits=0,
+                    execution_time_seconds=0.0,
+                    error_message="Guardrail predicted zero key rate",
+                )
+                for sample in skipped_samples
+            ]
+            logger.debug(
+                "Guardrail skipped %d/%d samples",
+                len(skipped_samples),
+                n_samples,
+            )
+        else:
+            samples_to_run = samples
+            skipped_results = []
+
+        if not samples_to_run:
+            return skipped_results
+
+        # Stream EPR generation
+        inner_pbar.set_postfix({"step": "EPR streaming"})
+        results = list(skipped_results)
+
+        epr_orchestrator = self._harness._epr_orchestrator
+        sample_map = {id(s): s for s in samples_to_run}
+
+        # Process EPR results as they stream in
+        for epr_result in epr_orchestrator.generate_batch_streaming(samples_to_run):
+            sample = epr_result.sample
+            inner_pbar.update(1)
+
+            if epr_result.is_success():
+                # Execute protocol immediately while other EPR generation continues
+                inner_pbar.set_postfix({"step": f"Protocol (batch={epr_result.batch_id})"})
+                result = self._harness.execute(sample, epr_data=epr_result.epr_data)
+                # CRITICAL VISIBILITY: Escalate to WARNING to force visibility
+                if not result.is_success():
+                    logger.warning(
+                        "Protocol FAILED (active streaming) | Sample %s | Error: %s | Eff: %.4f | KeyLen: %d | QBER: %.4f", 
+                        epr_result.batch_id, 
+                        result.error_message,
+                        result.net_efficiency,
+                        result.final_key_length,
+                        result.qber_measured if not np.isnan(result.qber_measured) else -1.0
+                    )
+            else:
+                logger.error(
+                    "EPR Generation failed (active streaming) for sample (batch=%s): %s",
+                    epr_result.batch_id,
+                    epr_result.error
+                )
+                result = ProtocolResult(
+                    sample=sample,
+                    outcome=ProtocolOutcome.FAILURE_ERROR,
+                    net_efficiency=0.0,
+                    raw_key_length=0,
+                    final_key_length=0,
+                    qber_measured=float("nan"),
+                    reconciliation_efficiency=0.0,
+                    leakage_bits=0,
+                    execution_time_seconds=0.0,
+                    error_message=f"EPR generation failed: {epr_result.error}",
+                )
+
+            results.append(result)
+
+            # Explicit memory cleanup after each result
+            del epr_result
+            inner_pbar.update(1)
+
+        return results
+
     def run(
         self,
         num_iterations: int = 100,
@@ -456,6 +594,8 @@ class Phase3Executor:
         retrain_interval: int = 5,
         checkpoint_interval: int = 5,
         verbose: bool = True,
+        use_streaming: bool = True,
+        guardrail_classifier: Optional[Any] = None,
     ) -> Phase3Metrics:
         """
         Run the Phase 3 active learning campaign.
@@ -472,6 +612,13 @@ class Phase3Executor:
             Save checkpoint every N iterations.
         verbose : bool
             Whether to show progress bars.
+        use_streaming : bool
+            If True, use streaming EPR generation with `as_completed`.
+            This enables pipelined execution and reduces memory footprint.
+        guardrail_classifier : Optional[Any]
+            Binary classifier for fail-fast filtering. If provided, samples
+            predicted as infeasible are skipped before EPR generation.
+            Should implement `predict(X) -> np.ndarray[bool]`.
 
         Returns
         -------
@@ -494,9 +641,10 @@ class Phase3Executor:
                 self._metrics.best_cliff_efficiency = state.best_cliff_efficiency
             else:
                 logger.info(
-                    "Starting Phase 3: %d iterations, batch_size=%d",
+                    "Starting Phase 3: %d iterations, batch_size=%d, streaming=%s",
                     num_iterations,
                     batch_size,
+                    use_streaming,
                 )
                 start_iteration = 0
                 state = Phase3State()
@@ -524,8 +672,10 @@ class Phase3Executor:
                 )
 
                 # Inner progress bar (batch execution)
+                # Streaming mode processes results as they complete
+                inner_total = batch_size * 2 if use_streaming else batch_size + batch_size // 2
                 inner_pbar = tqdm(
-                    total=batch_size + batch_size // 2,  # EPR + protocol
+                    total=inner_total,
                     desc=f"  Iter {iteration+1}",
                     unit="samples",
                     disable=not verbose,
@@ -533,8 +683,13 @@ class Phase3Executor:
                     leave=False,
                 )
 
-                # Execute batch
-                results = self._execute_batch(candidates, inner_pbar)
+                # Execute batch using streaming or standard mode
+                if use_streaming:
+                    results = self._execute_batch_streaming(
+                        candidates, inner_pbar, guardrail_classifier
+                    )
+                else:
+                    results = self._execute_batch(candidates, inner_pbar)
                 inner_pbar.close()
 
                 # Write to HDF5

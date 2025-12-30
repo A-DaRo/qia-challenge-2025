@@ -29,13 +29,13 @@ output:
 # ------------------------------------------------------------------------------
 phase1:
   # Total number of LHS samples to generate
-  num_samples: 5000
+  num_samples: 2000
   
   # Batch size for parallel execution
-  batch_size: 256
+  batch_size: 16
   
   # Checkpoint save interval (in batches)
-  checkpoint_interval: 50
+  checkpoint_interval: 5
   
   # Strategy ratio: fraction of BLIND samples (0.5 = balanced)
   strategy_ratio: 0.5
@@ -71,7 +71,7 @@ phase3:
   num_iterations: 100
   
   # Batch size per iteration
-  batch_size: 16
+  batch_size: 2
   
   # Retrain surrogate every N iterations
   retrain_interval: 5
@@ -139,7 +139,7 @@ bounds:
 # ------------------------------------------------------------------------------
 execution:
   # Number of parallel workers (default: 16)
-  num_workers: 128
+  num_workers: 8
   
   # Random seed for reproducibility (null for random)
   random_seed: 42

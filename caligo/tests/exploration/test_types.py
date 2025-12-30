@@ -56,9 +56,10 @@ class TestExplorationSample:
         arr = sample_exploration_sample.to_array()
         assert isinstance(arr, np.ndarray)
         assert arr.shape == (9,)
-        assert arr.dtype == np.float64
+        # Float32 for memory efficiency and SIMD optimization
+        assert arr.dtype == np.float32
         # First element should be storage_noise_r (0.1)
-        assert arr[0] == pytest.approx(0.1)
+        assert arr[0] == pytest.approx(0.1, rel=1e-5)
         # Strategy should be encoded as 0 (BASELINE) or 1 (BLIND)
         assert arr[8] in [0.0, 1.0]
 
@@ -167,6 +168,8 @@ class TestProtocolOutcome:
             "FAILURE_SECURITY",
             "FAILURE_TIMEOUT",
             "FAILURE_ERROR",
+            "SKIPPED_INFEASIBLE",
+            "SKIPPED_PREDICTED_FAILURE",
         }
         actual = {o.name for o in ProtocolOutcome}
         assert actual == expected
@@ -203,8 +206,8 @@ class TestPhaseStates:
 
     def test_phase1_state_creation(self, phase1_state_partial):
         """Test Phase1State creation."""
-        assert phase1_state_partial.total_samples == 50
-        assert phase1_state_partial.completed_samples == 25
+        assert phase1_state_partial.target_feasible_samples == 50
+        assert phase1_state_partial.feasible_samples_collected == 25
         assert phase1_state_partial.current_phase == "LHS"
 
     def test_phase1_state_progress(self, phase1_state_partial):
@@ -217,8 +220,9 @@ class TestPhaseStates:
         assert phase1_state_partial.is_complete() is False
         
         complete_state = Phase1State(
-            total_samples=50,
-            completed_samples=50,
+            target_feasible_samples=50,
+            feasible_samples_collected=50,
+            total_samples_processed=60,
             current_batch_start=50,
             rng_state={},
         )

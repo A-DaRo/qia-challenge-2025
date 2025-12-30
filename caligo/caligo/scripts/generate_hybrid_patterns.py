@@ -114,7 +114,7 @@ def compute_ace_score(
     max_cycle_length: int = 12,
 ) -> float:
     """
-    Compute ACE (Approximate Cycle Extrinsic message degree) score.
+    Compute ACE score.
     
     Per Theoretical Report v2 §2.2.3 and Liu & de Lamare [4]:
     - High ACE = Better connectivity = Safer to puncture

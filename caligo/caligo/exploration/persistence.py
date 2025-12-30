@@ -362,6 +362,231 @@ class HDF5Writer:
 
 
 # =============================================================================
+# Buffered HDF5 Writer (Pre-Allocated Float32 Buffers)
+# =============================================================================
+
+
+class BufferedHDF5Writer:
+    """
+    Pre-allocated buffer writer for streaming HDF5 writes.
+
+    This class provides memory-efficient streaming writes by pre-allocating
+    Float32 buffers that match the batch size. Data is accumulated in-memory
+    and flushed to HDF5 when the buffer fills, ensuring:
+
+    - **Zero-copy writes**: Buffer layout matches HDF5 dataset layout
+    - **Constant memory footprint**: Buffer size is fixed regardless of campaign length
+    - **Cache-friendly access**: Contiguous Float32 arrays for SIMD optimization
+    - **2MB page alignment**: Optimal for HDF5 chunk boundaries
+
+    Parameters
+    ----------
+    writer : HDF5Writer
+        Underlying HDF5 writer instance.
+    buffer_size : int
+        Number of samples to buffer before flushing. Default 100 (aligned
+        with HDF5 chunk size for optimal I/O).
+    auto_flush : bool
+        If True, automatically flush when buffer is full.
+
+    Attributes
+    ----------
+    writer : HDF5Writer
+        Underlying HDF5 writer.
+    buffer_size : int
+        Maximum buffer capacity.
+    _input_buffer : np.ndarray
+        Pre-allocated Float32 input buffer, shape (buffer_size, 9).
+    _output_buffer : np.ndarray
+        Pre-allocated Float32 output buffer, shape (buffer_size, 6).
+    _outcome_buffer : List[str]
+        Outcome strings buffer.
+    _metadata_buffer : List[str]
+        Metadata strings buffer.
+    _buffer_idx : int
+        Current write position in buffer.
+    _target_group : str
+        Target HDF5 group name.
+
+    Examples
+    --------
+    >>> with HDF5Writer(Path("data.h5"), mode="a") as writer:
+    ...     buffered = BufferedHDF5Writer(writer, buffer_size=100)
+    ...     buffered.set_group("lhs_warmup")
+    ...     for result in streaming_results:
+    ...         buffered.append_single(result)
+    ...     buffered.flush()  # Write remaining data
+    """
+
+    def __init__(
+        self,
+        writer: HDF5Writer,
+        buffer_size: int = 100,
+        auto_flush: bool = True,
+    ) -> None:
+        """
+        Initialize the buffered writer.
+
+        Parameters
+        ----------
+        writer : HDF5Writer
+            Underlying HDF5 writer (must be open).
+        buffer_size : int
+            Buffer capacity (samples).
+        auto_flush : bool
+            Auto-flush on buffer full.
+        """
+        self.writer = writer
+        self.buffer_size = buffer_size
+        self.auto_flush = auto_flush
+
+        # Pre-allocate Float32 buffers for zero-copy writes
+        self._input_buffer = np.zeros(
+            (buffer_size, INPUT_SHAPE[0]), dtype=DTYPE_INPUTS
+        )
+        self._output_buffer = np.zeros(
+            (buffer_size, OUTPUT_SHAPE[0]), dtype=DTYPE_OUTPUTS
+        )
+        self._outcome_buffer: List[str] = []
+        self._metadata_buffer: List[str] = []
+        self._buffer_idx = 0
+        self._target_group = GROUP_LHS_WARMUP
+        self._total_flushed = 0
+
+        logger.debug(
+            "Initialized BufferedHDF5Writer with buffer_size=%d (%.2f KB per buffer)",
+            buffer_size,
+            buffer_size * (INPUT_SHAPE[0] + OUTPUT_SHAPE[0]) * 4 / 1024,
+        )
+
+    def set_group(self, group_name: str) -> None:
+        """
+        Set the target HDF5 group for writes.
+
+        If the buffer contains data for a different group, it is flushed first.
+
+        Parameters
+        ----------
+        group_name : str
+            Target group name (e.g., "lhs_warmup", "active_learning").
+        """
+        if self._buffer_idx > 0 and group_name != self._target_group:
+            self.flush()
+        self._target_group = group_name
+
+    def append_single(
+        self,
+        inputs: np.ndarray,
+        outputs: np.ndarray,
+        outcome: str,
+        metadata: str,
+    ) -> None:
+        """
+        Append a single result to the buffer.
+
+        Parameters
+        ----------
+        inputs : np.ndarray
+            Input parameters, shape (9,).
+        outputs : np.ndarray
+            Output metrics, shape (6,).
+        outcome : str
+            Protocol outcome string.
+        metadata : str
+            JSON metadata string.
+        """
+        # Write directly to pre-allocated buffer (zero-copy)
+        self._input_buffer[self._buffer_idx] = inputs.astype(DTYPE_INPUTS)
+        self._output_buffer[self._buffer_idx] = outputs.astype(DTYPE_OUTPUTS)
+        self._outcome_buffer.append(outcome)
+        self._metadata_buffer.append(metadata)
+        self._buffer_idx += 1
+
+        if self.auto_flush and self._buffer_idx >= self.buffer_size:
+            self.flush()
+
+    def append_result(self, result: ProtocolResult) -> None:
+        """
+        Append a ProtocolResult to the buffer.
+
+        Convenience method that extracts arrays from a ProtocolResult.
+
+        Parameters
+        ----------
+        result : ProtocolResult
+            Protocol execution result.
+        """
+        import json as json_module
+
+        inputs = result.sample.to_array()
+        outputs = np.array([
+            result.net_efficiency,
+            float(result.raw_key_length),
+            float(result.final_key_length),
+            result.qber_measured,
+            result.reconciliation_efficiency,
+            float(result.leakage_bits),
+        ], dtype=DTYPE_OUTPUTS)
+        outcome = result.outcome.value
+        metadata = json_module.dumps({
+            "execution_time": result.execution_time_seconds,
+            "error": result.error_message,
+        })
+
+        self.append_single(inputs, outputs, outcome, metadata)
+
+    def flush(self) -> int:
+        """
+        Flush the buffer to HDF5.
+
+        Writes accumulated data to the underlying HDF5Writer and resets
+        the buffer position.
+
+        Returns
+        -------
+        int
+            Number of samples flushed.
+        """
+        if self._buffer_idx == 0:
+            return 0
+
+        # Write only the filled portion of the buffer
+        count = self.writer.append_batch(
+            self._target_group,
+            inputs=self._input_buffer[:self._buffer_idx],
+            outputs=self._output_buffer[:self._buffer_idx],
+            outcomes=self._outcome_buffer,
+            metadata=self._metadata_buffer,
+        )
+
+        flushed = self._buffer_idx
+        self._total_flushed += flushed
+
+        # Reset buffer state (buffers are reused, not reallocated)
+        self._buffer_idx = 0
+        self._outcome_buffer.clear()
+        self._metadata_buffer.clear()
+
+        logger.debug(
+            "Flushed %d samples to %s (total: %d)",
+            flushed,
+            self._target_group,
+            self._total_flushed,
+        )
+        return flushed
+
+    @property
+    def buffered_count(self) -> int:
+        """Return number of samples currently buffered."""
+        return self._buffer_idx
+
+    @property
+    def total_written(self) -> int:
+        """Return total samples written (flushed + buffered)."""
+        return self._total_flushed + self._buffer_idx
+
+
+# =============================================================================
 # State Manager
 # =============================================================================
 

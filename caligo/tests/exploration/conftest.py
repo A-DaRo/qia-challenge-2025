@@ -283,8 +283,9 @@ def phase1_state_partial(exploration_output_dir: Path) -> Phase1State:
     """Phase 1 state with partial completion."""
     rng = np.random.default_rng(42)
     return Phase1State(
-        total_samples=50,
-        completed_samples=25,
+        target_feasible_samples=50,
+        feasible_samples_collected=25,
+        total_samples_processed=30,
         current_batch_start=20,
         rng_state={"state": rng.bit_generator.state},
         current_phase="LHS",

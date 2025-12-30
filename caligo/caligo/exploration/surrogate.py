@@ -62,6 +62,46 @@ class GPConfig:
     random_state: int = 42
 
 
+@dataclass(frozen=True)
+class GuardrailConfig:
+    """
+    Configuration for the fail-fast guardrail classifier.
+
+    The guardrail is a lightweight binary classifier that predicts whether
+    a sample will result in a successful protocol execution (positive key rate)
+    or failure (zero key rate). Samples predicted as failures with high
+    confidence are skipped before expensive EPR generation.
+
+    Parameters
+    ----------
+    enabled : bool
+        Whether the guardrail is active. If False, all samples are executed.
+    failure_threshold : float
+        Probability threshold for classifying as failure. Samples with
+        P(failure) > threshold are skipped. Default 0.95 (95% confident).
+    n_estimators : int
+        Number of trees in the Random Forest classifier.
+    max_depth : int
+        Maximum depth of trees. Shallow trees ensure fast inference.
+    min_samples_for_training : int
+        Minimum training samples required before guardrail is active.
+        Below this threshold, all samples are executed to gather data.
+    class_weight : str
+        Class weight strategy for imbalanced data. Use "balanced" to
+        handle datasets with more successes than failures.
+    random_state : int
+        Random seed for reproducibility.
+    """
+
+    enabled: bool = True
+    failure_threshold: float = 0.95
+    n_estimators: int = 100
+    max_depth: int = 8
+    min_samples_for_training: int = 50
+    class_weight: str = "balanced"
+    random_state: int = 42
+
+
 @dataclass
 class StrategyGP:
     """
@@ -471,6 +511,247 @@ class EfficiencyLandscape:
             landscape = pickle.load(f)
         logger.info(f"Loaded EfficiencyLandscape from {path}")
         return landscape
+
+
+# =============================================================================
+# Fail-Fast Guardrail Classifier
+# =============================================================================
+
+
+class FeasibilityGuardrail:
+    """
+    Lightweight binary classifier for fail-fast sample filtering.
+
+    The guardrail predicts whether a sample will result in successful
+    protocol execution (positive key rate) or failure (zero key rate).
+    Samples predicted as failures with high confidence are skipped before
+    expensive EPR generation, saving minutes of simulation time per sample.
+
+    The classifier is trained on binary labels derived from efficiency:
+    - Label 1 (success): efficiency > 0
+    - Label 0 (failure): efficiency == 0
+
+    Parameters
+    ----------
+    config : GuardrailConfig
+        Configuration for the classifier.
+
+    Attributes
+    ----------
+    config : GuardrailConfig
+        Classifier configuration.
+    classifier : RandomForestClassifier
+        Fitted Random Forest classifier.
+    scaler : StandardScaler
+        Feature scaler.
+    is_fitted : bool
+        Whether the classifier has been trained.
+    n_samples : int
+        Number of training samples.
+    n_failures : int
+        Number of failure samples in training data.
+    n_successes : int
+        Number of success samples in training data.
+
+    Examples
+    --------
+    >>> guardrail = FeasibilityGuardrail()
+    >>> guardrail.fit(X_train, y_train)  # y_train is efficiency
+    >>> mask = guardrail.predict(X_new)  # True = feasible, False = skip
+    >>> feasible_samples = X_new[mask]
+    """
+
+    def __init__(self, config: Optional[GuardrailConfig] = None) -> None:
+        """
+        Initialize the guardrail classifier.
+
+        Parameters
+        ----------
+        config : Optional[GuardrailConfig]
+            Configuration. Uses defaults if None.
+        """
+        from sklearn.ensemble import RandomForestClassifier
+
+        self.config = config or GuardrailConfig()
+        self.classifier = RandomForestClassifier(
+            n_estimators=self.config.n_estimators,
+            max_depth=self.config.max_depth,
+            class_weight=self.config.class_weight,
+            random_state=self.config.random_state,
+            n_jobs=-1,  # Use all available cores for fast inference
+        )
+        self.scaler = StandardScaler()
+        self.is_fitted = False
+        self.n_samples = 0
+        self.n_failures = 0
+        self.n_successes = 0
+
+    def fit(
+        self,
+        X: NDArray[np.floating],
+        y: NDArray[np.floating],
+        success_threshold: float = 0.0,
+    ) -> "FeasibilityGuardrail":
+        """
+        Fit the guardrail classifier.
+
+        Training labels are derived from efficiency values:
+        - Label 1 (success): y > success_threshold
+        - Label 0 (failure): y <= success_threshold
+
+        Parameters
+        ----------
+        X : NDArray[np.floating]
+            Feature matrix, shape (n_samples, n_features).
+        y : NDArray[np.floating]
+            Efficiency values, shape (n_samples,).
+        success_threshold : float
+            Threshold for success classification. Default 0.0 means
+            any positive efficiency is considered success.
+
+        Returns
+        -------
+        FeasibilityGuardrail
+            Self for method chaining.
+        """
+        if len(X) < self.config.min_samples_for_training:
+            logger.warning(
+                "Insufficient training data for guardrail: %d < %d required",
+                len(X),
+                self.config.min_samples_for_training,
+            )
+            return self
+
+        # Convert efficiency to binary labels
+        labels = (y > success_threshold).astype(np.int32)
+        self.n_failures = int((labels == 0).sum())
+        self.n_successes = int((labels == 1).sum())
+        self.n_samples = len(X)
+
+        # Check for degenerate cases
+        if self.n_failures == 0:
+            logger.warning("No failure samples in training data - guardrail disabled")
+            return self
+        if self.n_successes == 0:
+            logger.warning("No success samples in training data - guardrail disabled")
+            return self
+
+        # Scale features and fit classifier
+        X_scaled = self.scaler.fit_transform(X)
+        self.classifier.fit(X_scaled, labels)
+        self.is_fitted = True
+
+        logger.info(
+            "Fitted FeasibilityGuardrail with %d samples "
+            "(success: %d, failure: %d, ratio: %.1f%%)",
+            self.n_samples,
+            self.n_successes,
+            self.n_failures,
+            100 * self.n_successes / self.n_samples,
+        )
+        return self
+
+    def predict(self, X: NDArray[np.floating]) -> NDArray[np.bool_]:
+        """
+        Predict feasibility for samples.
+
+        Returns True for samples predicted as feasible (should be executed),
+        False for samples predicted as failures (should be skipped).
+
+        Parameters
+        ----------
+        X : NDArray[np.floating]
+            Feature matrix, shape (n_samples, n_features).
+
+        Returns
+        -------
+        NDArray[np.bool_]
+            Boolean mask: True = execute, False = skip.
+
+        Notes
+        -----
+        If the guardrail is not fitted or disabled, returns all True
+        (execute all samples).
+        """
+        n_samples = len(X)
+
+        # Return all True if guardrail is disabled or not fitted
+        if not self.config.enabled or not self.is_fitted:
+            return np.ones(n_samples, dtype=np.bool_)
+
+        # Get predicted probabilities
+        X_scaled = self.scaler.transform(X)
+        proba = self.classifier.predict_proba(X_scaled)
+
+        # P(failure) is column 0 if classes are [0, 1]
+        classes = self.classifier.classes_
+        if classes[0] == 0:
+            p_failure = proba[:, 0]
+        else:
+            p_failure = proba[:, 1]
+
+        # Skip samples with high failure probability
+        feasible = p_failure < self.config.failure_threshold
+
+        n_skipped = int((~feasible).sum())
+        if n_skipped > 0:
+            logger.debug(
+                "Guardrail filtering: %d/%d samples skipped (%.1f%%)",
+                n_skipped,
+                n_samples,
+                100 * n_skipped / n_samples,
+            )
+
+        return feasible
+
+    def predict_proba(
+        self,
+        X: NDArray[np.floating],
+    ) -> Tuple[NDArray[np.floating], NDArray[np.floating]]:
+        """
+        Get failure/success probabilities.
+
+        Parameters
+        ----------
+        X : NDArray[np.floating]
+            Feature matrix.
+
+        Returns
+        -------
+        Tuple[NDArray[np.floating], NDArray[np.floating]]
+            (p_failure, p_success) probability arrays.
+        """
+        if not self.is_fitted:
+            n_samples = len(X)
+            return np.zeros(n_samples), np.ones(n_samples)
+
+        X_scaled = self.scaler.transform(X)
+        proba = self.classifier.predict_proba(X_scaled)
+
+        classes = self.classifier.classes_
+        if classes[0] == 0:
+            return proba[:, 0], proba[:, 1]
+        else:
+            return proba[:, 1], proba[:, 0]
+
+    def get_stats(self) -> dict:
+        """
+        Get guardrail statistics.
+
+        Returns
+        -------
+        dict
+            Statistics including sample counts and class balance.
+        """
+        return {
+            "is_fitted": self.is_fitted,
+            "enabled": self.config.enabled,
+            "n_samples": self.n_samples,
+            "n_failures": self.n_failures,
+            "n_successes": self.n_successes,
+            "failure_threshold": self.config.failure_threshold,
+            "success_ratio": self.n_successes / self.n_samples if self.n_samples > 0 else 0.0,
+        }
 
 
 def detect_divergence(
