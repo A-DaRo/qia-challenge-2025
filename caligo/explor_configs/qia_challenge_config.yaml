@@ -32,7 +32,7 @@ phase1:
   num_samples: 2000
   
   # Batch size for parallel execution
-  batch_size: 16
+  batch_size: 4
   
   # Checkpoint save interval (in batches)
   checkpoint_interval: 5
@@ -71,7 +71,7 @@ phase3:
   num_iterations: 100
   
   # Batch size per iteration
-  batch_size: 2
+  batch_size: 4
   
   # Retrain surrogate every N iterations
   retrain_interval: 5
@@ -139,7 +139,7 @@ bounds:
 # ------------------------------------------------------------------------------
 execution:
   # Number of parallel workers (default: 16)
-  num_workers: 8
+  num_workers: 4
   
   # Random seed for reproducibility (null for random)
   random_seed: 42

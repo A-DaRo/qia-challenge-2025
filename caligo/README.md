@@ -6,16 +6,17 @@ This README is a developer-oriented reference: package boundaries, primary entry
 
 ## Architecture Overview
 
-Caligo is organized around two execution contexts:
+Caligo is organized around three stratified execution contexts:
 
-- **Phase D (domain logic)**: cryptographic and protocol primitives that are independent of SquidASM (unit-testable in isolation).
-- **Phase E (execution layer)**: SquidASM `Program` implementations and simulation utilities that run the full protocol.
+- **Exploration Layer (Meta-Analysis)**: Orchestrates large-scale campaigns to detect security cliffs using Bayesian optimization and surrogate modeling.
+- **Phase D (Domain Logic)**: Cryptographic and protocol primitives that are independent of SquidASM (unit-testable in isolation).
+- **Phase E (Execution Layer)**: SquidASM `Program` implementations and simulation utilities that run the full protocol.
 
 Separation of concerns:
 
-- **Typed phase boundaries**: phases exchange immutable contracts in `caligo.types`.
-- **Simulation-independent core**: most logic is designed to run without a simulator.
-- **Explicit infrastructure layer**: messaging and timing constraints are implemented in dedicated modules.
+- **Typed phase boundaries**: Phases exchange immutable contracts in `caligo.types`.
+- **Simulation-independent core**: Logic is decoupled from the simulator where possible, enabling faster unit testing.
+- **Explicit infrastructure layer**: Messaging and timing constraints are implemented in dedicated modules.
 
 ## Repository Layout
 
@@ -32,10 +33,12 @@ caligo/
     reconciliation/   # Phase D: LDPC-based reconciliation
     amplification/    # Phase D: entropy + Toeplitz hashing + OT formatting
     security/         # Bounds, feasibility checks, finite-key helpers
+    exploration/      # Exploration Suite: LHS, Surrogate, Active Learning
     types/            # Phase contracts, keys, exceptions
     utils/            # Logging and bitarray/math utilities
     tests/            # Unit/integration tests
 
+  main_explor.py      # ENTRY POINT: Cliff detection campaign orchestrator
   nsm_configs/        # Example YAML parameter sets (simulation/scenarios)
   explor_configs/     # Exploration harness configs
 ```
@@ -44,6 +47,7 @@ caligo/
 
 | Package | Responsibility | Typical types/functions |
 |---|---|---|
+| `caligo.exploration` | Security cliff detection (LHS, Surrogate, Active Learning) | `Phase1Executor`, `Phase3Executor`, `BatchedEPRConfig` |
 | `caligo.protocol` | Phase E orchestration (SquidASM programs and runner) | `AliceProgram`, `BobProgram`, `run_protocol()`, `ProtocolParameters` |
 | `caligo.simulation` | Simulation wiring and NSM enforcement | `CaligoNetworkBuilder`, `TimingBarrier`, `perfect_network_config()` |
 | `caligo.connection` | Reliable ordered classical messaging | `OrderedSocket` |
@@ -57,9 +61,24 @@ caligo/
 
 ## Primary Entry Points
 
-### Run the full SquidASM-backed protocol (Phase E)
+### 1. Run the Security Cliff Exploration Campaign
 
-The main entry point is `caligo.protocol.run_protocol()`.
+The primary entry point for large-scale analysis is `main_explor.py`. This script orchestrates a 3-phase pipeline (LHS Warmup -> Surrogate Training -> Active Learning) to map the security boundary of the protocol.
+
+```bash
+# Basic usage
+python main_explor.py
+
+# Custom configuration with worker override
+python main_explor.py --config explor_configs/qia_challenge_config.yaml --workers 32
+
+# Resume/Skip specific phases
+python main_explor.py --skip-phase1 --skip-phase2
+```
+
+### 2. Run the full SquidASM-backed protocol (Phase E)
+
+For single-shot execution, use `caligo.protocol.run_protocol()`.
 
 ```python
 from caligo.protocol import ProtocolParameters, run_protocol
@@ -79,16 +98,15 @@ params = ProtocolParameters(
 ot, raw = run_protocol(params, bob_choice_bit=0)
 ```
 
-Notes:
-
+**Notes:**
 - You can pass a pre-built SquidASM network via the `network_config` argument.
 - Hardware compatibility is validated before execution (see `caligo.simulation.validate_network_config`).
 
-### Build a network configuration
+### 3. Build a network configuration
 
 For most experiments, use `caligo.simulation.CaligoNetworkBuilder` or helper constructors such as `perfect_network_config()`.
 
-### Preflight feasibility checks (Phase D)
+### 4. Preflight feasibility checks (Phase D)
 
 Use `caligo.security.FeasibilityChecker` to evaluate whether a parameter set is expected to yield a positive key length under the implemented bounds.
 
@@ -115,18 +133,19 @@ The phase boundary contracts are defined in `caligo.types` (e.g., `QuantumPhaseR
 
 ## Configuration
 
-- Example NSM/channel parameter sets live in `nsm_configs/` (YAML).
-- LDPC degree distributions and related artifacts live under `caligo/configs/`.
-- Exploration/sweep configurations live in `explor_configs/`.
+- **Exploration**: Main exploration configs live in `explor_configs/` (e.g. `qia_challenge_config.yaml`).
+- **Simulation**: Example NSM/channel parameter sets live in `nsm_configs/`.
+- **System**: LDPC degree distributions and artifacts live under `caligo/configs/`.
 
 ## Dependencies
 
 - Base dependencies are declared in `pyproject.toml`.
-- Simulation dependencies are fundamental (extra `simulation`) and require SquidASM/NetQASM/NetSquid. Please follow [SquidASM Installation Guide](https://squidasm.readthedocs.io/en/latest/installation.html) to install the required simulation dependencies.
+- Simulation dependencies are fundamental and require SquidASM/NetQASM/NetSquid. Please follow the [SquidASM Installation Guide](https://squidasm.readthedocs.io/en/latest/installation.html).
+- Exploration dependencies require Torch/GPyTorch with 'cuda' enabled (GPU-accellerated surrogate modeling). Please install nvidia drivers and CUDA toolkit first.
 
 ```bash
 pip install -e .
-pip install -e ".[simulation]"
+pip install -e ".[exploration]"
 ```
 
 ## Testing

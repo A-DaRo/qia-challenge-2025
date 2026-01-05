@@ -31,10 +31,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-simulation = [
-    "squidasm>=0.12",
-    "netqasm>=0.15,<2",
-    "netsquid>=1.1",
+exploration = [
+    "torch>=2.9.1",
+    "botorch>=0.16.1",
+    "gpytorch>=1.14.3",
 ]
 dev = [
     "pytest>=7.0",
