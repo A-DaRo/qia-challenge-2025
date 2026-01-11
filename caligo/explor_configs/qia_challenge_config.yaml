@@ -29,14 +29,14 @@ output:
 # ------------------------------------------------------------------------------
 phase1:
   # Total number of LHS samples to generate
-  num_samples: 500
-  
+  num_samples: 2000
+
   # Batch size for parallel execution
-  batch_size: 1
-  
+  batch_size: 2
+
   # Checkpoint save interval (in batches)
   checkpoint_interval: 5
-  
+
   # Strategy ratio: fraction of BLIND samples (0.5 = balanced)
   strategy_ratio: 0.5
 
@@ -48,19 +48,19 @@ phase2:
   gp:
     # Kernel type: rbf, matern32, matern52
     kernel_type: "matern52"
-    
+
     # Number of optimizer restarts for hyperparameter tuning
     n_restarts_optimizer: 10
-    
+
     # Normalize targets before fitting
     normalize_y: true
-  
+
   # Training/validation split
   validation_split: 0.2
-  
+
   # Cross-validation settings (optional)
   cross_validation:
-    enabled: false
+    enabled: true
     n_folds: 5
 
 # ------------------------------------------------------------------------------
@@ -71,7 +71,7 @@ phase3:
   num_iterations: 100
   
   # Batch size per iteration
-  batch_size: 1
+  batch_size: 256
   
   # Retrain surrogate every N iterations
   retrain_interval: 5
@@ -129,17 +129,17 @@ bounds:
     min_log: -8.0  # 10^-8
     max_log: -6.0  # 10^-6
   
-  # Number of EPR pairs N ∈ [10^6, 10^8] (log-uniform)
+  # Number of EPR pairs N ∈ [10^4,7, 10^6] (log-uniform)
   num_pairs:
-    min_log: 6.0   # 1,000,000
-    max_log: 8.0   # 100,000,000
+    min_log: 4.7   # ~50,000
+    max_log: 6.0   # 1,000,000
 
 # ------------------------------------------------------------------------------
 # Execution Configuration
 # ------------------------------------------------------------------------------
 execution:
   # Number of parallel workers (default: 16)
-  num_workers: 8
+  num_workers: 60
   
   # Random seed for reproducibility (null for random)
   random_seed: 42
