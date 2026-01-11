@@ -94,45 +94,45 @@ phase3:
 # Parameter Space Bounds
 # ------------------------------------------------------------------------------
 bounds:
-  # Storage noise (depolarizing parameter) r ∈ [0, 1]
+  # Storage noise (depolarizing parameter) r ∈ [0.6, 0.95]
   storage_noise_r:
-    min: 0.0
-    max: 1.0
+    min: 0.60
+    max: 0.95
   
-  # Storage rate ν ∈ [0.001, 1.0] (log-uniform sampling)
+  # Storage rate ν ∈ [0.25, 1.0] (log-uniform sampling)
   storage_rate_nu:
-    min: 0.001
+    min: 0.25
     max: 1.0
   
-  # Wait time Δt ∈ [10^5, 10^9] ns (log-uniform sampling)
+  # Wait time Δt ∈ [10^9, 10^10] ns (log-uniform sampling)  (1–10 s)
   wait_time_ns:
-    min_log: 5.0  # 10^5 = 100 μs
-    max_log: 9.0  # 10^9 = 1 s
+    min_log: 9.0   # 10^9 = 1 s
+    max_log: 10.0  # 10^10 = 10 s
   
-  # Channel fidelity F ∈ (0.5, 1.0] (beta distribution sampling)
+  # Channel fidelity F ∈ [0.95, 0.995] (beta distribution sampling)
   channel_fidelity:
-    min: 0.501
-    max: 1.0
+    min: 0.950
+    max: 0.995
   
-  # Detection efficiency η ∈ [10^-3, 1.0] (log-uniform)
+  # Detection efficiency η ∈ [0.3, 0.95] (log-uniform)
   detection_efficiency:
-    min_log: -3.0  # 0.001
-    max_log: 0.0   # 1.0
+    min_log: -0.52  # ≈ 0.30
+    max_log: -0.02  # ≈ 0.95
   
-  # Detector error e_det ∈ [0, 0.1]
+  # Detector error e_det ∈ [0.001, 0.02]
   detector_error:
-    min: 0.0
-    max: 0.1
+    min: 0.001
+    max: 0.020
   
-  # Dark count probability P_dark ∈ [10^-8, 10^-3] (log-uniform)
+  # Dark count probability P_dark ∈ [10^-8, 10^-6] (log-uniform)
   dark_count_prob:
     min_log: -8.0  # 10^-8
-    max_log: -3.0  # 10^-3
+    max_log: -6.0  # 10^-6
   
-  # Number of EPR pairs N ∈ [10^4, 10^6] (log-uniform)
+  # Number of EPR pairs N ∈ [10^6, 10^8] (log-uniform)
   num_pairs:
-    min_log: 4.0  # 10,000
-    max_log: 6.0  # 1,000,000
+    min_log: 6.0   # 1,000,000
+    max_log: 8.0   # 100,000,000
 
 # ------------------------------------------------------------------------------
 # Execution Configuration
