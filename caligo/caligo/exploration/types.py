@@ -210,18 +210,18 @@ class ExplorationSample:
             raise ValueError(f"storage_noise_r must be in [0,1], got {self.storage_noise_r}")
         if not 0.0 <= self.storage_rate_nu <= 1.0:
             raise ValueError(f"storage_rate_nu must be in [0,1], got {self.storage_rate_nu}")
-        if not 1e5 <= self.wait_time_ns <= 1e9:
-            raise ValueError(f"wait_time_ns must be in [1e5,1e9], got {self.wait_time_ns}")
+        if not 1e5 <= self.wait_time_ns <= 1e11:
+            raise ValueError(f"wait_time_ns must be in [1e5,1e11], got {self.wait_time_ns}")
         if not 0.5 < self.channel_fidelity <= 1.0:
             raise ValueError(f"channel_fidelity must be in (0.5,1], got {self.channel_fidelity}")
         if not 0.0 < self.detection_efficiency <= 1.0:
             raise ValueError(f"detection_efficiency must be in (0,1], got {self.detection_efficiency}")
         if not 0.0 <= self.detector_error <= 0.1:
             raise ValueError(f"detector_error must be in [0,0.1], got {self.detector_error}")
-        if not 1e-8 <= self.dark_count_prob <= 1e-3:
-            raise ValueError(f"dark_count_prob must be in [1e-8,1e-3], got {self.dark_count_prob}")
-        if not 1e4 <= self.num_pairs <= 1e6:
-            raise ValueError(f"num_pairs must be in [1e4,1e6], got {self.num_pairs}")
+        if not 1e-9 <= self.dark_count_prob <= 1e-3:
+            raise ValueError(f"dark_count_prob must be in [1e-9,1e-3], got {self.dark_count_prob}")
+        if not 1e4 <= self.num_pairs <= 1e9:
+            raise ValueError(f"num_pairs must be in [1e4,1e9], got {self.num_pairs}")
 
     def to_array(self) -> Float32Array:
         """
