@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -142,20 +143,43 @@ class HDF5Writer:
 
     def open(self) -> None:
         """
-        Open the HDF5 file.
+        Open the HDF5 file with retry logic for file locking issues.
 
         Creates the file and base groups if they don't exist.
+        Retries up to 5 times with exponential backoff if file is locked.
         """
-        self._file = h5py.File(self.file_path, self._mode)
+        max_retries = 5
+        retry_delay = 0.5  # Start with 0.5 seconds
         
-        # Create base groups if they don't exist (and we're in write mode)
-        if self._mode in ("w", "a"):
-            for group_name in [GROUP_LHS_WARMUP, GROUP_ACTIVE_LEARNING]:
-                if group_name not in self._file:
-                    self._file.create_group(group_name)
-            self._file.flush()
-        
-        logger.debug("Opened HDF5 file: %s (mode=%s)", self.file_path, self._mode)
+        for attempt in range(max_retries):
+            try:
+                self._file = h5py.File(self.file_path, self._mode)
+                
+                # Create base groups if they don't exist (and we're in write mode)
+                if self._mode in ("w", "a"):
+                    for group_name in [GROUP_LHS_WARMUP, GROUP_ACTIVE_LEARNING]:
+                        if group_name not in self._file:
+                            self._file.create_group(group_name)
+                    self._file.flush()
+                
+                logger.debug("Opened HDF5 file: %s (mode=%s)", self.file_path, self._mode)
+                return  # Success
+                
+            except BlockingIOError as e:
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        "HDF5 file locked (attempt %d/%d): %s. Retrying in %.1fs...",
+                        attempt + 1, max_retries, self.file_path, retry_delay
+                    )
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    logger.error(
+                        "Failed to open HDF5 file after %d attempts. "
+                        "File may be held by zombie processes. Try: lsof %s | grep python",
+                        max_retries, self.file_path
+                    )
+                    raise
 
     def close(self) -> None:
         """Close the HDF5 file, flushing all data."""

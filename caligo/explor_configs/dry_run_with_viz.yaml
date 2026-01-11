@@ -10,8 +10,8 @@ output:
 
 # Phase 1: Minimal LHS warmup (10 feasible samples target)
 phase1:
-  num_samples: 10
-  batch_size: 5
+  num_samples: 3
+  batch_size: 1
   checkpoint_interval: 1
   strategy_ratio: 0.5
 

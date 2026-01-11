@@ -495,7 +495,7 @@ class CaligoNetworkBuilder:
             links=[link_cfg],
         )
 
-        logger.info(
+        logger.debug(
             f"Created two-node network: {alice_name} <-> {bob_name}, "
             f"model={resolved_model}, fidelity={self._nsm_params.channel_fidelity:.4f}, "
             f"qubits={num_qubits}, device_noise={with_device_noise}"

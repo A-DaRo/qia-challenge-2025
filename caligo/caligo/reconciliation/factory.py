@@ -451,7 +451,7 @@ class BaselineReconciler:
         self.measured_qber = measured_qber
         self._initialized = False
 
-        logger.info(
+        logger.debug(
             "BaselineReconciler created (requires QBER estimation)",
             extra={
                 "frame_size": config.frame_size,
@@ -555,7 +555,7 @@ class BlindReconciler:
                 safety_margin=config.safety_margin
             )
             self._nsm_qber = nsm_params.qber_channel
-            logger.info(
+            logger.debug(
                 "BlindReconciler: NSM-informed start (optional optimization)",
                 extra={
                     "initial_rate": self.initial_rate,
@@ -566,7 +566,7 @@ class BlindReconciler:
             # Default conservative starting rate - works without any QBER info
             self.initial_rate = 0.80
             self._nsm_qber = None
-            logger.info(
+            logger.debug(
                 "BlindReconciler: No QBER estimation (core advantage)",
                 extra={"initial_rate": self.initial_rate},
             )
@@ -801,7 +801,7 @@ def create_reconciler(
     """
     recon_type = config.reconciliation_type
 
-    logger.info(
+    logger.debug(
         f"Creating reconciler",
         extra={
             "type": recon_type.value,
@@ -938,7 +938,7 @@ def create_strategy(
         ) from e
     
     if config.reconciliation_type == ReconciliationType.BASELINE:
-        logger.info(
+        logger.debug(
             "Creating BaselineStrategy: frame_size=%d, max_iter=%d",
             config.frame_size,
             config.max_iterations,
@@ -949,7 +949,7 @@ def create_strategy(
             leakage_tracker=leakage_tracker,
         )
     elif config.reconciliation_type == ReconciliationType.BLIND:
-        logger.info(
+        logger.debug(
             "Creating BlindStrategy: frame_size=%d, max_blind_rounds=%d",
             config.frame_size,
             config.max_blind_rounds,

@@ -194,7 +194,7 @@ class BatchingManager:
             self.config.pairs_per_batch
         )
 
-        logger.info(
+        logger.debug(
             f"Configured for {total_pairs} pairs in {num_batches} batches"
         )
 
@@ -301,7 +301,7 @@ class BatchingManager:
 
         total_generated = len(all_outcomes)
 
-        logger.info(
+        logger.debug(
             f"Aggregated {len(self._completed_batches)} batches: "
             f"{total_generated} measurements"
         )

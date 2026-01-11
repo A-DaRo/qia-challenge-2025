@@ -188,7 +188,7 @@ class OTOutputFormatter:
         s0 = self._hasher_0.hash(key_i0)
         s1 = self._hasher_1.hash(key_i1)
 
-        logger.info(
+        logger.debug(
             f"Alice keys: S₀={len(s0)} bits, S₁={len(s1)} bits "
             f"from I₀={len_i0}, I₁={len_i1}"
         )
@@ -254,7 +254,7 @@ class OTOutputFormatter:
                 )
             sc = self._hasher_1.hash(bob_key_i1)
 
-        logger.info(f"Bob key: Sᴄ={len(sc)} bits with choice={choice_bit}")
+        logger.debug(f"Bob key: Sᴄ={len(sc)} bits with choice={choice_bit}")
 
         return BobOTOutput(key_c=sc, choice_bit=choice_bit, key_length=self._key_length)
 

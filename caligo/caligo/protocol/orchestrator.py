@@ -65,7 +65,7 @@ def run_protocol(
     alice = AliceProgram(params=params)
     bob = BobProgram(params=params, choice_bit=bob_choice_bit)
 
-    logger.info(
+    logger.debug(
         "Running Caligo protocol: n=%d, Δt=%s ns",
         params.num_pairs,
         params.nsm_params.delta_t_ns,

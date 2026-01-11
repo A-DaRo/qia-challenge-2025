@@ -192,7 +192,7 @@ class NSMEntropyCalculator:
         # Clamp to non-negative
         total = max(0.0, total)
 
-        logger.info(
+        logger.debug(
             f"Total entropy: {total:.2f} bits "
             f"({h_rate:.4f} × {num_bits} - {syndrome_leakage})"
         )

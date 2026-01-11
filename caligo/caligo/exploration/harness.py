@@ -59,6 +59,11 @@ from caligo.exploration.types import (
 )
 from caligo.protocol.base import PrecomputedEPRData, ProtocolParameters
 from caligo.reconciliation.factory import ReconciliationConfig, ReconciliationType
+from caligo.simulation.network_builder import (
+    CaligoNetworkBuilder,
+    ChannelModelSelection,
+    ChannelParameters,
+)
 from caligo.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -335,6 +340,56 @@ class ProtocolHarness:
             reconciliation=recon_config,
         )
 
+    def _build_network_config(self, sample: ExplorationSample) -> Any:
+        """
+        Build SquidASM network configuration from exploration sample.
+
+        This ensures the protocol execution uses the same NSM parameters
+        as the EPR generation phase, maintaining consistency for QBER
+        estimation and other dependent functions.
+
+        Parameters
+        ----------
+        sample : ExplorationSample
+            Parameter configuration.
+
+        Returns
+        -------
+        Any
+            SquidASM StackNetworkConfig.
+
+        Notes
+        -----
+        The network config uses:
+        - Depolarise model when detection_efficiency == 1.0 and dark_count_prob == 0.0
+        - Heralded-double-click when detection effects are present
+        """
+        nsm_params = build_nsm_parameters_from_sample(sample)
+
+        # Determine link model based on detector parameters
+        if sample.detection_efficiency < 1.0 or sample.dark_count_prob > 0.0:
+            link_model = "heralded-double-click"
+        else:
+            link_model = "depolarise"
+
+        model_selection = ChannelModelSelection(
+            link_model=link_model,
+            eta_semantics="detector_only",
+        )
+
+        builder = CaligoNetworkBuilder(
+            nsm_params=nsm_params,
+            channel_params=ChannelParameters.for_testing(),
+            model_selection=model_selection,
+        )
+
+        return builder.build_two_node_network(
+            alice_name="Alice",
+            bob_name="Bob",
+            num_qubits=min(sample.num_pairs + 10, 200),  # Allow headroom
+            with_device_noise=False,  # Focus on channel noise
+        )
+
     def execute(
         self,
         sample: ExplorationSample,
@@ -384,12 +439,16 @@ class ProtocolHarness:
             # Build protocol parameters
             params = self._build_protocol_params(sample, epr_data)
 
+            # Build network configuration with same NSM parameters
+            network_config = self._build_network_config(sample)
+
             # Run the protocol
             from caligo.protocol.orchestrator import run_protocol
 
             ot_result, raw_results = run_protocol(
                 params=params,
                 bob_choice_bit=bob_choice_bit,
+                network_config=network_config,
             )
 
             execution_time = time.perf_counter() - start_time

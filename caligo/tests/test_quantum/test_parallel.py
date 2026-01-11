@@ -46,9 +46,11 @@ class TestParallelEPRConfig:
         assert config.shuffle_results is True
 
     def test_default_workers_cpu_based(self) -> None:
-        """Test default worker count is CPU count - 1."""
+        """Test default worker count is physical CPU cores - 1."""
+        from caligo.quantum.parallel import _get_physical_cpu_count
+        
         config = ParallelEPRConfig()
-        expected = max(1, cpu_count() - 1)
+        expected = max(1, _get_physical_cpu_count() - 1)
         assert config.num_workers == expected
 
     def test_custom_workers(self) -> None:

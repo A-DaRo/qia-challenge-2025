@@ -130,7 +130,7 @@ class MatrixManager:
             directory = constants.LDPC_MATRICES_DIR
         directory = Path(directory).expanduser().resolve()
 
-        logger.info("Loading LDPC matrices from: %s", directory)
+        logger.debug("Loading LDPC matrices from: %s", directory)
 
         if not directory.exists():
             raise FileNotFoundError(f"Matrix directory not found: {directory}")
@@ -173,7 +173,7 @@ class MatrixManager:
             if compiled_matrix is not None:
                 compiled[rate] = compiled_matrix
 
-            logger.info(
+            logger.debug(
                 "Loaded rate=%.2f: shape=%s, nnz=%d",
                 rate, matrix.shape, matrix.nnz
             )
@@ -196,7 +196,7 @@ class MatrixManager:
                             continue
                         puncture_patterns[rate] = pattern.astype(np.uint8)
                         pattern_paths[rate] = pattern_path
-                        logger.info(
+                        logger.debug(
                             "Loaded puncture pattern for rate=%.2f: %d punctured bits",
                             rate, int(pattern.sum())
                         )
@@ -234,13 +234,13 @@ class MatrixManager:
                 except (ValueError, IndexError) as exc:
                     logger.warning("Failed to parse pattern file %s: %s", path.name, exc)
             if puncture_patterns:
-                logger.info(
+                logger.debug(
                     "Loaded %d hybrid patterns from %s",
                     len(puncture_patterns), hybrid_pattern_dir
                 )
 
         checksum = cls._compute_checksum(matrices, puncture_patterns)
-        logger.info("Matrix pool checksum: %s...", checksum[:16])
+        logger.debug("Matrix pool checksum: %s...", checksum[:16])
 
         pool = MatrixPool(
             frame_size=frame_size,
@@ -259,7 +259,7 @@ class MatrixManager:
         if os.getenv("CALIGO_LDPC_WRITE_COMPILED_CACHE", "0") == "1":
             written = manager.write_compiled_caches(overwrite=False)
             if written > 0:
-                logger.info("Wrote %d compiled LDPC cache files", written)
+                logger.debug("Wrote %d compiled LDPC cache files", written)
         return manager
 
     @staticmethod
@@ -525,7 +525,7 @@ class MotherCodeManager:
             raise RuntimeError("Use MotherCodeManager.get_instance() for singleton access")
         
         # Load single R=0.5 matrix
-        logger.info(f"Loading mother matrix from {matrix_path}")
+        logger.debug(f"Loading mother matrix from {matrix_path}")
         self._H_csr = sp.load_npz(matrix_path).tocsr().astype(np.uint8)
         
         # Verify R=0.5
@@ -534,19 +534,19 @@ class MotherCodeManager:
         if abs(rate - 0.5) > 0.01:
             raise ValueError(f"Mother code rate {rate:.3f} != 0.5")
         
-        logger.info(f"Mother matrix shape: {self._H_csr.shape}, rate: {rate:.3f}")
+        logger.debug(f"Mother matrix shape: {self._H_csr.shape}, rate: {rate:.3f}")
         
         # PRE-COMPILE FOR NUMBA:
         # Flatten CSR arrays to contiguous uint32/uint64 buffers for 
         # direct access by JIT kernels.
-        logger.info("Compiling topology for Numba kernels...")
+        logger.debug("Compiling topology for Numba kernels...")
         self._compiled_topology = self._compile_topology()
-        logger.info(f"Topology compiled: {self._compiled_topology.n_edges} edges")
+        logger.debug(f"Topology compiled: {self._compiled_topology.n_edges} edges")
         
         # Load Hybrid Pattern Library (Step = 0.01)
-        logger.info(f"Loading hybrid patterns from {pattern_dir}")
+        logger.debug(f"Loading hybrid patterns from {pattern_dir}")
         self._patterns = self._load_hybrid_library(pattern_dir)
-        logger.info(f"Loaded {len(self._patterns)} hybrid patterns")
+        logger.debug(f"Loaded {len(self._patterns)} hybrid patterns")
         
         # Pre-computed modulation indices for Blind protocol
         self._modulation_indices: Optional[np.ndarray] = None

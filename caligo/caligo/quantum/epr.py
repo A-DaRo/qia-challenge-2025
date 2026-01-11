@@ -176,7 +176,7 @@ class EPRGenerator:
                         generation_time = 0.0
 
                 self._total_generated += num_pairs
-                logger.info(
+                logger.debug(
                     f"Batch {batch_id}: Generated {num_pairs} pairs "
                     f"(total: {self._total_generated})"
                 )

@@ -39,6 +39,7 @@ References
 from __future__ import annotations
 
 import math
+import os
 import random
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -53,6 +54,44 @@ if TYPE_CHECKING:
     from caligo.simulation.network_builder import NetworkConfig
 
 logger = get_logger(__name__)
+
+
+# =============================================================================
+# Utility Functions
+# =============================================================================
+
+
+def _get_physical_cpu_count() -> int:
+    """
+    Get the number of physical CPU cores (not hyperthreads).
+
+    Returns
+    -------
+    int
+        Number of physical CPU cores, minimum 1.
+
+    Notes
+    -----
+    Uses os.sched_getaffinity() on Linux to respect CPU affinity masks.
+    Falls back to os.cpu_count() // 2 as heuristic for hyperthreaded systems.
+    """
+    try:
+        # On Linux, respect CPU affinity mask
+        available_cpus = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        # sched_getaffinity not available (Windows, macOS)
+        available_cpus = os.cpu_count() or 2
+
+    # Heuristic: assume hyperthreading (2 logical per physical)
+    # This is conservative - better to underestimate than overload
+    physical_cores = max(1, available_cpus // 2)
+
+    logger.debug(
+        f"CPU detection: available={available_cpus}, "
+        f"estimated_physical={physical_cores}"
+    )
+
+    return physical_cores
 
 
 # =============================================================================
@@ -105,7 +144,7 @@ class ParallelEPRConfig:
     >>> # Default configuration
     >>> config = ParallelEPRConfig()
     >>> config.num_workers
-    7  # On 8-core machine
+    3  # On 8-core hyperthreaded machine (4 physical - 1)
 
     >>> # Custom configuration for large-scale simulation
     >>> config = ParallelEPRConfig(
@@ -118,10 +157,16 @@ class ParallelEPRConfig:
     -----
     When `enabled=False`, this config is ignored and the factory will
     create a `SequentialEPRStrategy` instead.
+
+    The default num_workers uses physical CPU cores (not hyperthreads)
+    minus one, to leave headroom for the main process. This prevents
+    oversubscription which can severely degrade NetSquid performance.
     """
 
     enabled: bool = False
-    num_workers: int = field(default_factory=lambda: max(1, cpu_count() - 1))
+    num_workers: int = field(
+        default_factory=lambda: max(1, _get_physical_cpu_count() - 1)
+    )
     pairs_per_batch: int = 1000
     isolation_level: Literal["process", "thread"] = "process"
     prefetch_batches: int = 2
@@ -352,7 +397,7 @@ class ParallelEPROrchestrator:
         executor = self._get_executor()
         futures = []
 
-        self._logger.info(
+        self._logger.debug(
             f"Launching {num_batches} batches across "
             f"{self._config.num_workers} workers for {total_pairs} pairs"
         )
@@ -419,7 +464,7 @@ class ParallelEPROrchestrator:
             bob_outcomes = [bob_outcomes[i] for i in indices]
             bob_bases = [bob_bases[i] for i in indices]
 
-        self._logger.info(
+        self._logger.debug(
             f"Generated {len(alice_outcomes)} pairs across {num_batches} batches"
         )
 
@@ -447,6 +492,126 @@ class ParallelEPROrchestrator:
 
 
 # =============================================================================
+# Network Configuration Helper
+# =============================================================================
+
+
+def _build_network_config_from_dict(
+    config_dict: Dict[str, Any],
+    alice_name: str = "Alice",
+    bob_name: str = "Bob",
+    num_qubits: int = 100,
+) -> Any:
+    """
+    Build a StackNetworkConfig from a serialized configuration dictionary.
+
+    This function reconstructs NSMParameters from the dictionary and uses
+    CaligoNetworkBuilder to create a proper SquidASM network configuration.
+
+    Parameters
+    ----------
+    config_dict : Dict[str, Any]
+        Configuration dictionary containing NSM parameters:
+        - channel_fidelity: float (required, or 'fidelity' as fallback)
+        - detection_efficiency: float (optional, default 1.0)
+        - detector_error: float (optional, default 0.0)
+        - dark_count_prob: float (optional, default 0.0)
+        - storage_noise_r: float (optional, default 0.75)
+        - storage_rate_nu: float (optional, default 0.01)
+        - delta_t_ns: float (optional, default 1_000_000)
+    alice_name : str
+        Name for Alice's node. Default: "Alice".
+    bob_name : str
+        Name for Bob's node. Default: "Bob".
+    num_qubits : int
+        Number of qubit positions per node. Default: 100.
+
+    Returns
+    -------
+    StackNetworkConfig
+        Complete network configuration ready for simulation.
+
+    Raises
+    ------
+    ImportError
+        If SquidASM or caligo simulation modules are not available.
+
+    Notes
+    -----
+    Link model selection follows the user's constraints:
+    - Depolarise: Default model when detection_efficiency == 1.0 and
+      dark_count_prob == 0.0
+    - Heralded-double-click: When detection_efficiency < 1.0 or
+      dark_count_prob > 0.0
+
+    The function never uses "perfect" or simplified probabilistic models
+    to ensure full NetSquid simulation fidelity.
+    """
+    from caligo.simulation.network_builder import (
+        CaligoNetworkBuilder,
+        ChannelModelSelection,
+        ChannelParameters,
+    )
+    from caligo.simulation.physical_model import NSMParameters
+
+    # Extract channel fidelity - support multiple naming conventions
+    channel_fidelity = config_dict.get(
+        "channel_fidelity",
+        config_dict.get("fidelity", 1.0 - config_dict.get("noise", 0.0))
+    )
+    # Clamp to valid range (must be > 0.5 for NSMParameters)
+    channel_fidelity = max(0.501, min(1.0, channel_fidelity))
+
+    # Extract detector parameters
+    detection_efficiency = config_dict.get("detection_efficiency", 1.0)
+    detector_error = config_dict.get("detector_error", 0.0)
+    dark_count_prob = config_dict.get("dark_count_prob", 0.0)
+
+    # Extract storage parameters (with sensible defaults)
+    storage_noise_r = config_dict.get("storage_noise_r", 0.75)
+    storage_rate_nu = config_dict.get("storage_rate_nu", 0.01)
+    delta_t_ns = config_dict.get("delta_t_ns", 1_000_000.0)
+
+    # Construct NSMParameters
+    nsm_params = NSMParameters(
+        storage_noise_r=storage_noise_r,
+        storage_rate_nu=storage_rate_nu,
+        delta_t_ns=delta_t_ns,
+        channel_fidelity=channel_fidelity,
+        detection_eff_eta=detection_efficiency,
+        detector_error=detector_error,
+        dark_count_prob=dark_count_prob,
+    )
+
+    # Determine link model based on user constraints:
+    # - Depolarise default
+    # - Heralded when detection_efficiency < 1.0 or dark_count_prob > 0
+    if detection_efficiency < 1.0 or dark_count_prob > 0.0:
+        link_model = "heralded-double-click"
+    else:
+        link_model = "depolarise"
+
+    model_selection = ChannelModelSelection(
+        link_model=link_model,
+        eta_semantics="detector_only",
+    )
+
+    # Build network configuration
+    builder = CaligoNetworkBuilder(
+        nsm_params=nsm_params,
+        channel_params=ChannelParameters.for_testing(),
+        model_selection=model_selection,
+    )
+
+    return builder.build_two_node_network(
+        alice_name=alice_name,
+        bob_name=bob_name,
+        num_qubits=num_qubits,
+        with_device_noise=False,  # Focus on channel noise for EPR generation
+    )
+
+
+# =============================================================================
 # Worker Function (Top-Level for Pickling)
 # =============================================================================
 
@@ -457,19 +622,29 @@ def _worker_generate_epr(
     batch_id: int,
 ) -> EPRWorkerResult:
     """
-    Worker function for isolated EPR generation.
+    Worker function for isolated EPR generation using full SquidASM simulation.
 
     This function runs in a separate process with an independent NetSquid
     simulator instance. It must be a top-level function (not a method) to
     be picklable by multiprocessing.
 
+    The function uses the complete SquidASM/NetSquid simulation stack:
+    1. Builds a proper StackNetworkConfig from parameters
+    2. Instantiates EPRGeneratorProgram for Alice and Bob
+    3. Executes via squidasm.run.stack.run.run()
+    4. Extracts measurement outcomes from simulation results
+
     Parameters
     ----------
     network_config : Dict[str, Any]
-        Serialized network configuration dictionary containing:
-        - distance_km: float
-        - noise: float
-        - fidelity: float (optional)
+        Serialized network configuration dictionary containing NSM parameters:
+        - channel_fidelity: float - EPR pair fidelity
+        - detection_efficiency: float - Detector efficiency η
+        - detector_error: float - Intrinsic detector error
+        - dark_count_prob: float - Dark count probability
+        - storage_noise_r: float - Storage noise parameter r
+        - storage_rate_nu: float - Storage rate ν
+        - delta_t_ns: float - Wait time Δt in nanoseconds
     num_pairs : int
         Number of EPR pairs to generate in this batch.
     batch_id : int
@@ -480,80 +655,105 @@ def _worker_generate_epr(
     EPRWorkerResult
         Results containing measurement outcomes and bases for both parties.
 
+    Raises
+    ------
+    SimulationError
+        If the SquidASM simulation fails.
+
     Notes
     -----
     This function initializes a fresh NetSquid simulator via `ns.sim_reset()`
     to ensure complete isolation from other workers and the main process.
 
-    The function generates EPR pairs using a minimal simulation that:
-    1. Creates entangled qubit pairs
-    2. Applies noise according to network_config
-    3. Performs random basis measurements on both qubits
-    4. Returns measurement outcomes
+    The simulation uses proper quantum noise models:
+    - DepolariseLinkConfig for fidelity-only noise
+    - HeraldedDoubleClickConfig when detector effects are significant
 
-    For efficiency, we use a simplified model rather than full SquidASM
-    network setup, which is valid because we only need the statistical
-    output distribution.
+    References
+    ----------
+    - SquidASM run() function: squidasm.run.stack.run.run
+    - NetSquid simulator isolation: ns.sim_reset()
     """
-    import random
-    import numpy as np
-
-    # Initialize fresh random state for this worker
-    # Use batch_id + time for entropy to avoid correlated seeds
     import time
+
+    import netsquid as ns
+
+    # Reset NetSquid simulator for complete isolation
+    ns.sim_reset()
+    ns.set_qstate_formalism(ns.QFormalism.DM)
+
+    # Import SquidASM components (late import for worker process)
+    from squidasm.run.stack.run import run # type: ignore[import]
+
+    from caligo.quantum.programs import create_epr_program_pair
+
+    # Create deterministic but unique seed for this batch
     worker_seed = int(time.time() * 1000) + batch_id * 12345
-    random.seed(worker_seed)
-    np.random.seed(worker_seed % (2**31))
 
-    # Try to use NetSquid for realistic simulation
-    try:
-        import netsquid as ns
-        ns.sim_reset()
-        use_netsquid = True
-    except ImportError:
-        use_netsquid = False
+    # Build network configuration from dict
+    stack_config = _build_network_config_from_dict(
+        config_dict=network_config,
+        alice_name="Alice",
+        bob_name="Bob",
+        num_qubits=min(num_pairs + 10, 200),  # Allow headroom
+    )
 
-    # Extract noise parameter (default to ideal)
-    noise = network_config.get("noise", 0.0)
-    fidelity = network_config.get("fidelity", 1.0 - noise)
+    # Create matched program pair
+    alice_program, bob_program = create_epr_program_pair(
+        alice_name="Alice",
+        bob_name="Bob",
+        num_pairs=num_pairs,
+        seed=worker_seed,
+    )
 
-    # Generate EPR pairs with appropriate noise model
-    alice_outcomes: List[int] = []
-    alice_bases: List[int] = []
-    bob_outcomes: List[int] = []
-    bob_bases: List[int] = []
+    # Execute simulation
+    start_sim_time = ns.sim_time()
 
-    for _ in range(num_pairs):
-        # Random basis selection (uniform over {Z, X})
-        alice_basis = random.randint(0, 1)  # 0=Z, 1=X
-        bob_basis = random.randint(0, 1)
+    results = run(
+        config=stack_config,
+        programs={"Alice": alice_program, "Bob": bob_program},
+        num_times=1,
+    )
 
-        # Ideal Bell state |Φ+⟩ = (|00⟩ + |11⟩)/√2
-        # Perfect correlation when same basis, random when different
-        if alice_basis == bob_basis:
-            # Same basis: perfect correlation (up to noise)
-            alice_outcome = random.randint(0, 1)
-            # Apply depolarizing noise
-            if random.random() < noise:
-                bob_outcome = random.randint(0, 1)  # Random due to noise
-            else:
-                bob_outcome = alice_outcome  # Correlated
-        else:
-            # Different bases: completely random (no information)
-            alice_outcome = random.randint(0, 1)
-            bob_outcome = random.randint(0, 1)
+    end_sim_time = ns.sim_time()
+    generation_time_ns = end_sim_time - start_sim_time
 
-        alice_outcomes.append(alice_outcome)
-        alice_bases.append(alice_basis)
-        bob_outcomes.append(bob_outcome)
-        bob_bases.append(bob_basis)
+    # Extract results - results is List[List[Dict]] where outer is per-stack
+    alice_result = None
+    bob_result = None
+
+    for stack_results in results:
+        if stack_results and len(stack_results) > 0:
+            result = stack_results[0]
+            # Identify which node this result is from
+            # The program stores 'outcomes' and 'bases' directly
+            if "outcomes" in result and "bases" in result:
+                # Need to determine if this is Alice or Bob
+                # Alice is creator (first in programs dict typically)
+                if alice_result is None:
+                    alice_result = result
+                else:
+                    bob_result = result
+
+    if alice_result is None or bob_result is None:
+        # Fallback: try to access by index assuming order
+        if len(results) >= 2:
+            alice_result = results[0][0] if results[0] else None
+            bob_result = results[1][0] if results[1] else None
+
+    # Validate we have results
+    if alice_result is None or bob_result is None:
+        raise RuntimeError(
+            f"Batch {batch_id}: Failed to extract results from simulation. "
+            f"Got results: {results}"
+        )
 
     return EPRWorkerResult(
-        alice_outcomes=alice_outcomes,
-        alice_bases=alice_bases,
-        bob_outcomes=bob_outcomes,
-        bob_bases=bob_bases,
+        alice_outcomes=alice_result["outcomes"],
+        alice_bases=alice_result["bases"],
+        bob_outcomes=bob_result["outcomes"],
+        bob_bases=bob_result["bases"],
         batch_id=batch_id,
         num_pairs=num_pairs,
-        generation_time_ns=0.0,  # Simplified model doesn't track sim time
+        generation_time_ns=generation_time_ns,
     )

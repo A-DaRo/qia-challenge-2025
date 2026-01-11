@@ -201,7 +201,7 @@ class SecureKeyLengthCalculator:
         efficiency = final_length / reconciled_length if reconciled_length > 0 else 0.0
 
         if is_viable:
-            logger.info(
+            logger.debug(
                 f"Key length: {final_length} bits "
                 f"({efficiency:.2%} efficiency, "
                 f"h_min={h_min:.4f}, n={reconciled_length})"

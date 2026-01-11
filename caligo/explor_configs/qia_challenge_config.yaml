@@ -29,10 +29,10 @@ output:
 # ------------------------------------------------------------------------------
 phase1:
   # Total number of LHS samples to generate
-  num_samples: 2000
+  num_samples: 500
   
   # Batch size for parallel execution
-  batch_size: 4
+  batch_size: 1
   
   # Checkpoint save interval (in batches)
   checkpoint_interval: 5
@@ -71,7 +71,7 @@ phase3:
   num_iterations: 100
   
   # Batch size per iteration
-  batch_size: 4
+  batch_size: 1
   
   # Retrain surrogate every N iterations
   retrain_interval: 5
@@ -139,7 +139,7 @@ bounds:
 # ------------------------------------------------------------------------------
 execution:
   # Number of parallel workers (default: 16)
-  num_workers: 4
+  num_workers: 8
   
   # Random seed for reproducibility (null for random)
   random_seed: 42

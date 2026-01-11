@@ -386,7 +386,7 @@ def preflight_security_check(
     """
     expected_qber = nsm_params.qber_channel
 
-    logger.info(
+    logger.debug(
         f"Pre-flight security check: expected QBER={expected_qber:.4f}, "
         f"r={nsm_params.storage_noise_r:.3f}, ν={nsm_params.storage_rate_nu:.4f}"
     )
@@ -456,7 +456,7 @@ def postflight_security_check(
                 strict=strict,
             )
 
-    logger.info(
+    logger.debug(
         f"Post-flight security check: measured QBER={measured_qber:.4f}, "
         f"security_margin={result.security_margin:.4f}, secure={result.is_secure}"
     )

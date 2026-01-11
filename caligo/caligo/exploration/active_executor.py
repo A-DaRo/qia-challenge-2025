@@ -70,6 +70,13 @@ from caligo.exploration.surrogate import (
     GPConfig,
     detect_divergence,
 )
+
+# GPU-accelerated surrogate (optional, falls back to CPU if unavailable)
+try:
+    from caligo.exploration.gpu_surrogate import GPyTorchLandscape, GPyTorchConfig
+    GPU_SURROGATE_AVAILABLE = True
+except ImportError:
+    GPU_SURROGATE_AVAILABLE = False
 from caligo.exploration.types import (
     ExplorationSample,
     Phase3State,
@@ -152,6 +159,8 @@ class Phase3Metrics:
     best_cliff_efficiency: float = 1.0
     mean_acquisition: float = 0.0
     success_rate: float = 0.0
+    cliff_detections: int = 0  # Samples at security boundary (FAILURE_SECURITY)
+    protocol_errors: int = 0   # True system errors (timeout, EPR failure)
     gp_retrain_count: int = 0
     divergence_count: int = 0
     elapsed_seconds: float = 0.0
@@ -163,7 +172,8 @@ class Phase3Metrics:
             "cliff": f"{self.best_cliff_efficiency:.4f}",
             "acq": f"{self.mean_acquisition:.3f}",
             "success": f"{self.success_rate:.1%}",
-            "retrain": str(self.gp_retrain_count),
+            "cliffs": str(self.cliff_detections),
+            "errors": str(self.protocol_errors),
         }
 
 
@@ -224,6 +234,8 @@ class Phase3Executor:
         harness_config: Optional[HarnessConfig] = None,
         epr_config: Optional[BatchedEPRConfig] = None,
         random_seed: Optional[int] = 42,
+        use_gpu: bool = True,
+        gpu_device: str = "cuda",
     ) -> None:
         """
         Initialize the Phase 3 executor.
@@ -246,6 +258,11 @@ class Phase3Executor:
             EPR configuration.
         random_seed : Optional[int]
             Random seed.
+        use_gpu : bool
+            Whether to use GPU-accelerated surrogate (GPyTorchLandscape).
+            Falls back to CPU if GPU unavailable. Default: True.
+        gpu_device : str
+            CUDA device identifier (e.g., 'cuda', 'cuda:0'). Default: 'cuda'.
         """
         self.data_path = Path(data_path)
         self.surrogate_path = Path(surrogate_path)
@@ -257,6 +274,8 @@ class Phase3Executor:
         self.harness_config = harness_config or HarnessConfig()
         self.epr_config = epr_config or BatchedEPRConfig()
         self.random_seed = random_seed
+        self.use_gpu = use_gpu and GPU_SURROGATE_AVAILABLE
+        self.gpu_device = gpu_device
 
         # Components (lazy initialization)
         self._landscape: Optional[EfficiencyLandscape] = None
@@ -285,9 +304,26 @@ class Phase3Executor:
 
     def _init_components(self) -> None:
         """Initialize all components."""
-        # Load surrogate
+        # Load surrogate (GPU or CPU)
         if self._landscape is None:
-            self._landscape = EfficiencyLandscape.load(self.surrogate_path)
+            if self.use_gpu:
+                try:
+                    self._landscape = GPyTorchLandscape.load(
+                        self.surrogate_path, device=self.gpu_device
+                    )
+                    logger.info(
+                        "Loaded GPU surrogate (GPyTorchLandscape) on device=%s",
+                        self.gpu_device,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "GPU surrogate failed (%s), falling back to CPU: %s",
+                        type(e).__name__, e,
+                    )
+                    self._landscape = EfficiencyLandscape.load(self.surrogate_path)
+            else:
+                self._landscape = EfficiencyLandscape.load(self.surrogate_path)
+                logger.info("Loaded CPU surrogate (EfficiencyLandscape)")
 
         # Load training data
         if self._X_train is None:
@@ -767,12 +803,30 @@ class Phase3Executor:
         """
         self._metrics.samples_acquired += len(results)
 
-        # Success rate
-        successes = sum(1 for r in results if r.is_success())
-        total = self._metrics.samples_acquired
+        # Categorize outcomes for meaningful metrics
+        successes = 0
+        batch_cliff_detections = 0
+        batch_protocol_errors = 0
+        
+        for result in results:
+            if result.is_success():
+                successes += 1
+            elif result.outcome == ProtocolOutcome.FAILURE_SECURITY:
+                # Security failure = cliff found (this is the GOAL of active learning)
+                batch_cliff_detections += 1
+            elif result.outcome in (
+                ProtocolOutcome.FAILURE_TIMEOUT,
+                ProtocolOutcome.FAILURE_ERROR,
+            ):
+                # True system errors requiring investigation
+                batch_protocol_errors += 1
+            # QBER and reconciliation failures are expected near the cliff
+        
         self._metrics.success_rate = successes / len(results) if results else 0.0
+        self._metrics.cliff_detections += batch_cliff_detections
+        self._metrics.protocol_errors += batch_protocol_errors
 
-        # Best cliff point
+        # Best cliff point (closest to zero efficiency)
         for result in results:
             eff = result.net_efficiency
             if abs(eff) < abs(self._metrics.best_cliff_efficiency) and eff < 0.5:
@@ -801,11 +855,23 @@ class Phase3Executor:
         logger.info("  Samples Acquired:     %d", m.samples_acquired)
         logger.info("  Best Cliff Eff:       %.6f", m.best_cliff_efficiency)
         logger.info("  Success Rate:         %.1f%%", m.success_rate * 100)
+        logger.info("  Cliff Detections:     %d (security boundary found)", m.cliff_detections)
+        logger.info("  Protocol Errors:      %d (system failures)", m.protocol_errors)
         logger.info("  GP Retrains:          %d", m.gp_retrain_count)
         logger.info("  Divergence Events:    %d", m.divergence_count)
         logger.info("  Total Time:           %.1f s", m.elapsed_seconds)
         logger.info("  Throughput:           %.2f samples/s", m.samples_per_second)
         logger.info("=" * 60)
+        
+        # Interpretation guidance
+        if m.cliff_detections > 0:
+            logger.info("✓ Security cliff characterization successful")
+            logger.info("  The optimizer found %d parameter regions at the security boundary", m.cliff_detections)
+        if m.protocol_errors > 0:
+            logger.warning(
+                "⚠ %d protocol errors occurred - check EPR generation and timeout settings",
+                m.protocol_errors,
+            )
 
         if self._optimizer.best_point is not None:
             logger.info("Best Cliff Point:")

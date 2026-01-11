@@ -780,18 +780,6 @@ class BatchedEPROrchestrator:
                         # Read EPR data from shared memory (zero-copy view)
                         n_pairs = result_dict["n_pairs"]
                         zc_data = create_zero_copy_epr_data(arena, slot_id, n_pairs)
-                        
-                        # DEBUG: Check types
-                        logger.info(f"DEBUG: zc_data type: {type(zc_data)}")
-                        logger.info(f"DEBUG: alice_outcomes type: {type(zc_data.alice_outcomes)}")
-                        
-                        # Force conversion if it is a list/tuple (unexpected)
-                        if isinstance(zc_data.alice_outcomes, (list, tuple)):
-                            logger.warning(f"UNEXPECTED: alice_outcomes is a {type(zc_data.alice_outcomes)}! converting...")
-                            zc_data.alice_outcomes = np.array(zc_data.alice_outcomes)
-                            zc_data.alice_bases = np.array(zc_data.alice_bases)
-                            zc_data.bob_outcomes = np.array(zc_data.bob_outcomes)
-                            zc_data.bob_bases = np.array(zc_data.bob_bases)
 
                         # Copy data to PrecomputedEPRData (needed for protocol)
                         # The copy here is necessary because we'll release the slot
@@ -804,29 +792,13 @@ class BatchedEPROrchestrator:
                             bob_bases=zc_data.bob_bases.astype(np.int64, copy=True),
                         )
 
-                        # Check for Zero-Data Corruption
-                        # If we have pairs but the data is all zeros (highly unlikely for valid random bases),
-                        # it indicates shared memory read failure (reading empty/wrong address).
-                        if n_pairs > 0 and not np.any(epr_data.alice_bases):
-                             # Check if it's truly all zeros (bases should be ~50% 0/1)
-                             # A standard run won't produce 1000+ zeros in a row for bases.
-                            error_msg = f"Zero-Data Corruption Detected: {n_pairs} pairs but Alice bases are all zero."
-                            #logger.error(error_msg)
-                            results[global_idx] = BatchedEPRResult(
-                                sample=sample,
-                                epr_data=None, # Invalidate data
-                                generation_time_seconds=result_dict["generation_time_seconds"],
-                                batch_id=result_dict["batch_id"],
-                                error=error_msg,
-                            )
-                        else:
-                            results[global_idx] = BatchedEPRResult(
-                                sample=sample,
-                                epr_data=epr_data,
-                                generation_time_seconds=result_dict["generation_time_seconds"],
-                                batch_id=result_dict["batch_id"],
-                                error=None,
-                            )
+                        results[global_idx] = BatchedEPRResult(
+                            sample=sample,
+                            epr_data=epr_data,
+                            generation_time_seconds=result_dict["generation_time_seconds"],
+                            batch_id=result_dict["batch_id"],
+                            error=None,
+                        )
                     else:
                         results[global_idx] = BatchedEPRResult(
                             sample=sample,
@@ -1056,32 +1028,6 @@ class BatchedEPROrchestrator:
                     if result_dict["error"] is None:
                         n_pairs = result_dict["n_pairs"]
                         zc_data = create_zero_copy_epr_data(arena, slot_id, n_pairs)
-
-                        # DEBUG: Force check types
-                        logger.info(f"DEBUG STREAM: zc_data type: {type(zc_data)}")
-                        logger.info(f"DEBUG STREAM: alice_outcomes type: {type(zc_data.alice_outcomes)}")
-
-                        # Ensure arrays are numpy arrays 
-                        if not isinstance(zc_data.alice_outcomes, np.ndarray):
-                            logger.warning(f"UNEXPECTED STREAM: alice_outcomes is {type(zc_data.alice_outcomes)}! converting...")
-                            zc_data.alice_outcomes = np.array(zc_data.alice_outcomes)
-                            zc_data.alice_bases = np.array(zc_data.alice_bases)
-                            zc_data.bob_outcomes = np.array(zc_data.bob_outcomes)
-                            zc_data.bob_bases = np.array(zc_data.bob_bases)
-
-                        # Check for Zero-Data Corruption (all zeros)
-                        # This happens if shared memory read fails silently or offsets are wrong
-                        if n_pairs > 0 and not np.any(zc_data.alice_bases):
-                             yield BatchedEPRResult(
-                                sample=sample,
-                                epr_data=None,
-                                generation_time_seconds=result_dict["generation_time_seconds"],
-                                batch_id=result_dict["batch_id"],
-                                error="Zero-Data Corruption Detected: Shared memory contained all zeros",
-                            )
-                             # Release slot immediately
-                             arena.release_slot(slot_id)
-                             continue
 
                         # Copy to PrecomputedEPRData before releasing slot
                         # CRITICAL FIX: Cast to int64 for protocol layer compatibility

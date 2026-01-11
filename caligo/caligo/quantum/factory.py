@@ -220,7 +220,7 @@ class SequentialEPRStrategy:
         if total_pairs <= 0:
             raise ValueError(f"total_pairs must be > 0, got {total_pairs}")
 
-        self._logger.info(f"Generating {total_pairs} EPR pairs sequentially")
+        self._logger.debug(f"Generating {total_pairs} EPR pairs sequentially")
 
         # Extract noise rate from config
         noise_rate = self._network_config.get("noise", 0.0)

@@ -18,8 +18,8 @@ Custom configuration:
 Override workers:
     $ python main_explor.py --config my_config.yaml --workers 32
 
-Resume from checkpoint:
-    $ python main_explor.py --config my_config.yaml --resume
+Continue from existing campaign (auto-resumes Phase 3):
+    $ python main_explor.py --continue-from exploration_results/qia_challenge_2025_TIMESTAMP --skip-phase1 --skip-phase2
 
 Notes
 -----
@@ -52,7 +52,7 @@ from caligo.exploration.active_executor import Phase3Executor, Phase3Metrics
 from caligo.exploration.sampler import ParameterBounds
 from caligo.exploration.harness import HarnessConfig
 from caligo.exploration.epr_batcher import BatchedEPRConfig
-from caligo.exploration.surrogate import GPConfig
+from caligo.exploration.surrogate import GPConfig, EfficiencyLandscape, FeasibilityGuardrail
 from caligo.exploration.active import AcquisitionConfig
 from caligo.exploration.persistence import (
     GROUP_ACTIVE_LEARNING,
@@ -227,7 +227,11 @@ class CampaignConfig:
     tables: Dict[str, Any]
 
 
-def load_config(config_path: Path, num_workers: Optional[int]) -> CampaignConfig:
+def load_config(
+    config_path: Path,
+    num_workers: Optional[int],
+    continue_from: Optional[Path] = None,
+) -> CampaignConfig:
     """
     Load campaign configuration from YAML file.
 
@@ -237,6 +241,8 @@ def load_config(config_path: Path, num_workers: Optional[int]) -> CampaignConfig
         Path to YAML configuration file.
     num_workers : int
         Number of parallel workers (overrides config if specified).
+    continue_from : Path, optional
+        Existing campaign directory to continue from (bypasses timestamping).
 
     Returns
     -------
@@ -257,15 +263,23 @@ def load_config(config_path: Path, num_workers: Optional[int]) -> CampaignConfig
         raw_config = yaml.safe_load(f)
 
     # Output directory with optional timestamp
-    output_cfg = raw_config.get("output", {})
-    base_dir = Path(output_cfg.get("base_dir", "exploration_results"))
-    campaign_name = output_cfg.get("campaign_name", "campaign")
-
-    if output_cfg.get("timestamped", True):
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = base_dir / f"{campaign_name}_{timestamp}"
+    if continue_from is not None:
+        # Continue from existing directory
+        output_dir = continue_from
+        if not output_dir.exists():
+            raise FileNotFoundError(f"Continue-from directory does not exist: {output_dir}")
+        logger.info(f"Continuing from existing campaign: {output_dir}")
     else:
-        output_dir = base_dir / campaign_name
+        # Create new directory with optional timestamp
+        output_cfg = raw_config.get("output", {})
+        base_dir = Path(output_cfg.get("base_dir", "exploration_results"))
+        campaign_name = output_cfg.get("campaign_name", "campaign")
+
+        if output_cfg.get("timestamped", True):
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_dir = base_dir / f"{campaign_name}_{timestamp}"
+        else:
+            output_dir = base_dir / campaign_name
 
     # Parameter bounds
     bounds_cfg = raw_config.get("bounds", {})
@@ -486,6 +500,8 @@ def run_phase3(config: CampaignConfig) -> Phase3Metrics:
         harness_config=harness_config,
         epr_config=epr_config,
         random_seed=exec_cfg["random_seed"],
+        use_gpu=exec_cfg.get("use_gpu", True),
+        gpu_device=exec_cfg.get("gpu_device", "cuda"),
     )
 
     # Run optimization
@@ -572,6 +588,16 @@ def run_post_processing(
     # Load exploration data
     X, y = load_exploration_data(config)
 
+    # Load Surrogate Model if available
+    surrogate_model = None
+    surrogate_path = config.output_dir / "surrogate.pkl"
+    if surrogate_path.exists():
+        try:
+            surrogate_model = EfficiencyLandscape.load(surrogate_path)
+            logger.info("Loaded surrogate model for visualization")
+        except Exception as e:
+            logger.warning(f"Could not load surrogate model: {e}")
+
     # Generate visualizations
     vis_cfg = config.visualization
     if vis_cfg.get("enabled", True):
@@ -582,6 +608,7 @@ def run_post_processing(
                 y=y,
                 output_path=config.output_dir,
                 phase_metrics=phase_metrics,
+                surrogate_model=surrogate_model,
                 show=False,
             )
             logger.info(f"  Generated {len(figures)} figures")
@@ -638,6 +665,7 @@ Examples:
   python main_explor.py
   python main_explor.py --config explor_configs/qia_challenge_config.yaml
   python main_explor.py --workers 32 --skip-phase3
+  python main_explor.py --continue-from exploration_results/qia_challenge_2025_20260110_223131 --skip-phase1 --skip-phase2
         """,
     )
     parser.add_argument(
@@ -671,6 +699,23 @@ Examples:
         "--skip-postprocess",
         action="store_true",
         help="Skip visualization and table generation",
+    )
+    parser.add_argument(
+        "--continue-from",
+        type=Path,
+        default=None,
+        help="Continue from an existing campaign directory (e.g., exploration_results/qia_challenge_2025_20260110_223131)",
+    )
+    parser.add_argument(
+        "--no-gpu",
+        action="store_true",
+        help="Disable GPU acceleration for surrogate model (use CPU-only sklearn)",
+    )
+    parser.add_argument(
+        "--gpu-device",
+        type=str,
+        default="cuda",
+        help="CUDA device for GPU surrogate (e.g., 'cuda', 'cuda:0', 'cuda:1')",
     )
     parser.add_argument(
         "--verbose",
@@ -738,10 +783,15 @@ Examples:
     try:
         # Load configuration
         logger.info(f"Loading configuration from: {args.config}")
-        config = load_config(args.config, args.workers)
+        config = load_config(args.config, args.workers, args.continue_from)
+        
+        # Apply GPU settings from CLI args
+        config.execution["use_gpu"] = not args.no_gpu
+        config.execution["gpu_device"] = args.gpu_device
 
         logger.info(f"Output directory: {config.output_dir}")
         logger.info(f"Workers: {config.execution['num_workers']}")
+        logger.info(f"GPU Surrogate: {'enabled' if config.execution['use_gpu'] else 'disabled'}")
         logger.info(f"Random seed: {config.execution['random_seed']}")
         config.output_dir.mkdir(parents=True, exist_ok=True)
 

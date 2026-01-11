@@ -155,7 +155,7 @@ class Sifter:
         alice_bits = bitarray(alice_sifted.tolist())
         bob_bits = bitarray(bob_sifted.tolist())
 
-        logger.info(
+        logger.debug(
             f"Sifting complete: {n} pairs → {total_matches} matches "
             f"(I₀={len(i0_indices)}, I₁={len(i1_indices)})"
         )

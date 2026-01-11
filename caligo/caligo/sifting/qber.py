@@ -208,7 +208,7 @@ class QBEREstimator:
                 f"{self._warning_limit} - security margin reduced"
             )
         else:
-            logger.info(
+            logger.debug(
                 f"QBER estimate: {observed_qber:.4f} + {mu:.4f} = "
                 f"{adjusted_qber:.4f} (n={n_test}, k={key_size})"
             )
