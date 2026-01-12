@@ -15,6 +15,14 @@ from caligo.amplification import (
 )
 from caligo.connection.envelope import MessageType
 from caligo.protocol.base import CaligoProgram, ProtocolParameters
+from caligo.protocol.protocol_state import (
+    BlindPhase,
+    BaselinePhase,
+    ProtocolState,
+    ProtocolSynchronizationError,
+    create_alice_state,
+    safe_generator_send,
+)
 from caligo.reconciliation import constants as recon_constants
 from caligo.reconciliation.factory import (
     ReconciliationConfig,
@@ -431,18 +439,26 @@ class AliceProgram(CaligoProgram):
         BlockResult
             Reconciliation result for this block.
         """
+        # Initialize FSM state
+        is_blind = strategy.requires_qber_estimation is False
+        state = create_alice_state(block_id, is_blind=is_blind)
+        
         gen = strategy.alice_reconcile_block(payload, ctx, block_id)
         
         # First call returns the outgoing message
         try:
             outgoing = next(gen)
+            state.transition_to(BlindPhase.SYNDROME_SENT if is_blind else BaselinePhase.SYNDROME_SENT)
         except StopIteration as e:
+            state.mark_generator_exhausted()
+            state.transition_to(BlindPhase.DONE if is_blind else BaselinePhase.DONE)
             return e.value
 
         # Loop: send message, receive response, send to generator
-        while True:
+        while state.can_send_to_generator():
             # Send outgoing message
             yield from self._ordered_socket.send(MessageType.SYNDROME, outgoing)
+            state.transition_to(BlindPhase.AWAIT_RESPONSE if is_blind else BaselinePhase.AWAIT_RESPONSE)
             
             # Receive response
             resp = yield from self._ordered_socket.recv(MessageType.SYNDROME_RESPONSE)
@@ -450,16 +466,30 @@ class AliceProgram(CaligoProgram):
             if int(resp.get("block_id", -1)) != int(block_id):
                 raise SecurityError("Reconciliation block_id mismatch")
             
-            # Send response to generator
+            # Check if Bob signaled early termination (verified=True)
+            if resp.get("verified"):
+                state.transition_to(BlindPhase.VERIFIED if is_blind else BaselinePhase.VERIFIED)
+            
+            # Send response to generator using safe_generator_send
             try:
-                outgoing = gen.send(resp)
-            except StopIteration as e:
-                # Generator returned - send termination signal to Bob
-                yield from self._ordered_socket.send(MessageType.SYNDROME, {
-                    "kind": "done",
-                    "block_id": int(block_id),
-                })
-                return e.value
+                outgoing, exhausted = safe_generator_send(gen, resp, state)
+                if exhausted:
+                    # Generator returned - send termination signal to Bob
+                    yield from self._ordered_socket.send(MessageType.SYNDROME, {
+                        "kind": "done",
+                        "block_id": int(block_id),
+                    })
+                    state.transition_to(BlindPhase.DONE if is_blind else BaselinePhase.DONE)
+                    return outgoing
+                else:
+                    state.transition_to(BlindPhase.REVEAL_SENT if is_blind else BaselinePhase.SYNDROME_SENT)
+                    state.iteration += 1
+            except ProtocolSynchronizationError as e:
+                logger.error(f"Protocol sync error in block {block_id}: {e}")
+                raise SecurityError(f"Protocol synchronization failed: {e}")
+        
+        # Should not reach here in normal operation
+        raise SecurityError(f"Unexpected state exit: {state.phase}")
 
     def _phase4_amplify(
         self,

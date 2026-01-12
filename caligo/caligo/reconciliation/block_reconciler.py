@@ -1,5 +1,13 @@
 """Single-block reconciliation.
 
+.. deprecated:: 2.0
+    This module is DEPRECATED and will be removed in a future version.
+    Use the Strategy Pattern (caligo.reconciliation.strategies) instead.
+    
+    The BlockReconciler class has been superseded by:
+    - BlindStrategy.bob_reconcile_block() for blind reconciliation
+    - BaselineStrategy.bob_reconcile_block() for baseline reconciliation
+
 This module provides a narrow, testable unit that reconciles exactly one
 baseline (coset-decoding) LDPC block.
 
@@ -10,6 +18,7 @@ removing hidden state.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -35,6 +44,14 @@ from caligo.types.exceptions import DecodingFailure, LeakageBudgetExceeded
 from caligo.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Emit deprecation warning on module import
+warnings.warn(
+    "caligo.reconciliation.block_reconciler is deprecated. "
+    "Use caligo.reconciliation.strategies.BlindStrategy or BaselineStrategy instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 
 @dataclass(frozen=True)

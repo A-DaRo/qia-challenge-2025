@@ -9,6 +9,14 @@ import numpy as np
 from caligo.amplification import OTOutputFormatter
 from caligo.connection.envelope import MessageType
 from caligo.protocol.base import CaligoProgram, ProtocolParameters
+from caligo.protocol.protocol_state import (
+    BlindPhase,
+    BaselinePhase,
+    ProtocolState,
+    ProtocolSynchronizationError,
+    create_bob_state,
+    safe_generator_send,
+)
 from caligo.reconciliation import constants as recon_constants
 from caligo.reconciliation.factory import (
     ReconciliationConfig,
@@ -292,12 +300,18 @@ class BobProgram(CaligoProgram):
         BlockResult
             Reconciliation result for this block.
         """
+        # Initialize FSM state
+        is_blind = strategy.requires_qber_estimation is False
+        state = create_bob_state(block_id, is_blind=is_blind)
+        
         gen = strategy.bob_reconcile_block(payload, ctx, block_id)
         
         # First call yields an empty dict, expecting incoming message
         try:
             _ = next(gen)  # Initial yield
         except StopIteration as e:
+            state.mark_generator_exhausted()
+            state.transition_to(BlindPhase.DONE if is_blind else BaselinePhase.DONE)
             return e.value
 
         # Receive first message from Alice (syndrome or blind initial)
@@ -306,16 +320,27 @@ class BobProgram(CaligoProgram):
         if int(msg.get("block_id", -1)) != int(block_id):
             raise SecurityError("Reconciliation block_id mismatch")
         
+        state.last_message_kind = msg.get("kind")
+        state.transition_to(BlindPhase.DECODING if is_blind else BaselinePhase.DECODING)
+        
         # Iterative message loop for both baseline and blind protocols
         # - Baseline: single round (generator returns after first response)
         # - Blind: multiple rounds (generator yields after each response)
-        while True:
-            # Send message to generator, get response
+        while state.can_send_to_generator():
+            # Send message to generator using safe_generator_send
             try:
-                response = gen.send(msg)
-            except StopIteration as e:
-                # Generator returned - done with this block
-                return e.value
+                response, exhausted = safe_generator_send(gen, msg, state)
+                if exhausted:
+                    # Generator returned - done with this block
+                    state.transition_to(BlindPhase.DONE if is_blind else BaselinePhase.DONE)
+                    return response
+            except ProtocolSynchronizationError as e:
+                logger.error(f"Protocol sync error in block {block_id}: {e}")
+                raise SecurityError(f"Protocol synchronization failed: {e}")
+            
+            # Check if we verified successfully
+            if response.get("verified"):
+                state.transition_to(BlindPhase.VERIFIED if is_blind else BaselinePhase.VERIFIED)
             
             # Send response to Alice
             yield from self._ordered_socket.send(MessageType.SYNDROME_RESPONSE, {
@@ -325,17 +350,42 @@ class BobProgram(CaligoProgram):
             
             # Wait for next message from Alice (blind_reveal, done, or next block)
             msg = yield from self._ordered_socket.recv(MessageType.SYNDROME)
+            state.last_message_kind = msg.get("kind")
             
             # Check for termination signal from Alice
             if msg.get("kind") == "done":
-                # Alice has terminated - send the done signal to generator
-                # so it can clean up and return its final result
-                try:
-                    gen.send(msg)
-                except StopIteration as e:
-                    return e.value
-                # If generator didn't return, something is wrong
-                raise SynchronizationError("Generator did not terminate on done signal")
+                state.transition_to(BlindPhase.DONE if is_blind else BaselinePhase.DONE)
+                # Alice has terminated - try to send done signal to generator
+                # Use safe_generator_send to handle potential exhaustion gracefully
+                if state.generator_active:
+                    try:
+                        result, exhausted = safe_generator_send(gen, msg, state)
+                        if exhausted:
+                            return result
+                    except ProtocolSynchronizationError:
+                        # Generator already exhausted, this is fine
+                        pass
+                # If we're here, generator didn't return on done - this is unexpected
+                # but we can still return safely since Alice initiated termination
+                logger.warning(f"Block {block_id}: Generator still active after done signal")
+                return BlockResult(
+                    corrected_payload=payload,
+                    verified=state.phase == BlindPhase.VERIFIED,
+                    converged=False,
+                    iterations_used=0,
+                    syndrome_leakage=0,
+                    revealed_leakage=0,
+                    hash_leakage=ctx.hash_bits,
+                    retry_count=state.iteration,
+                )
+            
+            # Update iteration count for reveal messages
+            if msg.get("kind") == "blind_reveal":
+                state.iteration += 1
+                state.transition_to(BlindPhase.DECODING)
+        
+        # Should not reach here in normal operation
+        raise SecurityError(f"Unexpected state exit: {state.phase}")
 
     def _phase1_quantum_and_commit(
         self, context

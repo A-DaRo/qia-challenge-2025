@@ -41,6 +41,7 @@ from __future__ import annotations
 import math
 import os
 import random
+import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from multiprocessing import cpu_count
@@ -54,6 +55,42 @@ if TYPE_CHECKING:
     from caligo.simulation.network_builder import NetworkConfig
 
 logger = get_logger(__name__)
+
+
+# =============================================================================
+# Worker Process Initialization
+# =============================================================================
+
+
+def _worker_initializer() -> None:
+    """
+    Initialize worker process environment.
+    
+    This function is called once per worker process to ensure the Python
+    environment is properly configured, including editable package finders
+    that are normally installed via .pth files during interpreter startup.
+    
+    This is necessary because ProcessPoolExecutor spawns fresh Python
+    processes that don't automatically execute .pth files in site-packages.
+    
+    Notes
+    -----
+    Specifically handles squidasm editable installs which use a custom
+    MetaPathFinder registered via __editable__.squidasm-*.pth files.
+    """
+    import site
+    
+    # Re-run site initialization to process .pth files
+    # This installs editable package finders like squidasm's _EditableFinder
+    site.main()
+    
+    # Verify critical imports work
+    try:
+        import netsquid  # noqa: F401
+        import squidasm  # noqa: F401
+    except ImportError as e:
+        # Log but don't fail - let the actual worker function handle errors
+        logger.warning(f"Worker initialization import check failed: {e}")
 
 
 # =============================================================================
@@ -336,11 +373,13 @@ class ParallelEPROrchestrator:
 
         Notes
         -----
-        Executor is created lazily on first use.
+        Executor is created lazily on first use. Uses _worker_initializer
+        to ensure editable packages (like squidasm) are available in workers.
         """
         if self._executor is None:
             self._executor = ProcessPoolExecutor(
-                max_workers=self._config.num_workers
+                max_workers=self._config.num_workers,
+                initializer=_worker_initializer,
             )
         return self._executor
 

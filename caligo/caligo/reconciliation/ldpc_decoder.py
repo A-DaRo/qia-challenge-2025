@@ -255,10 +255,18 @@ class BeliefPropagationDecoder:
                 else:
                     prod_excl = np.zeros_like(tanh_vals)
 
-                # Flip sign if syndrome bit is 1
-                sign = -1.0 if int(target_u8[c]) == 1 else 1.0
-                prod_excl = np.clip(sign * prod_excl, -0.999999, 0.999999)
-                r[start:end] = 2.0 * np.arctanh(prod_excl)
+                # CORRECTED: Apply syndrome sign AFTER arctanh, not before
+                # Per MacKay (2003) and Kschischang (2001):
+                # μ_{c→v} = (-1)^{s_c} × 2 × arctanh(∏ tanh(·))
+                # The sign flips the MESSAGE direction, not the arctanh INPUT
+                prod_excl_clipped = np.clip(prod_excl, -0.999999, 0.999999)
+                base_msg = 2.0 * np.arctanh(prod_excl_clipped)
+                
+                # Apply syndrome sign to the result
+                if int(target_u8[c]) == 1:
+                    base_msg = -base_msg
+                
+                r[start:end] = base_msg
 
             # Variable node update (vertical step) and hard decision (vectorized)
             if self._r_by_var_edge_buf is None or int(self._r_by_var_edge_buf.shape[0]) != int(edge_count):

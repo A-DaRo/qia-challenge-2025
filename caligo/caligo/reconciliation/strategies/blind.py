@@ -21,6 +21,8 @@ References
 from __future__ import annotations
 
 import hashlib
+import hmac
+import secrets
 from typing import Any, Dict, Generator, Optional, TYPE_CHECKING
 
 import numpy as np
@@ -41,26 +43,47 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-def compute_hash(payload: np.ndarray, seed: int) -> int:
+def compute_hash(payload: np.ndarray, seed: int, session_salt: bytes = b"") -> int:
     """
-    Compute verification hash for payload.
+    Compute verification hash for payload only (not padding).
+    
+    Per Martinez-Mateo §4.1: Hash covers the secret key X, NOT
+    the random padding bits used in frame construction.
     
     Parameters
     ----------
     payload : np.ndarray
-        Payload bits (uint8).
+        Payload bits (uint8) - the actual secret key material.
     seed : int
-        Block ID for hash salting.
+        Block ID for deterministic differentiation.
+    session_salt : bytes, optional
+        Session-specific salt for IT-security. If empty, uses
+        deterministic mode (for testing/backward compatibility).
         
     Returns
     -------
     int
         64-bit hash value.
+        
+    Notes
+    -----
+    When session_salt is provided, uses HMAC-SHA256 for IT-security.
+    Otherwise falls back to plain SHA-256 (deterministic, for tests).
     """
-    hasher = hashlib.sha256()
-    hasher.update(payload.tobytes())
-    hasher.update(seed.to_bytes(8, 'little'))
-    return int.from_bytes(hasher.digest()[:8], 'little')
+    seed_bytes = seed.to_bytes(8, 'little')
+    
+    if session_salt:
+        # IT-secure: HMAC-SHA256 with session salt
+        key = session_salt + seed_bytes
+        digest = hmac.new(key, payload.tobytes(), hashlib.sha256).digest()
+    else:
+        # Deterministic mode for testing
+        hasher = hashlib.sha256()
+        hasher.update(payload.tobytes())
+        hasher.update(seed_bytes)
+        digest = hasher.digest()
+    
+    return int.from_bytes(digest[:8], 'little')
 
 
 class BlindStrategy(ReconciliationStrategy):
@@ -181,21 +204,40 @@ class BlindStrategy(ReconciliationStrategy):
         # 4. Compute step size: Δ = d/t
         delta_step = max(1, d // self._max_iterations)
         
-        # 5. Construct frame - use original payload values everywhere
-        # For blind reconciliation, we don't add random padding.
-        # Instead, we reveal Alice's actual payload values at punctured positions.
-        # This ensures the hash verification works correctly.
+        # 5. Construct frame per Martinez-Mateo §4.1:
+        #    - Payload X (m bits) placed in positions [0, m)
+        #    - Random padding R (d bits) placed at puncture_indices
+        #    - Frame X̃ = [X, R] where R is INDEPENDENT of X
+        #
+        # CRITICAL: Punctured positions contain RANDOM bits, NOT payload.
+        # When we reveal during blind iterations, we reveal R values,
+        # which have no correlation with the secret key X.
         frame = np.zeros(ctx.frame_size, dtype=np.uint8)
         payload_len = min(len(payload), ctx.frame_size)
-        frame[:payload_len] = payload[:payload_len]
         
-        # Extract values at punctured positions (Alice's actual bits)
-        padding_values = frame[puncture_indices].copy()
+        # Place payload in first m positions (excluding puncture positions)
+        # Create mask for non-punctured positions
+        puncture_set = set(puncture_indices.tolist())
+        payload_idx = 0
+        for i in range(ctx.frame_size):
+            if i not in puncture_set and payload_idx < payload_len:
+                frame[i] = payload[payload_idx]
+                payload_idx += 1
+        
+        # Generate deterministic random padding for punctured positions
+        # Seed ensures Alice and Bob can independently verify frame layout
+        padding_seed = block_id ^ 0xB11DABC  # Deterministic per-block
+        padding_rng = np.random.default_rng(padding_seed & 0xFFFFFFFF)
+        padding_values = padding_rng.integers(0, 2, size=len(puncture_indices), dtype=np.uint8)
+        frame[puncture_indices] = padding_values
         
         # 6. Compute syndrome ONCE (Theorem 4.1: syndrome reuse)
         # Use mother pattern (no puncturing for syndrome computation)
         mother_pattern = np.zeros(ctx.frame_size, dtype=np.uint8)
         syndrome = self._codec.encode(frame, mother_pattern)
+        
+        # Hash covers ONLY the payload, NOT the padding
+        # This is critical: revealed padding has no entropy correlation with key
         hash_value = compute_hash(payload, seed=block_id)
         
         # 7. Record initial syndrome leakage
@@ -365,8 +407,11 @@ class BlindStrategy(ReconciliationStrategy):
             syndrome=syndrome,
         )
         
-        # 5. Extract corrected payload and verify
-        corrected_payload = result.corrected_bits[:payload_length]
+        # 5. Extract corrected payload from non-punctured positions
+        # Per Martinez-Mateo frame layout: payload at [0..m) excluding punctured
+        corrected_payload = self._extract_payload_from_frame(
+            result.corrected_bits, puncture_indices, payload_length
+        )
         computed_hash = compute_hash(corrected_payload, seed=block_id)
         verified = (computed_hash == expected_hash)
         
@@ -411,8 +456,10 @@ class BlindStrategy(ReconciliationStrategy):
                 syndrome=syndrome,
             )
             
-            # Verify again
-            corrected_payload = result.corrected_bits[:payload_length]
+            # Verify again - extract payload from non-punctured positions
+            corrected_payload = self._extract_payload_from_frame(
+                result.corrected_bits, state.puncture_indices, payload_length
+            )
             computed_hash = compute_hash(corrected_payload, seed=block_id)
             verified = (computed_hash == expected_hash)
             
@@ -466,10 +513,18 @@ class BlindStrategy(ReconciliationStrategy):
         BlindDecoderState
             Initialized decoder state.
         """
-        # Build frame with payload
+        # Build frame with Bob's payload at non-punctured positions
+        # (matching Alice's frame layout per Martinez-Mateo §4.1)
         frame = np.zeros(frame_size, dtype=np.uint8)
-        payload_len = min(len(payload), frame_size)
-        frame[:payload_len] = payload[:payload_len]
+        puncture_set = set(puncture_indices.tolist())
+        payload_len = min(len(payload), frame_size - len(puncture_indices))
+        
+        # Place payload at non-punctured positions
+        payload_idx = 0
+        for i in range(frame_size):
+            if i not in puncture_set and payload_idx < payload_len:
+                frame[i] = payload[payload_idx]
+                payload_idx += 1
         
         # Compute channel LLR magnitude
         qber_clamped = np.clip(qber, 1e-6, 0.5 - 1e-6)
@@ -478,16 +533,16 @@ class BlindStrategy(ReconciliationStrategy):
         # Initialize LLR array
         llr = np.zeros(frame_size, dtype=np.float64)
         
-        # Payload positions: channel LLR
-        for i in range(payload_len):
-            llr[i] = +alpha if frame[i] == 0 else -alpha
-        
-        # Create masks
-        frozen_mask = np.zeros(frame_size, dtype=np.bool_)
-        puncture_set = set(puncture_indices.tolist())
+        # Non-punctured positions: channel LLR from Bob's bits
         revealed_set = set(revealed_indices.tolist())
+        for i in range(frame_size):
+            if i not in puncture_set:
+                llr[i] = +alpha if frame[i] == 0 else -alpha
         
-        # Punctured positions: erasure (LLR=0)
+        # Create frozen mask
+        frozen_mask = np.zeros(frame_size, dtype=np.bool_)
+        
+        # Punctured positions: erasure (LLR=0) unless revealed
         for idx in puncture_indices:
             if idx not in revealed_set:
                 llr[idx] = 0.0
@@ -557,6 +612,46 @@ class BlindStrategy(ReconciliationStrategy):
             iteration=state.iteration,
             syndrome=state.syndrome,
         )
+    
+    def _extract_payload_from_frame(
+        self,
+        frame: np.ndarray,
+        puncture_indices: np.ndarray,
+        payload_length: int,
+    ) -> np.ndarray:
+        """
+        Extract payload bits from frame (excluding punctured positions).
+        
+        Per Martinez-Mateo §4.1, the frame layout is:
+        - Payload bits at non-punctured positions
+        - Random padding at punctured positions
+        
+        This method extracts only the payload portion.
+        
+        Parameters
+        ----------
+        frame : np.ndarray
+            Full decoded frame.
+        puncture_indices : np.ndarray
+            Positions containing padding (to skip).
+        payload_length : int
+            Expected payload length.
+            
+        Returns
+        -------
+        np.ndarray
+            Extracted payload bits.
+        """
+        puncture_set = set(puncture_indices.tolist())
+        payload = np.zeros(payload_length, dtype=np.uint8)
+        
+        payload_idx = 0
+        for i in range(len(frame)):
+            if i not in puncture_set and payload_idx < payload_length:
+                payload[payload_idx] = frame[i]
+                payload_idx += 1
+        
+        return payload
     
     def _construct_frame_with_padding(
         self,

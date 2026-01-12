@@ -1,6 +1,16 @@
 """
 Phase III Reconciliation Orchestrator.
 
+.. deprecated:: 2.0
+    This module is DEPRECATED and will be removed in a future version.
+    Use the Strategy Pattern (caligo.reconciliation.strategies) instead.
+    
+    The ReconciliationOrchestrator class has been superseded by:
+    - BlindStrategy for blind reconciliation
+    - BaselineStrategy for baseline reconciliation
+    
+    The partition_key utility function remains available.
+
 Coordinates the complete reconciliation flow between Alice and Bob,
 integrating rate selection, encoding, decoding, verification, and
 leakage tracking.
@@ -15,6 +25,7 @@ References
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -38,6 +49,14 @@ from caligo.reconciliation.matrix_manager import MatrixManager
 from caligo.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Emit deprecation warning on module import
+warnings.warn(
+    "caligo.reconciliation.orchestrator is deprecated. "
+    "Use caligo.reconciliation.strategies.BlindStrategy or BaselineStrategy instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 
 # =============================================================================

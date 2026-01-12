@@ -16,6 +16,7 @@ References
 
 from __future__ import annotations
 
+import hmac
 from typing import Tuple
 
 import numpy as np
@@ -138,7 +139,7 @@ class PolynomialHashVerifier:
         seed: int = None,
     ) -> bool:
         """
-        Verify hash matches expected value.
+        Verify hash matches expected value using constant-time comparison.
 
         Parameters
         ----------
@@ -153,9 +154,17 @@ class PolynomialHashVerifier:
         -------
         bool
             True if hashes match.
+            
+        Notes
+        -----
+        Uses constant-time comparison to prevent timing side-channels.
         """
         computed = self.compute_hash(bits, seed)
-        return computed == expected_hash
+        # Convert to fixed-length bytes for constant-time comparison
+        byte_len = (self._output_bits + 7) // 8
+        computed_bytes = computed.to_bytes(byte_len, 'little')
+        expected_bytes = (expected_hash & self.mod_mask).to_bytes(byte_len, 'little')
+        return hmac.compare_digest(computed_bytes, expected_bytes)
 
     def verify_bytes(
         self,
@@ -164,7 +173,7 @@ class PolynomialHashVerifier:
         seed: int = None,
     ) -> bool:
         """
-        Verify hash matches expected bytes value.
+        Verify hash matches expected bytes value using constant-time comparison.
 
         Parameters
         ----------
@@ -179,9 +188,13 @@ class PolynomialHashVerifier:
         -------
         bool
             True if hashes match.
+            
+        Notes
+        -----
+        Uses constant-time comparison to prevent timing side-channels.
         """
         computed = self.compute_hash_bytes(bits, seed)
-        return computed == expected_hash
+        return hmac.compare_digest(computed, expected_hash)
 
     def hash_and_seed(self, bits: np.ndarray, seed: int) -> Tuple[bytes, int]:
         """

@@ -368,3 +368,85 @@ def compute_safety_cap(
         l_max = int(n * (1.0 - h_qber - epsilon))
     
     return max(0, l_max)
+
+
+def compute_blind_safety_cap(
+    n_sifted: int,
+    qber: float,
+    modulation_bits: int,
+    hash_bits: int = constants.LDPC_HASH_BITS,
+    mother_rate: float = 0.5,
+    epsilon: float = 0.0,
+    security_parameter: float = 1e-10,
+) -> int:
+    """
+    Compute maximum safe leakage specifically for blind reconciliation.
+    
+    Per Theoretical Report v2 Corollary 4.1, blind protocol worst-case leakage:
+    
+        L_blind = (1-R_0)×n + h + d
+        
+    Where:
+    - (1-R_0)×n = syndrome bits (constant, sent once)
+    - h = hash verification bits
+    - d = total modulation bits (worst-case: all revealed)
+    
+    This function computes the safety cap accounting for this worst case.
+    
+    Parameters
+    ----------
+    n_sifted : int
+        Length of sifted key (bits).
+    qber : float
+        Quantum bit error rate estimate.
+    modulation_bits : int
+        Total modulation budget d = δ × frame_size.
+    hash_bits : int, optional
+        Verification hash bits per block. Default from constants.
+    mother_rate : float, optional
+        Mother code rate R_0. Default 0.5.
+    epsilon : float, optional
+        Additional security margin. Default 0.
+    security_parameter : float, optional
+        Statistical security ε. Default 1e-10.
+        
+    Returns
+    -------
+    int
+        Maximum allowed leakage L_max for blind protocol.
+        
+    Notes
+    -----
+    The key insight is that blind protocol can leak UP TO d bits during
+    reveal iterations (worst case: all iterations exhaust modulation budget).
+    
+    Available entropy = n × (1 - h(QBER) - ε)
+    Worst-case leakage = (1-R_0)×n + h + d
+    Safety cap = available - worst_case
+    
+    Examples
+    --------
+    >>> compute_blind_safety_cap(
+    ...     n_sifted=4096, qber=0.05, modulation_bits=410, hash_bits=64
+    ... )
+    1234  # Example value
+    """
+    if qber <= 0 or qber >= 0.5:
+        h_qber = 0.0
+    else:
+        h_qber = -qber * math.log2(qber) - (1 - qber) * math.log2(1 - qber)
+    
+    # Available entropy per König et al.
+    available_entropy = n_sifted * (1.0 - h_qber - epsilon)
+    
+    # Finite-size penalty (optional, for high security)
+    finite_size_penalty = 2 * math.log2(1 / security_parameter)
+    
+    # Worst-case blind leakage
+    syndrome_bits = int((1 - mother_rate) * n_sifted)
+    worst_case_leakage = syndrome_bits + hash_bits + modulation_bits
+    
+    # Safety cap
+    l_max = int(available_entropy - worst_case_leakage - finite_size_penalty)
+    
+    return max(0, l_max)
