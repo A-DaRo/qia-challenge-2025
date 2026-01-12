@@ -339,8 +339,9 @@ class BobProgram(CaligoProgram):
                 raise SecurityError(f"Protocol synchronization failed: {e}")
             
             # Check if we verified successfully
-            if response.get("verified"):
-                state.transition_to(BlindPhase.VERIFIED if is_blind else BaselinePhase.VERIFIED)
+            # Do NOT transition to VERIFIED here as it is a terminal state
+            # and prevents sending the subsequent 'done' signal to the generator.
+            # Generator will return the correct BlockResult with verified=True.
             
             # Send response to Alice
             yield from self._ordered_socket.send(MessageType.SYNDROME_RESPONSE, {
@@ -354,17 +355,19 @@ class BobProgram(CaligoProgram):
             
             # Check for termination signal from Alice
             if msg.get("kind") == "done":
-                state.transition_to(BlindPhase.DONE if is_blind else BaselinePhase.DONE)
                 # Alice has terminated - try to send done signal to generator
                 # Use safe_generator_send to handle potential exhaustion gracefully
                 if state.generator_active:
                     try:
                         result, exhausted = safe_generator_send(gen, msg, state)
                         if exhausted:
+                            state.transition_to(BlindPhase.DONE if is_blind else BaselinePhase.DONE)
                             return result
                     except ProtocolSynchronizationError:
                         # Generator already exhausted, this is fine
                         pass
+                
+                state.transition_to(BlindPhase.DONE if is_blind else BaselinePhase.DONE)
                 # If we're here, generator didn't return on done - this is unexpected
                 # but we can still return safely since Alice initiated termination
                 logger.warning(f"Block {block_id}: Generator still active after done signal")

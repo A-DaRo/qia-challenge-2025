@@ -153,7 +153,8 @@ class BlockResult:
     revealed_leakage: int
     hash_leakage: int
     retry_count: int
-    effective_rate: float = 0.5
+    effective_rate: float
+    estimated_qber: float = 0.5
     
     @property
     def total_leakage(self) -> int:

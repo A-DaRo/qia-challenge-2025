@@ -213,15 +213,20 @@ class BlindStrategy(ReconciliationStrategy):
         # When we reveal during blind iterations, we reveal R values,
         # which have no correlation with the secret key X.
         frame = np.zeros(ctx.frame_size, dtype=np.uint8)
-        payload_len = min(len(payload), ctx.frame_size)
+        
+        # Determine actual capacity and used payload
+        # Since d bits are reserved for padding, we can only embed (frame_size - d)
+        capacity = ctx.frame_size - d
+        used_payload_len = min(len(payload), capacity)
+        used_payload = payload[:used_payload_len]
         
         # Place payload in first m positions (excluding puncture positions)
         # Create mask for non-punctured positions
         puncture_set = set(puncture_indices.tolist())
         payload_idx = 0
         for i in range(ctx.frame_size):
-            if i not in puncture_set and payload_idx < payload_len:
-                frame[i] = payload[payload_idx]
+            if i not in puncture_set and payload_idx < used_payload_len:
+                frame[i] = used_payload[payload_idx]
                 payload_idx += 1
         
         # Generate deterministic random padding for punctured positions
@@ -236,9 +241,9 @@ class BlindStrategy(ReconciliationStrategy):
         mother_pattern = np.zeros(ctx.frame_size, dtype=np.uint8)
         syndrome = self._codec.encode(frame, mother_pattern)
         
-        # Hash covers ONLY the payload, NOT the padding
+        # Hash covers ONLY the used payload, NOT the padding
         # This is critical: revealed padding has no entropy correlation with key
-        hash_value = compute_hash(payload, seed=block_id)
+        hash_value = compute_hash(used_payload, seed=block_id)
         
         # 7. Record initial syndrome leakage
         # Note: len(syndrome) is already in bits (codec returns uint8 bit array)
@@ -264,7 +269,7 @@ class BlindStrategy(ReconciliationStrategy):
             "block_id": block_id,
             "syndrome": syndrome.tolist(),
             "puncture_indices": puncture_indices.tolist(),
-            "payload_length": len(payload),
+            "payload_length": used_payload_len,
             "hash_value": hash_value,
             "qber_prior": ctx.qber_for_blind_gating,
             "iteration": 1,
@@ -279,7 +284,17 @@ class BlindStrategy(ReconciliationStrategy):
         iteration = 1
         total_revealed = initial_shortened
         
-        while not response.get("verified") and iteration < self._max_iterations:
+        # Handle initial verification response
+        verified = response.get("verified", False)
+        converged = response.get("converged", False)
+        
+        # 6. Send initial response
+        # response = yield {"verified": verified, "converged": result.converged} 
+        # (This is handled in the surrounding loop structure usually, but here 
+        # we are essentially in the body of alice_reconcile_block generator)
+        
+        # Loop if not verified and Alice/Bob not done
+        while not verified and iteration < self._max_iterations:
             
             iteration += 1
             
@@ -306,12 +321,14 @@ class BlindStrategy(ReconciliationStrategy):
                 "revealed_indices": reveal_indices.tolist(),
                 "revealed_values": reveal_values.tolist(),
             }
-        
-        verified = response.get("verified", False)
-        converged = response.get("converged", False)
+            
+            verified = response.get("verified", False)
+            converged = response.get("converged", False)
+        # Get QBER estimated by Bob (based on correction diff)
+        estimated_qber = response.get("qber", 0.11)
         
         return BlockResult(
-            corrected_payload=payload,
+            corrected_payload=used_payload,
             verified=verified,
             converged=converged,
             iterations_used=0,
@@ -320,8 +337,9 @@ class BlindStrategy(ReconciliationStrategy):
             hash_leakage=ctx.hash_bits,
             retry_count=iteration,
             effective_rate=self._compute_effective_rate(d, total_revealed),
+            estimated_qber=estimated_qber,
         )
-    
+
     def bob_reconcile_block(
         self,
         payload: np.ndarray,
@@ -415,11 +433,29 @@ class BlindStrategy(ReconciliationStrategy):
         computed_hash = compute_hash(corrected_payload, seed=block_id)
         verified = (computed_hash == expected_hash)
         
+        # Estimate QBER by comparing frame vs corrected (on payload part roughly)
+        # Note: Bob doesn't know original payload, but if verified=True, we assume corrected is clean.
+        # We can just report how many bits changed in the payload section.
+        # But for 'QBER' we typically mean error rate relative to raw.
+        # So we compare Bob's RAW payload vs Corrected payload.
+        # We should use the payload_length truncation applied in init_decoder_state.
+        
+        # We only compare the bits that were actually part of the frame
+        raw_payload_segment = payload[:payload_length]
+        
+        if len(raw_payload_segment) == len(corrected_payload):
+            # Safe comparison
+            diff_bits = np.count_nonzero(raw_payload_segment != corrected_payload)
+            estimated_qber = diff_bits / len(raw_payload_segment) if len(raw_payload_segment) > 0 else 0.0
+        else:
+            logger.warning(f"Payload length mismatch for QBER est: {len(raw_payload_segment)} vs {len(corrected_payload)}")
+            estimated_qber = 0.5
+
         total_revealed = len(revealed_indices)
         iteration = 1
         
         # 6. Send initial response
-        response = yield {"verified": verified, "converged": result.converged}
+        response = yield {"verified": verified, "converged": result.converged, "qber": estimated_qber}
         
         # 7. Handle reveal iterations
         while response.get("kind") == "blind_reveal":
@@ -463,8 +499,14 @@ class BlindStrategy(ReconciliationStrategy):
             computed_hash = compute_hash(corrected_payload, seed=block_id)
             verified = (computed_hash == expected_hash)
             
+            # Re-estimate QBER if verified changed (or even if not)
+            if verified:
+                raw_payload_segment = payload[:payload_length]
+                diff_bits = np.count_nonzero(raw_payload_segment != corrected_payload)
+                estimated_qber = diff_bits / len(raw_payload_segment) if len(raw_payload_segment) > 0 else 0.0
+
             # Send response
-            response = yield {"verified": verified, "converged": result.converged}
+            response = yield {"verified": verified, "converged": result.converged, "qber": estimated_qber}
         
         return BlockResult(
             corrected_payload=corrected_payload,
@@ -476,6 +518,7 @@ class BlindStrategy(ReconciliationStrategy):
             hash_leakage=ctx.hash_bits,
             retry_count=iteration,
             effective_rate=self._compute_effective_rate(len(puncture_indices), total_revealed),
+            estimated_qber=estimated_qber,
         )
     
     def _initialize_decoder_state(

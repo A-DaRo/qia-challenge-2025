@@ -331,7 +331,20 @@ class AliceProgram(CaligoProgram):
         estimated_hash_leakage = num_blocks * hash_bits_per_block
         estimated_total_leakage = estimated_syndrome_leakage + estimated_hash_leakage
         
-        safety_cap = compute_safety_cap(len(alice_arr), qber_adjusted)
+        # Calculate safety cap using NSM entropy bounds instead of Shannon limits
+        # This prevents "Death Valley" when storage noise allows extraction 
+        # but QBER-based estimate is too conservative.
+        entropy_calc_fease = NSMEntropyCalculator(
+            storage_noise_r=float(self.params.nsm_params.storage_noise_r)
+        )
+        h_min, _ = entropy_calc_fease.max_bound_entropy_rate()
+        
+        safety_cap = compute_safety_cap(
+            n_sifted=len(alice_arr), 
+            qber=qber_adjusted,
+            min_entropy_rate=h_min,
+            target_key_length=1  # We just need > 0 bits
+        )
         
         # Check if reconciliation is feasible
         # We use exact comparison since estimated_total_leakage already includes
@@ -466,13 +479,15 @@ class AliceProgram(CaligoProgram):
             if int(resp.get("block_id", -1)) != int(block_id):
                 raise SecurityError("Reconciliation block_id mismatch")
             
-            # Check if Bob signaled early termination (verified=True)
-            if resp.get("verified"):
-                state.transition_to(BlindPhase.VERIFIED if is_blind else BaselinePhase.VERIFIED)
-            
             # Send response to generator using safe_generator_send
             try:
                 outgoing, exhausted = safe_generator_send(gen, resp, state)
+                
+                # Check if Bob signaled early termination (verified=True)
+                # Only transition state AFTER feeding generator, otherwise safe_generator_send fails
+                if resp.get("verified"):
+                    state.transition_to(BlindPhase.VERIFIED if is_blind else BaselinePhase.VERIFIED)
+
                 if exhausted:
                     # Generator returned - send termination signal to Bob
                     yield from self._ordered_socket.send(MessageType.SYNDROME, {

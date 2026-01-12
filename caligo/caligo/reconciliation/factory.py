@@ -959,7 +959,7 @@ def create_strategy(
             codec=ldpc_codec,
             leakage_tracker=leakage_tracker,
             max_blind_iterations=config.max_blind_rounds,
-            modulation_fraction=0.44,  # Per Theoretical Report v2 Remark 2.1
+            modulation_fraction=0.05,  # Reduced to 0.05 to avoid Death Valley in high-noise storage regimes
         )
     else:
         raise ValueError(f"Unknown reconciliation type: {config.reconciliation_type}")

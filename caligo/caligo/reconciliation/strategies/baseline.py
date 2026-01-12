@@ -248,6 +248,7 @@ class BaselineStrategy(ReconciliationStrategy):
             hash_leakage=ctx.hash_bits,
             retry_count=1,
             effective_rate=effective_rate,
+            estimated_qber=qber_estimate,
         )
     
     def bob_reconcile_block(
@@ -333,7 +334,8 @@ class BaselineStrategy(ReconciliationStrategy):
         )
         
         # 7. Send response to Alice
-        yield {"verified": verified, "converged": result.converged}
+        # Explicitly capture the response (expecting 'done' or similar signal)
+        _ = yield {"verified": verified, "converged": result.converged}
         
         return BlockResult(
             corrected_payload=corrected_payload,
@@ -345,6 +347,7 @@ class BaselineStrategy(ReconciliationStrategy):
             hash_leakage=ctx.hash_bits,
             retry_count=1,
             effective_rate=pattern_id,
+            estimated_qber=qber_channel,
         )
     
     def _select_rate(self, qber: float, f_crit: float) -> float:

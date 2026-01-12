@@ -24,6 +24,35 @@ from caligo.simulation.noise_models import (
 
 
 # =============================================================================
+# NetSquid Simulator Reset Fixture
+# =============================================================================
+
+
+@pytest.fixture(autouse=True)
+def reset_netsquid_simulator():
+    """
+    Reset NetSquid simulator state before each test.
+    
+    This ensures test isolation when using NetSquid's global simulator state.
+    Without this, timing tests can fail due to leftover state from previous
+    tests that ran NetSquid simulations.
+    """
+    try:
+        import netsquid as ns
+        ns.sim_reset()
+    except ImportError:
+        # NetSquid not available, skip reset
+        pass
+    yield
+    # Cleanup after test if needed
+    try:
+        import netsquid as ns
+        ns.sim_reset()
+    except ImportError:
+        pass
+
+
+# =============================================================================
 # NSM Parameters Fixtures
 # =============================================================================
 
