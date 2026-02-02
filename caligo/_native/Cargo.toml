@@ -1,0 +1,46 @@
+[package]
+name = "caligo-codecs"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+authors = ["Alessandro Da Ros"]
+description = "High-performance Polar codec for QKD reconciliation"
+license = "MIT"
+
+[lib]
+name = "caligo_codecs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Python bindings
+pyo3 = { version = "0.21", features = ["extension-module"] }
+numpy = "0.21"
+
+# Core data structures
+ndarray = "0.15"
+bitvec = "1.0"
+
+# Error handling
+thiserror = "1.0"
+
+# Serialization (for test vectors)
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[dev-dependencies]
+approx = "0.5"
+rand = "0.8"
+rand_chacha = "0.3"
+
+[features]
+default = []
+simd = []  # Enable AVX-512 (requires nightly for std::simd)
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+debug = false
+
+[profile.dev]
+opt-level = 1  # Faster debug builds

@@ -1,0 +1,247 @@
+# ==============================================================================
+# Caligo Exploration Suite Configuration
+# HPC Optimized for AMD EPYC 9654 (Genoa) - 192 cores, 384 GiB RAM
+# ==============================================================================
+#
+# This configuration is tuned for CPU-only HPC nodes with high core counts.
+# Key differences from workstation config:
+#   - 172 workers (leaving 12 cores for orchestration + BLAS threads)
+#   - Larger batch sizes to amortize IPC overhead
+#   - CPU-optimized surrogate settings
+#   - More aggressive checkpointing for fault tolerance
+#
+# Usage:
+#   source scripts/setup_hpc_env.sh
+#   python main_explor.py --config explor_configs/hpc_genoa_config.yaml
+#
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Output Configuration
+# ------------------------------------------------------------------------------
+output:
+  # Use scratch directory (set by environment)
+  base_dir: "${CALIGO_SCRATCH_DIR:-exploration_results}"
+  
+  # Campaign name
+  campaign_name: "qia_challenge_hpc"
+  
+  # Always timestamp for HPC (multiple jobs)
+  timestamped: true
+
+# ------------------------------------------------------------------------------
+# Execution Configuration (HPC-Specific)
+# ------------------------------------------------------------------------------
+execution:
+  # Worker count: 192 cores - 12 reserved - 8 for BLAS = 172
+  # Each worker gets ~2GB memory budget
+  num_workers: 172
+  
+  # Longer timeout for complex simulations (10 min)
+  timeout_seconds: 600.0
+  
+  # Random seed for reproducibility
+  random_seed: 42
+  
+  # Log level (INFO for production, DEBUG for troubleshooting)
+  log_level: "INFO"
+  
+  # HPC-specific worker pool settings
+  worker_pool:
+    # Recycle workers after N tasks to prevent memory leaks
+    # Critical for long-running campaigns
+    max_tasks_per_child: 50
+    
+    # Use 'spawn' start method for clean NetSquid state isolation
+    # 'fork' can cause issues with NumPy/BLAS thread pools
+    start_method: "spawn"
+    
+    # Timeout for worker startup (seconds)
+    worker_init_timeout: 60.0
+
+# ------------------------------------------------------------------------------
+# Phase 1: Latin Hypercube Sampling (LHS) Warmup
+# ------------------------------------------------------------------------------
+phase1:
+  # Larger warmup dataset for better surrogate initialization
+  # With 172 workers, 10k samples takes ~5 hours
+  num_samples: 10000
+
+  # Batch size = worker count for full utilization
+  # Each batch fully saturates all 172 workers
+  batch_size: 172
+
+  # Checkpoint every 3 batches (~500 samples)
+  # Balances overhead vs fault tolerance
+  checkpoint_interval: 3
+
+  # Strategy ratio: 50% baseline, 50% blind
+  strategy_ratio: 0.5
+  
+  # Streaming mode for memory efficiency
+  use_streaming: true
+
+# ------------------------------------------------------------------------------
+# Phase 2: Surrogate Model Training
+# ------------------------------------------------------------------------------
+phase2:
+  # Gaussian Process configuration
+  gp:
+    # Matern 5/2 kernel (twice differentiable, good for smooth functions)
+    kernel_type: "matern52"
+
+    # More optimizer restarts (CPU time is cheaper than GPU)
+    n_restarts_optimizer: 20
+
+    # Normalize targets for numerical stability
+    normalize_y: true
+
+  # Validation split for model selection
+  validation_split: 0.2
+
+  # Cross-validation (optional, increases training time)
+  cross_validation:
+    enabled: true
+    n_folds: 5
+  
+  # CPU-optimized surrogate settings (new for HPC)
+  cpu_surrogate:
+    # Enable CPU-optimized GPyTorch backend
+    enabled: true
+    
+    # Threads per GP operation (balance vs OMP_NUM_THREADS)
+    num_threads: 4
+    
+    # Use Lanczos/CG above this matrix size
+    # 2000 is safe for 2GB/core memory budget
+    max_cholesky_size: 2000
+    
+    # Lanczos iterations for variance estimation
+    lanczos_iterations: 100
+    
+    # Use LOVE for O(1) predictive variance
+    # Highly recommended for large-scale inference
+    use_love: true
+    
+    # Inference chunk size for memory efficiency
+    chunk_size: 5000
+    
+    # Training iterations (more for CPU)
+    training_iterations: 150
+    
+    # Learning rate for Adam optimizer
+    learning_rate: 0.05
+
+# ------------------------------------------------------------------------------
+# Phase 3: Bayesian Optimization (Active Learning)
+# ------------------------------------------------------------------------------
+phase3:
+  # More iterations (CPU allows longer runs)
+  num_iterations: 200
+  
+  # Match batch size to worker count
+  batch_size: 172
+  
+  # Retrain surrogate less frequently
+  # GP retraining is expensive on CPU (~5 min with 10k samples)
+  retrain_interval: 10
+  
+  # Checkpoint frequently for fault tolerance
+  checkpoint_interval: 5
+  
+  # Acquisition function configuration
+  acquisition:
+    # Straddle acquisition for cliff detection
+    type: "straddle"
+    
+    # Exploration-exploitation balance (κ = 1.96 is ~95% CI)
+    kappa: 1.96
+    
+    # Target efficiency threshold (security cliff)
+    target_threshold: 0.0
+    
+    # Number of candidates to evaluate acquisition on
+    # Higher = better exploration, but slower
+    n_candidates: 10000
+    
+    # Use quasi-random (Sobol) candidates for better coverage
+    use_sobol: true
+
+# ------------------------------------------------------------------------------
+# Parameter Space Bounds
+# ------------------------------------------------------------------------------
+bounds:
+  # Storage noise (depolarizing parameter) r ∈ [0.6, 0.95]
+  storage_noise_r:
+    min: 0.60
+    max: 0.95
+
+  # Storage rate (memory decay) ν ∈ [0.001, 1.0] (linear scale)
+  storage_rate_nu:
+    min: 0.001
+    max: 1.0
+
+  # Wait time in nanoseconds (log scale)
+  # 10^5 ns = 100 μs to 10^9 ns = 1 s
+  wait_time_ns:
+    min_log: 5.0
+    max_log: 9.0
+
+  # Channel fidelity F ∈ [0.501, 1.0]
+  # Must be > 0.5 for quantum advantage
+  channel_fidelity:
+    min: 0.501
+    max: 1.0
+
+  # Detection efficiency η (log scale)
+  # 10^-3 = 0.1% to 10^0 = 100%
+  detection_efficiency:
+    min_log: -3.0
+    max_log: 0.0
+
+  # Detector error probability e_det ∈ [0, 0.1]
+  detector_error:
+    min: 0.0
+    max: 0.1
+
+  # Dark count probability (log scale)
+  # 10^-8 to 10^-3
+  dark_count_prob:
+    min_log: -8.0
+    max_log: -3.0
+
+  # Number of EPR pairs (log scale)
+  # 10^4 = 10k to 10^6 = 1M pairs
+  num_pairs:
+    min_log: 4.0
+    max_log: 6.0
+
+# ------------------------------------------------------------------------------
+# Visualization (Post-Processing)
+# ------------------------------------------------------------------------------
+visualization:
+  enabled: true
+  
+  # Generate figures after campaign
+  figures:
+    - parameter_distributions
+    - efficiency_landscape
+    - cliff_detection
+    - convergence_curves
+  
+  # Figure format
+  format: "png"
+  dpi: 150
+
+# ------------------------------------------------------------------------------
+# Tables (Post-Processing)  
+# ------------------------------------------------------------------------------
+tables:
+  enabled: true
+  
+  # Generate summary tables
+  tables:
+    - campaign_summary
+    - phase_metrics
+    - cliff_candidates
+    - parameter_importance
