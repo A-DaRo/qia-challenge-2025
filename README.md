@@ -2,7 +2,7 @@
 
 This repository is the main workspace for the **QIA Challenge 2025** project.
 It contains the implementation work (Python package), internal documentation, and the written report.
-The project builds from the experience at the **QIA's Pan-European Quantum Internet Hackathon 2025**, you can check you our contribution here [Extending-Quantum-Key-Distribution---TU-e-participants](https://github.com/qia-hackathon-2025/Extending-Quantum-Key-Distribution---TU-e-participants)
+The project builds from the experience at the **QIA's Pan-European Quantum Internet Hackathon 2025**, you can check our contribution here [Extending-Quantum-Key-Distribution---TU-e-participants](https://github.com/qia-hackathon-2025/Extending-Quantum-Key-Distribution---TU-e-participants)
 
 ## Repository Structure
 
