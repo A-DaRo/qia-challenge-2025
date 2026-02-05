@@ -37,11 +37,14 @@ docs/caligo/
 │
 ├── specs/                    # Interface Contracts (AI-optimized)
 │   ├── siso-codec-protocol.md
+│   ├── polar-math-spec.md
+│   ├── scl-algorithm-ref.md
 │   ├── rust-polar-crate.md
 │   └── reconciliation-strategy.md
 │
 ├── impl/                     # Implementation Guides (with test vectors)
 │   ├── phase1-rust-foundation.md
+│   ├── phase2-scl-decoder-theory.md
 │   ├── phase2-scl-decoder.md
 │   ├── phase3-strategy-refactor.md
 │   └── phase4-integration.md
@@ -112,7 +115,10 @@ System prompts for specialized AI agents operating on this project. Each agent h
 | [initialization.md](initialization.md) | Reference mapping and project context | P0 |
 | [adr/0001-polar-codec-adoption.md](adr/0001-polar-codec-adoption.md) | Why Polar over LDPC | P0 |
 | [specs/siso-codec-protocol.md](specs/siso-codec-protocol.md) | Codec interface contract | P0 |
+| [specs/polar-math-spec.md](specs/polar-math-spec.md) | Polar code mathematical foundations | P0 |
+| [specs/scl-algorithm-ref.md](specs/scl-algorithm-ref.md) | SCL decoder algorithmic blueprint | P1 |
 | [impl/phase1-rust-foundation.md](impl/phase1-rust-foundation.md) | Rust crate setup | P1 |
+| [impl/phase2-scl-decoder-theory.md](impl/phase2-scl-decoder-theory.md) | SCL memory architecture & data structures | P1 |
 | [adr/0002-rust-native-extension.md](adr/0002-rust-native-extension.md) | Why Rust/PyO3 | P1 |
 | [specs/rust-polar-crate.md](specs/rust-polar-crate.md) | Rust API specification | P2 |
 | [impl/phase2-scl-decoder.md](impl/phase2-scl-decoder.md) | SCL decoder implementation | P2 |

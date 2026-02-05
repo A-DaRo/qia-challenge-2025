@@ -1,7 +1,7 @@
 # Polar Codec Refactor: Initialization Document
 
 <metadata>
-version: 1.1.0
+version: 1.5.0
 status: active
 created: 2026-01-30
 updated: 2026-02-02
@@ -180,6 +180,52 @@ class SISOCodec(Protocol):
     def decode_soft(self, llr_channel: NDArray[np.float32], *, syndrome: NDArray[np.uint8] | None = None, list_size: int = 1) -> tuple[NDArray[np.float32], NDArray[np.uint8], float]: ...
 ```
 </interface_preview>
+
+</document_spec>
+
+---
+
+### SPEC: Polar Codes Mathematical Specification
+
+<document_spec id="polar-math-spec">
+
+**Purpose:** Define the algebraic ground truth for Polar codes—generator matrix construction, decoding graph topology, and permutation contracts—enabling implementation agents to work from rigorous mathematical definitions.
+
+**Status:** ✅ **ACCEPTED** — [specs/polar-math-spec.md](specs/polar-math-spec.md)
+
+#### Key Definitions
+
+| Concept | Symbol | Definition |
+|---------|--------|------------|
+| Polarizing kernel | $F_2$ | $\begin{bmatrix} 1 & 0 \\ 1 & 1 \end{bmatrix}$ |
+| Generator matrix | $\mathbf{G}_m$ | $F_2^{\otimes m} B_m$ |
+| Bit-reversal | $\text{bitrev}_m(i)$ | Reverses $m$-bit binary representation |
+| Layer index | $\lambda$ | $0 \leq \lambda \leq m$ |
+| Phase index | $\phi$ | $0 \leq \phi < 2^\lambda$ |
+| LLR $f$-update | $f(\alpha, \beta)$ | Check-node update (min-sum) |
+| LLR $g$-update | $g(\alpha, \beta, u)$ | Variable-node update |
+
+#### Literature References
+
+| Reference | Contribution | Key Sections |
+|-----------|--------------|--------------|
+| [LLR-Based_Successive_Cancellation_List_Decoding_of_Polar_Codes.md](../literature/LLR-Based_Successive_Cancellation_List_Decoding_of_Polar_Codes.md) | Generator matrix, LLR equations | §II Eq. (1), (7)-(9) |
+| [List_Decoding_of_Polar_Codes.md](../literature/List_Decoding_of_Polar_Codes.md) | Layer/phase indexing, bit-channels | §II.A Eq. (1)-(5) |
+| [Fast_Polar_Decoders_Algorithm_and_Implementation.md](../literature/Fast_Polar_Decoders_Algorithm_and_Implementation.md) | Bit-reversal indexing | §II.A |
+
+#### Permutation Contract Summary
+
+<permutation_contract>
+
+| Invariant | Requirement |
+|-----------|-------------|
+| INV-PERM-1 | Encoder accepts $\mathbf{u}$ in natural index order |
+| INV-PERM-2 | Encoder outputs $\mathbf{x}$ in natural index order |
+| INV-PERM-3 | Decoder accepts channel LLRs in natural index order |
+| INV-PERM-4 | Decoder outputs $\hat{\mathbf{u}}$ in natural index order |
+| INV-PERM-5 | Bit-reversal is applied internally, transparent to API |
+
+</permutation_contract>
 
 </document_spec>
 
@@ -492,14 +538,17 @@ impl PyPolarCodec {
 
 | Document | Depends On | Required By |
 |----------|-----------|-------------|
-| ADR-0001 | (none) | SISO Protocol, Phase 1 |
+| ADR-0001 | (none) | SISO Protocol, Polar Math Spec, Phase 1 |
 | ADR-0002 | ADR-0001 | Phase 1, Rust API |
 | ADR-0003 | ADR-0001 | Phase 3 |
 | SISO Protocol | ADR-0001 | Phase 1, Phase 2, Strategy Protocol |
-| Rust API | ADR-0002, SISO Protocol | Phase 2 |
+| Polar Math Spec | ADR-0001 | SCL Algorithm Ref, Phase 1, Phase 2, Rust API |
+| SCL Algorithm Ref | Polar Math Spec, ADR-0001 | Phase 2 Theory, Phase 2, Rust API |
+| Phase 2 Theory | Polar Math Spec, SCL Algorithm Ref, Phase 1 | Phase 2 |
+| Rust API | ADR-0002, SISO Protocol, Polar Math Spec, SCL Algorithm Ref | Phase 2 |
 | Strategy Protocol | SISO Protocol, ADR-0003 | Phase 3, Phase 4 |
-| Phase 1 | ADR-0001, ADR-0002, SISO Protocol | Phase 2 |
-| Phase 2 | Phase 1, Rust API | Phase 3 |
+| Phase 1 | ADR-0001, ADR-0002, SISO Protocol, Polar Math Spec | Phase 2 Theory, Phase 2 |
+| Phase 2 | Phase 1, Phase 2 Theory, Rust API, Polar Math Spec, SCL Algorithm Ref | Phase 3 |
 | Phase 3 | Phase 2, ADR-0003, Strategy Protocol | Phase 4 |
 | Phase 4 | Phase 3 | (terminal) |
 
@@ -535,3 +584,6 @@ When generating content for any document in this project, load context in this o
 | 1.0.0 | 2026-01-30 | AI Agent | Initial creation |
 | 1.1.0 | 2026-02-02 | Context Engineer | P0 complete: ADR-0001 accepted, SISO Codec Protocol accepted |
 | 1.2.0 | 2026-02-02 | Context Engineer | P1 complete: ADR-0002 accepted, Phase 1 IMPL ready; synthetic test vectors specified |
+| 1.3.0 | 2026-02-03 | Context Engineer | Added Polar Math Spec: algebraic ground truth for Polar codec implementation |
+| 1.4.0 | 2026-02-03 | Context Engineer | Added SCL Algorithm Ref: LLR-adapted pseudocode blueprint for Rust implementation |
+| 1.5.0 | 2026-02-03 | Context Engineer | Added Phase 2 Theory: SCL memory architecture, Rust structs, SIMD/CRC integration |
